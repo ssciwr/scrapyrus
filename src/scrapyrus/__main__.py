@@ -31,13 +31,20 @@ def main(context: click.Context, idp_data: Path) -> None:
     default=Path("images"),
 )
 @click.argument("todo_filename", default="images_todo.txt")
+@click.argument("error_filename", default="images_error.txt")
 @click.pass_context
-def images(context: click.Context, target: Path, todo_filename: str) -> None:
-    """Scrape HGV images into TARGET and record unsupported URLs."""
+def images(
+    context: click.Context,
+    target: Path,
+    todo_filename: str,
+    error_filename: str,
+) -> None:
+    """Scrape HGV images into TARGET and record unsupported or failed URLs."""
 
     scrape_images(
         target,
         todo_filename,
+        error_filename,
         idp_data=context.obj["idp_data"],
     )
 

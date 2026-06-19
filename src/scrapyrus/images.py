@@ -110,6 +110,7 @@ class BerlPapScraper(ImageScraperBase):
 def scrape_images(
     target: Path,
     todo_filename: str | Path,
+    error_filename: str | Path,
     *,
     idp_data: str | Path = Path("idp.data"),
 ) -> None:
@@ -117,14 +118,19 @@ def scrape_images(
 
     Each HGV record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
-    ``HGV_ID: URL`` form. Existing HGV directories are left untouched.
+    ``HGV_ID: URL`` form. Sources whose download fails are written in the same
+    form to *error_filename*. Existing HGV directories are left untouched.
     """
 
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
     todo_path = Path(todo_filename)
+    error_path = Path(error_filename)
 
-    with todo_path.open("w", encoding="utf-8") as todo_file:
+    with (
+        todo_path.open("w", encoding="utf-8") as todo_file,
+        error_path.open("w", encoding="utf-8") as error_file,
+    ):
         for hgv_id, metadata, _, _ in iterate_hgv_triples(idp_data):
             root = ElementTree.parse(metadata).getroot()
             graphics = root.findall(
@@ -144,7 +150,10 @@ def scrape_images(
                     scraper = scraper_type(url)
                     if scraper.responsible(url):
                         papyrus_target.mkdir(parents=True, exist_ok=True)
-                        scraper.download(papyrus_target)
+                        try:
+                            scraper.download(papyrus_target)
+                        except Exception:
+                            error_file.write(f"{hgv_id}: {url}\n")
                         break
                 else:
                     todo_file.write(f"{hgv_id}: {url}\n")

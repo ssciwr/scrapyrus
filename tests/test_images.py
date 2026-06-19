@@ -139,7 +139,8 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
     output = tmp_path / "images"
     monkeypatch.chdir(tmp_path)
     todo = Path("todo.txt")
-    scrape_images(output, todo, idp_data=tmp_path / "idp.data")
+    error = Path("error.txt")
+    scrape_images(output, todo, error, idp_data=tmp_path / "idp.data")
 
     assert (output / "2" / "image").read_text(encoding="utf-8") == (
         "https://known.example/recto"
@@ -151,6 +152,7 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
         "https://unknown.example/verso",
     ]
     assert todo.read_text(encoding="utf-8") == "3: https://unknown.example/verso\n"
+    assert error.read_text(encoding="utf-8") == ""
     assert not (output / "todo.txt").exists()
 
 
@@ -181,8 +183,9 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
 
     output = tmp_path / "images"
     todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
 
-    scrape_images(output, todo)
+    scrape_images(output, todo, error)
 
     assert downloaded == [
         ("https://images.example/recto", output / "42"),
@@ -195,6 +198,7 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
         "https://images.example/verso"
     )
     assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == ""
 
 
 def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
@@ -218,8 +222,37 @@ def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
     output = tmp_path / "images"
     (output / "42").mkdir(parents=True)
     todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
 
-    scrape_images(output, todo)
+    scrape_images(output, todo, error)
 
     assert downloads == []
     assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == ""
+
+
+def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypatch):
+    metadata = tmp_path / "42.xml"
+    url = "https://images.example/recto"
+    write_metadata(metadata, [url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    class FailingScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return True
+
+        def download(self, target: Path) -> None:
+            raise RuntimeError("download failed")
+
+    output = tmp_path / "images"
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+
+    scrape_images(output, todo, error)
+
+    assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == f"42: {url}\n"
