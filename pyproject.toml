@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "click",
+    "tqdm",
 ]
 
 [project.optional-dependencies]

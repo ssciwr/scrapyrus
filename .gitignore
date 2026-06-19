@@ -1,6 +1,8 @@
 # Ignore the idp.data repository if it is here.
 idp.data
 
+exploration.ipynb
+
 .ruff_cache
 
 # Byte-compiled / optimized / DLL files
