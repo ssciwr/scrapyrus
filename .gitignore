@@ -1,6 +1,10 @@
 # Ignore the idp.data repository if it is here.
 idp.data
 
+# Ignore default output directories that we have used for some scrapers
+images
+transcriptions
+
 exploration.ipynb
 
 .ruff_cache
