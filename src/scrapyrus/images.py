@@ -358,12 +358,18 @@ def scrape_images(
     Unknown image sources are written to *todo_filename*, one per line in
     ``HGV_ID: URL`` form. Sources whose download fails are written in the same
     form to *error_filename*. Existing HGV directories are left untouched.
+    A summary of scraped, skipped, and failed image references is printed after
+    processing.
     """
 
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
     todo_path = Path(todo_filename)
     error_path = Path(error_filename)
+    scraped_count = 0
+    existing_count = 0
+    no_scraper_count = 0
+    error_count = 0
 
     with (
         todo_path.open("w", encoding="utf-8") as todo_file,
@@ -377,6 +383,7 @@ def scrape_images(
             )
             papyrus_target = target / hgv_id
             if graphics and papyrus_target.exists():
+                existing_count += len(graphics)
                 continue
 
             for graphic in graphics:
@@ -391,7 +398,18 @@ def scrape_images(
                         try:
                             scraper.download(papyrus_target)
                         except Exception:
+                            error_count += 1
                             error_file.write(f"{hgv_id}: {url}\n")
+                        else:
+                            scraped_count += 1
                         break
                 else:
+                    no_scraper_count += 1
                     todo_file.write(f"{hgv_id}: {url}\n")
+
+    print(
+        f"Images scraped: {scraped_count}; "
+        f"skipped because they exist: {existing_count}; "
+        f"skipped because no scraper was available: {no_scraper_count}; "
+        f"errors: {error_count}"
+    )

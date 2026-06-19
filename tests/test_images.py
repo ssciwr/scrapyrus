@@ -481,3 +481,40 @@ def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypa
 
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == f"42: {url}\n"
+
+
+def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
+    metadata_paths = []
+    for hgv_id, urls in (
+        ("existing", ["https://images.example/recto", "https://images.example/verso"]),
+        ("scraped", ["https://images.example/success"]),
+        ("unsupported", ["https://unsupported.example/image"]),
+        ("failed", ["https://images.example/failure"]),
+    ):
+        metadata = tmp_path / f"{hgv_id}.xml"
+        write_metadata(metadata, urls)
+        metadata_paths.append((hgv_id, metadata, None, None))
+
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter(metadata_paths),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    class Scraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return url.startswith("https://images.example/")
+
+        def download(self, target: Path) -> None:
+            if self.url.endswith("/failure"):
+                raise RuntimeError("download failed")
+
+    output = tmp_path / "images"
+    (output / "existing").mkdir(parents=True)
+
+    scrape_images(output, tmp_path / "todo.txt", tmp_path / "error.txt")
+
+    assert capsys.readouterr().out == (
+        "Images scraped: 1; skipped because they exist: 2; "
+        "skipped because no scraper was available: 1; errors: 1\n"
+    )
