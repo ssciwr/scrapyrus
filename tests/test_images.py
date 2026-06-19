@@ -118,6 +118,56 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
     assert error.read_text(encoding="utf-8") == ""
 
 
+def test_scrape_images_classifies_before_downloading_with_the_same_instances(
+    tmp_path, monkeypatch
+):
+    metadata = tmp_path / "42.xml"
+    urls = ["https://images.example/recto", "https://images.example/verso"]
+    write_metadata(metadata, urls)
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    events = []
+    progress = {}
+
+    def fake_tqdm(iterable, *, total, unit, desc):
+        progress.update(total=total, unit=unit, desc=desc)
+        return iterable
+
+    monkeypatch.setattr("scrapyrus.images.tqdm", fake_tqdm)
+
+    class StatefulScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            self.responsible_url = url
+            events.append(("responsible", url))
+            return True
+
+        def download(self, target: Path) -> None:
+            assert self.responsible_url == self.url
+            events.append(("download", self.url))
+
+    scrape_images(
+        tmp_path / "images",
+        tmp_path / "todo.txt",
+        tmp_path / "error.txt",
+    )
+
+    assert events == [
+        ("responsible", urls[0]),
+        ("responsible", urls[1]),
+        ("download", urls[0]),
+        ("download", urls[1]),
+    ]
+    assert progress == {
+        "total": 2,
+        "unit": "image",
+        "desc": "Downloading images",
+    }
+
+
 def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
     metadata = tmp_path / "42.xml"
     write_metadata(metadata, ["https://images.example/recto"])

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 from xml.etree import ElementTree
+
+from tqdm import tqdm
 
 from scrapyrus.hgv import iterate_hgv_triples
 
@@ -51,6 +54,14 @@ class ImageScraperBase:
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class _ImageDownload:
+    hgv_id: str
+    url: str
+    target: Path
+    scraper: ImageScraperBase
+
+
 def scrape_images(
     target: Path,
     todo_filename: str | Path,
@@ -76,6 +87,7 @@ def scrape_images(
     existing_count = 0
     no_scraper_count = 0
     error_count = 0
+    downloads: list[_ImageDownload] = []
 
     with (
         todo_path.open("w", encoding="utf-8") as todo_file,
@@ -100,22 +112,32 @@ def scrape_images(
                 for scraper_type in ImageScraperBase.registered_scrapers():
                     scraper = scraper_type(url)
                     if scraper.responsible(url):
-                        papyrus_target.mkdir(parents=True, exist_ok=True)
-                        try:
-                            scraper.download(papyrus_target)
-                        except Exception:
-                            try:
-                                papyrus_target.rmdir()
-                            except OSError:
-                                pass
-                            error_count += 1
-                            error_file.write(f"{hgv_id}: {url}\n")
-                        else:
-                            scraped_count += 1
+                        downloads.append(
+                            _ImageDownload(hgv_id, url, papyrus_target, scraper)
+                        )
                         break
                 else:
                     no_scraper_count += 1
                     todo_file.write(f"{hgv_id}: {url}\n")
+
+        for download in tqdm(
+            downloads,
+            total=len(downloads),
+            unit="image",
+            desc="Downloading images",
+        ):
+            download.target.mkdir(parents=True, exist_ok=True)
+            try:
+                download.scraper.download(download.target)
+            except Exception:
+                try:
+                    download.target.rmdir()
+                except OSError:
+                    pass
+                error_count += 1
+                error_file.write(f"{download.hgv_id}: {download.url}\n")
+            else:
+                scraped_count += 1
 
     print(
         f"Images scraped: {scraped_count}; "
