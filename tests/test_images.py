@@ -226,6 +226,40 @@ def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypa
     assert error.read_text(encoding="utf-8") == f"42: {url}\n"
 
 
+def test_scrape_images_skips_and_preserves_existing_error_entries(
+    tmp_path, monkeypatch
+):
+    metadata = tmp_path / "42.xml"
+    skipped_url = "https://images.example/skipped"
+    failing_url = "https://images.example/failing"
+    write_metadata(metadata, [skipped_url, failing_url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    attempted_urls = []
+
+    class FailingScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            attempted_urls.append(url)
+            return True
+
+        def download(self, target: Path) -> None:
+            raise RuntimeError("download failed")
+
+    error = tmp_path / "error.txt"
+    error.write_text(f"42: {skipped_url}", encoding="utf-8")
+
+    scrape_images(tmp_path / "images", tmp_path / "todo.txt", error)
+
+    assert attempted_urls == [failing_url]
+    assert error.read_text(encoding="utf-8") == (
+        f"42: {skipped_url}\n42: {failing_url}\n"
+    )
+
+
 def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
     metadata_paths = []
     for hgv_id, urls in (

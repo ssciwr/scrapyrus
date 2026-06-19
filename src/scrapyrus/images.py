@@ -74,15 +74,24 @@ def scrape_images(
     Each HGV record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
     ``HGV_ID: URL`` form. Sources whose download fails are written in the same
-    form to *error_filename*. Existing HGV directories are left untouched.
-    A summary of scraped, skipped, and failed image references is printed after
-    processing.
+    form to *error_filename*. Sources already listed there are not retried.
+    Existing HGV directories are left untouched. A summary of scraped,
+    skipped, and failed image references is printed after processing.
     """
 
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
     todo_path = Path(todo_filename)
     error_path = Path(error_filename)
+    existing_error_text = (
+        error_path.read_text(encoding="utf-8") if error_path.exists() else ""
+    )
+    existing_errors = set(existing_error_text.splitlines())
+    error_separator = (
+        "\n"
+        if existing_error_text and not existing_error_text.endswith(("\n", "\r"))
+        else ""
+    )
     scraped_count = 0
     existing_count = 0
     no_scraper_count = 0
@@ -91,7 +100,7 @@ def scrape_images(
 
     with (
         todo_path.open("w", encoding="utf-8") as todo_file,
-        error_path.open("w", encoding="utf-8") as error_file,
+        error_path.open("a", encoding="utf-8") as error_file,
     ):
         for hgv_id, metadata, _, _ in iterate_hgv_triples(idp_data):
             root = ElementTree.parse(metadata).getroot()
@@ -107,6 +116,9 @@ def scrape_images(
             for graphic in graphics:
                 url = graphic.get("url")
                 if not url:
+                    continue
+                error_entry = f"{hgv_id}: {url}"
+                if error_entry in existing_errors:
                     continue
 
                 for scraper_type in ImageScraperBase.registered_scrapers():
@@ -135,7 +147,10 @@ def scrape_images(
                 except OSError:
                     pass
                 error_count += 1
-                error_file.write(f"{download.hgv_id}: {download.url}\n")
+                error_file.write(
+                    f"{error_separator}{download.hgv_id}: {download.url}\n"
+                )
+                error_separator = ""
             else:
                 scraped_count += 1
 
