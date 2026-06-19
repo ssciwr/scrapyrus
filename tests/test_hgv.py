@@ -1,6 +1,48 @@
 from types import GeneratorType
+from xml.etree import ElementTree
 
-from scrapyrus.hgv import iterate_hgv_triples
+from scrapyrus.hgv import iterate_hgv_triples, transcription_xml_snippet
+
+
+def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
+    transcription = tmp_path / "transcription.xml"
+    transcription.write_text(
+        """<TEI xmlns="http://www.tei-c.org/ns/1.0">
+        <text><body>
+            <div type="commentary"><p>Commentary</p></div>
+            <div xml:lang="grc" type="edition"><ab>Text</ab></div>
+        </body></text>
+        </TEI>"""
+    )
+
+    snippet = transcription_xml_snippet(transcription)
+
+    assert isinstance(snippet, str)
+    edition = ElementTree.fromstring(snippet)
+    assert edition.tag == "div"
+    assert edition.get("type") == "edition"
+    assert edition.find("ab").text == "Text"
+
+
+def test_transcription_xml_snippet_can_retain_namespaces(tmp_path):
+    transcription = tmp_path / "transcription.xml"
+    transcription.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        '<div type="edition"><ab>Text</ab></div></TEI>'
+    )
+
+    snippet = transcription_xml_snippet(transcription, remove_namespaces=False)
+
+    edition = ElementTree.fromstring(snippet)
+    assert edition.tag == "{http://www.tei-c.org/ns/1.0}div"
+    assert edition.find("{http://www.tei-c.org/ns/1.0}ab").text == "Text"
+
+
+def test_transcription_xml_snippet_returns_none_without_edition(tmp_path):
+    transcription = tmp_path / "transcription.xml"
+    transcription.write_text('<TEI><div type="commentary" /></TEI>')
+
+    assert transcription_xml_snippet(transcription) is None
 
 
 def test_iterate_hgv_triples_returns_generator(idp_data):

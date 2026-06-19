@@ -5,6 +5,30 @@ from xml.etree import ElementTree
 from tqdm import tqdm
 
 
+def transcription_xml_snippet(
+    transcription: Path,
+    *,
+    remove_namespaces: bool = True,
+) -> str | None:
+    """Return the edition division from a transcription XML file.
+
+    The first ``div`` element with a ``type`` attribute of ``edition`` is
+    returned as a serialized XML string. If the file has no such element,
+    return ``None``. By default, namespace qualifiers are removed from TEI
+    element tags in the returned snippet.
+    """
+
+    for element in ElementTree.parse(transcription).iter():
+        local_name = element.tag.rpartition("}")[2]
+        if local_name == "div" and element.get("type") == "edition":
+            element.tail = None
+            if remove_namespaces:
+                for descendant in element.iter():
+                    descendant.tag = descendant.tag.rpartition("}")[2]
+            return ElementTree.tostring(element, encoding="unicode")
+    return None
+
+
 def _ddb_filename(metadata: Path) -> str | None:
     """Return the DDbDP filename referenced by an HGV metadata file."""
 
