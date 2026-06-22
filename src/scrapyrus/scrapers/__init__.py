@@ -6,6 +6,7 @@ from scrapyrus.scrapers.berlpap import BerlPapScraper
 from scrapyrus.scrapers.papyrus_portal import PapyrusPortalScraper
 from scrapyrus.scrapers.uni_koeln import UniKoelnScraper
 from scrapyrus.scrapers.umichigan import UMichiganScraper
+from scrapyrus.scrapers.uc_berkeley import UCBerkeleyScraper
 
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "PapyrusPortalScraper",
     "UniKoelnScraper",
     "UMichiganScraper",
+    "UCBerkeleyScraper",
 ]
