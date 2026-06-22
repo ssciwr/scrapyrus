@@ -3,6 +3,7 @@ from scrapyrus.scrapers.louvre import LouvreScraper
 from scrapyrus.scrapers.onb import ONBScraper
 from scrapyrus.scrapers.berlpap import BerlPapScraper
 from scrapyrus.scrapers.papyrus_portal import PapyrusPortalScraper
+from scrapyrus.scrapers.uni_koeln import UniKoelnScraper
 
 
 __all__ = [
@@ -11,4 +12,5 @@ __all__ = [
     "LouvreScraper",
     "ONBScraper",
     "PapyrusPortalScraper",
+    "UniKoelnScraper",
 ]
