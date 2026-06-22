@@ -1,4 +1,5 @@
 from scrapyrus.scrapers.iiif import IIIFImageScraper
+from scrapyrus.scrapers.louvre import LouvreScraper
 from scrapyrus.scrapers.onb import ONBScraper
 from scrapyrus.scrapers.berlpap import BerlPapScraper
 from scrapyrus.scrapers.papyrus_portal import PapyrusPortalScraper
@@ -7,6 +8,7 @@ from scrapyrus.scrapers.papyrus_portal import PapyrusPortalScraper
 __all__ = [
     "BerlPapScraper",
     "IIIFImageScraper",
+    "LouvreScraper",
     "ONBScraper",
     "PapyrusPortalScraper",
 ]
