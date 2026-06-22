@@ -84,8 +84,8 @@ def test_iterate_hgv_triples_finds_associated_files(idp_data):
 def test_iterate_hgv_triples_shows_progressbar_by_default(idp_data, monkeypatch):
     progress = {}
 
-    def fake_tqdm(iterable, *, total, unit):
-        progress.update(iterable=iterable, total=total, unit=unit)
+    def fake_tqdm(iterable, *, total, unit, desc):
+        progress.update(iterable=iterable, total=total, unit=unit, desc=desc)
         return iterable
 
     monkeypatch.setattr("scrapyrus.hgv.tqdm", fake_tqdm)
@@ -94,3 +94,21 @@ def test_iterate_hgv_triples_shows_progressbar_by_default(idp_data, monkeypatch)
 
     assert progress["total"] == len(progress["iterable"])
     assert progress["unit"] == "record"
+    assert progress["desc"] == "Iterating HGV"
+
+
+def test_iterate_hgv_triples_accepts_custom_progressbar_title(
+    idp_data,
+    monkeypatch,
+):
+    progress = {}
+
+    def fake_tqdm(iterable, *, total, unit, desc):
+        progress["desc"] = desc
+        return iterable
+
+    monkeypatch.setattr("scrapyrus.hgv.tqdm", fake_tqdm)
+
+    next(iterate_hgv_triples(idp_data, progressbar_title="Finding records"))
+
+    assert progress["desc"] == "Finding records"

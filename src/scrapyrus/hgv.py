@@ -44,13 +44,15 @@ def iterate_hgv_triples(
     idp_data: str | Path,
     *,
     progressbar: bool = True,
+    progressbar_title: str = "Iterating HGV",
 ) -> Iterator[tuple[str, Path, Path | None, Path | None]]:
     """Yield the files associated with every HGV metadata record.
 
     Each result contains the HGV ID followed by its metadata, transcription,
     and translation paths. Records without a transcription or translation
     contain ``None`` in the corresponding position. Set ``progressbar`` to
-    ``False`` to disable progress reporting.
+    ``False`` to disable progress reporting. Use ``progressbar_title`` to
+    customize the progress bar description.
     """
 
     idp_data = Path(idp_data)
@@ -67,7 +69,12 @@ def iterate_hgv_triples(
 
     metadata_files = sorted(metadata_root.glob("HGV*/*.xml"))
     metadata_iterator = (
-        tqdm(metadata_files, total=len(metadata_files), unit="record")
+        tqdm(
+            metadata_files,
+            total=len(metadata_files),
+            unit="record",
+            desc=progressbar_title,
+        )
         if progressbar
         else metadata_files
     )
