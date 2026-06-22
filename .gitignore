@@ -1,3 +1,5 @@
+images_*.txt
+
 # Ignore the idp.data repository if it is here.
 idp.data
 
