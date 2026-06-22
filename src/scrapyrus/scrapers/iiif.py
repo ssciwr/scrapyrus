@@ -29,8 +29,8 @@ class IIIFImageScraper(ImageScraperBase, register=False):
         }
     )
 
-    def manifest_urls(self, session: requests.Session) -> list[str]:
-        """Return IIIF Presentation manifest URLs for this scraper's source."""
+    def manifest_urls(self, url: str, session: requests.Session) -> list[str]:
+        """Return IIIF Presentation manifest URLs for *url*."""
 
         raise NotImplementedError
 
@@ -167,10 +167,10 @@ class IIIFImageScraper(ImageScraperBase, register=False):
         except (AttributeError, requests.exceptions.JSONDecodeError):
             return json.loads(response.text)
 
-    def download(self, target: Path) -> None:
+    def download(self, url: str, target: Path) -> None:
         with requests.Session() as session:
             image_urls = []
-            for manifest_url in self.manifest_urls(session):
+            for manifest_url in self.manifest_urls(url, session):
                 manifest_response = session.get(
                     manifest_url,
                     timeout=self.REQUEST_TIMEOUT,

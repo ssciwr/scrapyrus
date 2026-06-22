@@ -4,9 +4,7 @@ from scrapyrus.scrapers.papyrus_portal import PapyrusPortalScraper
 
 
 def test_papyrus_portal_scraper_responsibility():
-    scraper = PapyrusPortalScraper(
-        "https://papyri.uni-leipzig.de/receive/GiePapyri_schrift_00001050"
-    )
+    scraper = PapyrusPortalScraper()
 
     assert scraper.responsible(
         "https://papyri.uni-leipzig.de/receive/GiePapyri_schrift_00001050"
@@ -138,7 +136,7 @@ def test_papyrus_portal_scraper_downloads_mets_master_images(tmp_path, monkeypat
         "scrapyrus.scrapers.papyrus_portal.requests.Session", lambda: session
     )
 
-    PapyrusPortalScraper(viewer_url).download(tmp_path)
+    PapyrusPortalScraper().download(viewer_url, tmp_path)
 
     assert (tmp_path / "second.jpg").read_bytes() == b"second image"
     assert (tmp_path / "first image.jpg").read_bytes() == b"first image"
@@ -213,7 +211,7 @@ def test_papyrus_portal_scraper_follows_record_links_and_uses_start_file_fallbac
         "scrapyrus.scrapers.papyrus_portal.requests.Session", lambda: session
     )
 
-    PapyrusPortalScraper(legacy_url).download(tmp_path)
+    PapyrusPortalScraper().download(legacy_url, tmp_path)
 
     assert (tmp_path / "recto.jpg").read_bytes() == b"recto"
     assert (tmp_path / "verso.jpg").read_bytes() == b"verso"

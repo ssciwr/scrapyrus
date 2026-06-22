@@ -50,8 +50,8 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
             checked_urls.append(url)
             return url.startswith("https://known.example/")
 
-        def download(self, target: Path) -> None:
-            (target / "image").write_text(self.url, encoding="utf-8")
+        def download(self, url: str, target: Path) -> None:
+            (target / "image").write_text(url, encoding="utf-8")
 
     output = tmp_path / "images"
     monkeypatch.chdir(tmp_path)
@@ -93,10 +93,10 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
         def responsible(self, url: str) -> bool:
             return True
 
-        def download(self, target: Path) -> None:
-            downloaded.append((self.url, target))
-            filename = self.url.rpartition("/")[2]
-            (target / filename).write_text(self.url, encoding="utf-8")
+        def download(self, url: str, target: Path) -> None:
+            downloaded.append((url, target))
+            filename = url.rpartition("/")[2]
+            (target / filename).write_text(url, encoding="utf-8")
 
     output = tmp_path / "images"
     todo = tmp_path / "todo.txt"
@@ -118,7 +118,7 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
     assert error.read_text(encoding="utf-8") == ""
 
 
-def test_scrape_images_classifies_before_downloading_with_the_same_instances(
+def test_scrape_images_reuses_each_scraper_instance_for_the_full_run(
     tmp_path, monkeypatch
 ):
     metadata = tmp_path / "42.xml"
@@ -131,6 +131,7 @@ def test_scrape_images_classifies_before_downloading_with_the_same_instances(
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
     events = []
+    instances = []
     progress = {}
 
     def fake_tqdm(iterable, *, total, unit, desc):
@@ -140,14 +141,20 @@ def test_scrape_images_classifies_before_downloading_with_the_same_instances(
     monkeypatch.setattr("scrapyrus.images.tqdm", fake_tqdm)
 
     class StatefulScraper(ImageScraperBase):
+        def __init__(self):
+            self.responsible_urls = []
+            self.downloaded_urls = []
+            instances.append(self)
+
         def responsible(self, url: str) -> bool:
-            self.responsible_url = url
+            self.responsible_urls.append(url)
             events.append(("responsible", url))
             return True
 
-        def download(self, target: Path) -> None:
-            assert self.responsible_url == self.url
-            events.append(("download", self.url))
+        def download(self, url: str, target: Path) -> None:
+            assert self.responsible_urls == urls
+            self.downloaded_urls.append(url)
+            events.append(("download", url))
 
     scrape_images(
         tmp_path / "images",
@@ -161,6 +168,8 @@ def test_scrape_images_classifies_before_downloading_with_the_same_instances(
         ("download", urls[0]),
         ("download", urls[1]),
     ]
+    assert len(instances) == 1
+    assert instances[0].downloaded_urls == urls
     assert progress == {
         "total": 2,
         "unit": "image",
@@ -183,7 +192,7 @@ def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
         def responsible(self, url: str) -> bool:
             return True
 
-        def download(self, target: Path) -> None:
+        def download(self, url: str, target: Path) -> None:
             downloads.append(target)
 
     output = tmp_path / "images"
@@ -194,6 +203,91 @@ def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
     scrape_images(output, todo, error)
 
     assert downloads == []
+    assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == ""
+
+
+def test_scrape_images_skips_unavailable_responsible_scraper(tmp_path, monkeypatch):
+    metadata = tmp_path / "42.xml"
+    url = "https://images.example/recto"
+    write_metadata(metadata, [url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    events = []
+
+    class UnavailableScraper(ImageScraperBase):
+        def responsible(self, candidate_url: str) -> bool:
+            events.append(("responsible", candidate_url))
+            return True
+
+        def available(self) -> bool:
+            events.append(("available", None))
+            return False
+
+        def download(self, url: str, target: Path) -> None:
+            raise AssertionError("unavailable scraper must not download")
+
+    class FallbackScraper(ImageScraperBase):
+        def responsible(self, candidate_url: str) -> bool:
+            raise AssertionError("responsibility must not fall through")
+
+    output = tmp_path / "images"
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+
+    scrape_images(output, todo, error)
+
+    assert events == [("responsible", url), ("available", None)]
+    assert not (output / "42").exists()
+    assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == ""
+
+
+def test_scrape_images_rechecks_stateful_scraper_availability_before_each_download(
+    tmp_path, monkeypatch
+):
+    metadata = tmp_path / "42.xml"
+    urls = ["https://images.example/recto", "https://images.example/verso"]
+    write_metadata(metadata, urls)
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    events = []
+
+    class RateLimitedScraper(ImageScraperBase):
+        def __init__(self):
+            self.is_available = True
+
+        def responsible(self, url: str) -> bool:
+            events.append(("responsible", url))
+            return True
+
+        def available(self) -> bool:
+            events.append(("available", self.is_available))
+            return self.is_available
+
+        def download(self, url: str, target: Path) -> None:
+            events.append(("download", url))
+            self.is_available = False
+
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+    scrape_images(tmp_path / "images", todo, error)
+
+    assert events == [
+        ("responsible", urls[0]),
+        ("responsible", urls[1]),
+        ("available", True),
+        ("download", urls[0]),
+        ("available", False),
+    ]
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
 
@@ -212,7 +306,7 @@ def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypa
         def responsible(self, url: str) -> bool:
             return True
 
-        def download(self, target: Path) -> None:
+        def download(self, url: str, target: Path) -> None:
             raise RuntimeError("download failed")
 
     output = tmp_path / "images"
@@ -246,7 +340,7 @@ def test_scrape_images_skips_and_preserves_existing_error_entries(
             attempted_urls.append(url)
             return True
 
-        def download(self, target: Path) -> None:
+        def download(self, url: str, target: Path) -> None:
             raise RuntimeError("download failed")
 
     error = tmp_path / "error.txt"
@@ -266,6 +360,7 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
         ("existing", ["https://images.example/recto", "https://images.example/verso"]),
         ("scraped", ["https://images.example/success"]),
         ("unsupported", ["https://unsupported.example/image"]),
+        ("unavailable", ["https://unavailable.example/image"]),
         ("failed", ["https://images.example/failure"]),
     ):
         metadata = tmp_path / f"{hgv_id}.xml"
@@ -278,12 +373,19 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
+    class UnavailableScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return url.startswith("https://unavailable.example/")
+
+        def available(self) -> bool:
+            return False
+
     class Scraper(ImageScraperBase):
         def responsible(self, url: str) -> bool:
             return url.startswith("https://images.example/")
 
-        def download(self, target: Path) -> None:
-            if self.url.endswith("/failure"):
+        def download(self, url: str, target: Path) -> None:
+            if url.endswith("/failure"):
                 raise RuntimeError("download failed")
 
     output = tmp_path / "images"
@@ -293,5 +395,7 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
 
     assert capsys.readouterr().out == (
         "Images scraped: 1; skipped because they exist: 2; "
-        "skipped because no scraper was available: 1; errors: 1\n"
+        "skipped because no scraper was responsible: 1; "
+        "skipped because the responsible scraper was unavailable: 1; "
+        "errors: 1\n"
     )

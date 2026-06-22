@@ -25,9 +25,7 @@ class FakeIIIFSession:
 
 
 def test_onb_scraper_responsibility():
-    scraper = OesterreichischeNationalbibliothekScraper(
-        "http://data.onb.ac.at/rec/RZ00071734"
-    )
+    scraper = OesterreichischeNationalbibliothekScraper()
 
     assert scraper.responsible("http://data.onb.ac.at/rec/RZ00071734")
     assert scraper.responsible("https://data.onb.ac.at/rep/131A98B7")
@@ -69,8 +67,8 @@ def test_onb_scraper_follows_equivalent_page_links_with_beautiful_soup():
     }
     session = FakeIIIFSession(responses)
 
-    assert OesterreichischeNationalbibliothekScraper(record_url).manifest_urls(
-        session
+    assert OesterreichischeNationalbibliothekScraper().manifest_urls(
+        record_url, session
     ) == [manifest_url]
     assert session.requests == [
         (record_url, {"timeout": 30}),
@@ -119,8 +117,8 @@ def test_onb_scraper_uses_primo_api_when_record_html_is_javascript_shell():
     }
     session = FakeIIIFSession(responses)
 
-    assert OesterreichischeNationalbibliothekScraper(record_url).manifest_urls(
-        session
+    assert OesterreichischeNationalbibliothekScraper().manifest_urls(
+        record_url, session
     ) == [manifest_url]
     assert session.requests == [
         (record_url, {"timeout": 30}),

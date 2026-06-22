@@ -17,7 +17,7 @@ class BerlPapScraper(ImageScraperBase):
         parsed_url = urlparse(url)
         return parsed_url.scheme in {"http", "https"} and parsed_url.netloc == self.HOST
 
-    def _image_urls(self, html: str) -> list[str]:
+    def _image_urls(self, html: str, page_url: str) -> list[str]:
         soup = BeautifulSoup(html, "html.parser")
         heading = soup.find(
             "b",
@@ -33,7 +33,7 @@ class BerlPapScraper(ImageScraperBase):
         image_urls = []
         seen_urls = set()
         for link in table.find_all("a", href=True):
-            image_url = urljoin(self.url, link["href"])
+            image_url = urljoin(page_url, link["href"])
             parsed_url = urlparse(image_url)
             if not (
                 parsed_url.scheme == "https"
@@ -46,11 +46,11 @@ class BerlPapScraper(ImageScraperBase):
                 image_urls.append(image_url)
         return image_urls
 
-    def download(self, target: Path) -> None:
-        page_response = requests.get(self.url, timeout=self.REQUEST_TIMEOUT)
+    def download(self, url: str, target: Path) -> None:
+        page_response = requests.get(url, timeout=self.REQUEST_TIMEOUT)
         page_response.raise_for_status()
 
-        for image_url in self._image_urls(page_response.text):
+        for image_url in self._image_urls(page_response.text, url):
             filename = Path(unquote(urlparse(image_url).path)).name
             if not filename:
                 continue

@@ -229,11 +229,11 @@ class PapyrusPortalScraper(ImageScraperBase):
             image_url = urljoin(derivate_url.rstrip("/") + "/", image_path.lstrip("/"))
             self._download_image(session, image_url, target)
 
-    def download(self, target: Path) -> None:
+    def download(self, url: str, target: Path) -> None:
         with requests.Session() as session:
-            page_response = session.get(self.url, timeout=self.REQUEST_TIMEOUT)
+            page_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
             page_response.raise_for_status()
-            final_url = self._response_url(page_response, self.url)
+            final_url = self._response_url(page_response, url)
 
             if self._is_viewer_url(final_url):
                 self._download_viewer(

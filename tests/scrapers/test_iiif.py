@@ -98,10 +98,11 @@ def test_iiif_image_scraper_downloads_presentation_3_canvas_images(
         def responsible(self, url: str) -> bool:
             return True
 
-        def manifest_urls(self, session):
+        def manifest_urls(self, url, session):
+            assert url == source_url
             return [manifest_url]
 
-    ExampleIIIFScraper(source_url).download(tmp_path)
+    ExampleIIIFScraper().download(source_url, tmp_path)
 
     assert (tmp_path / "0001.jpg").read_bytes() == b"first image"
     assert (tmp_path / "0002.png").read_bytes() == b"second image"

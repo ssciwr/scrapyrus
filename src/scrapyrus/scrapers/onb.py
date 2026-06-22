@@ -201,14 +201,14 @@ class OesterreichischeNationalbibliothekScraper(IIIFImageScraper):
             return cls._primo_full_digitization_url(session, page_url)
         raise ValueError("ONB record has no 'Volldigitalisat' link")
 
-    def manifest_urls(self, session: requests.Session) -> list[str]:
-        direct_manifest_url = self._manifest_url_from_direct_url(self.url)
+    def manifest_urls(self, url: str, session: requests.Session) -> list[str]:
+        direct_manifest_url = self._manifest_url_from_direct_url(url)
         if direct_manifest_url is not None:
             return [direct_manifest_url]
 
-        page_response = session.get(self.url, timeout=self.REQUEST_TIMEOUT)
+        page_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
         page_response.raise_for_status()
-        page_url = self._response_url(page_response, self.url)
+        page_url = self._response_url(page_response, url)
 
         direct_manifest_url = self._manifest_url_from_direct_url(page_url)
         if direct_manifest_url is not None:
@@ -223,7 +223,7 @@ class OesterreichischeNationalbibliothekScraper(IIIFImageScraper):
             full_digitization_url = self._full_digitization_url(
                 session,
                 page_response,
-                self.url,
+                url,
             )
             direct_manifest_url = self._manifest_url_from_direct_url(
                 full_digitization_url

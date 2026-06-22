@@ -2,7 +2,7 @@ from scrapyrus.scrapers.berlpap import BerlPapScraper
 
 
 def test_berlpap_scraper_responsibility():
-    scraper = BerlPapScraper("https://berlpap.smb.museum/00312/")
+    scraper = BerlPapScraper()
 
     assert scraper.responsible("https://berlpap.smb.museum/00312/")
     assert scraper.responsible("http://berlpap.smb.museum/00312/")
@@ -56,7 +56,7 @@ def test_berlpap_scraper_downloads_deduplicated_original_images(tmp_path, monkey
 
     monkeypatch.setattr("scrapyrus.scrapers.berlpap.requests.get", fake_get)
 
-    BerlPapScraper(page_url).download(tmp_path)
+    BerlPapScraper().download(page_url, tmp_path)
 
     assert (tmp_path / "P_25014_R_4_001.jpg").read_bytes() == b"recto image"
     assert (tmp_path / "P_25014_V_4_001.jpg").read_bytes() == b"verso image"
@@ -79,6 +79,6 @@ def test_berlpap_scraper_handles_page_without_digitalisate(tmp_path, monkeypatch
         lambda url, **kwargs: FakeResponse(),
     )
 
-    BerlPapScraper("https://berlpap.smb.museum/00313/").download(tmp_path)
+    BerlPapScraper().download("https://berlpap.smb.museum/00313/", tmp_path)
 
     assert list(tmp_path.iterdir()) == []

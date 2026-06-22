@@ -17,9 +17,9 @@ GRAPHIC_PATH = "./tei:text/tei:body/tei:div/tei:p/tei:figure/tei:graphic"
 class ImageScraperBase:
     """Base class for image scrapers selected by source URL.
 
-    Subclasses are registered in definition order. A scraper instance retains
-    the URL it was created for so its :meth:`download` implementation only
-    needs the requested target path.
+    Subclasses are registered in definition order. :func:`scrape_images`
+    creates one instance of each registered subclass for the duration of a
+    run, allowing scraper implementations to retain state between downloads.
     """
 
     _scrapers: ClassVar[list[type[ImageScraperBase]]] = []
@@ -34,9 +34,6 @@ class ImageScraperBase:
         if register:
             ImageScraperBase._scrapers.append(cls)
 
-    def __init__(self, url: str) -> None:
-        self.url = url
-
     @classmethod
     def registered_scrapers(cls) -> tuple[type[ImageScraperBase], ...]:
         """Return registered scraper classes in responsibility-chain order."""
@@ -48,8 +45,13 @@ class ImageScraperBase:
 
         raise NotImplementedError
 
-    def download(self, target: Path) -> None:
-        """Download the image for this scraper's URL into *target*."""
+    def available(self) -> bool:
+        """Return whether this scraper is currently able to download images."""
+
+        return True
+
+    def download(self, url: str, target: Path) -> None:
+        """Download images referenced by *url* into *target*."""
 
         raise NotImplementedError
 
@@ -75,8 +77,9 @@ def scrape_images(
     Unknown image sources are written to *todo_filename*, one per line in
     ``HGV_ID: URL`` form. Sources whose download fails are written in the same
     form to *error_filename*. Sources already listed there are not retried.
-    Existing HGV directories are left untouched. A summary of scraped,
-    skipped, and failed image references is printed after processing.
+    Temporarily unavailable sources are skipped without being written to
+    either file. Existing HGV directories are left untouched. A summary of
+    scraped, skipped, and failed image references is printed after processing.
     """
 
     target = Path(target)
@@ -94,9 +97,13 @@ def scrape_images(
     )
     scraped_count = 0
     existing_count = 0
-    no_scraper_count = 0
+    no_responsible_scraper_count = 0
+    unavailable_scraper_count = 0
     error_count = 0
     downloads: list[_ImageDownload] = []
+    scrapers = tuple(
+        scraper_type() for scraper_type in ImageScraperBase.registered_scrapers()
+    )
 
     with (
         todo_path.open("w", encoding="utf-8") as todo_file,
@@ -121,15 +128,14 @@ def scrape_images(
                 if error_entry in existing_errors:
                     continue
 
-                for scraper_type in ImageScraperBase.registered_scrapers():
-                    scraper = scraper_type(url)
+                for scraper in scrapers:
                     if scraper.responsible(url):
                         downloads.append(
                             _ImageDownload(hgv_id, url, papyrus_target, scraper)
                         )
                         break
                 else:
-                    no_scraper_count += 1
+                    no_responsible_scraper_count += 1
                     todo_file.write(f"{hgv_id}: {url}\n")
 
         for download in tqdm(
@@ -138,9 +144,12 @@ def scrape_images(
             unit="image",
             desc="Downloading images",
         ):
+            if not download.scraper.available():
+                unavailable_scraper_count += 1
+                continue
             download.target.mkdir(parents=True, exist_ok=True)
             try:
-                download.scraper.download(download.target)
+                download.scraper.download(download.url, download.target)
             except Exception:
                 try:
                     download.target.rmdir()
@@ -157,7 +166,10 @@ def scrape_images(
     print(
         f"Images scraped: {scraped_count}; "
         f"skipped because they exist: {existing_count}; "
-        f"skipped because no scraper was available: {no_scraper_count}; "
+        "skipped because no scraper was responsible: "
+        f"{no_responsible_scraper_count}; "
+        "skipped because the responsible scraper was unavailable: "
+        f"{unavailable_scraper_count}; "
         f"errors: {error_count}"
     )
 
