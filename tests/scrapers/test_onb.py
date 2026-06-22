@@ -2,7 +2,7 @@ import pytest
 import requests
 
 from scrapyrus.scrapers.iiif import IIIFImageScraper
-from scrapyrus.scrapers.onb import OesterreichischeNationalbibliothekScraper
+from scrapyrus.scrapers.onb import ONBScraper
 
 
 class FakeIIIFResponse:
@@ -29,7 +29,7 @@ class FakeIIIFSession:
 
 
 def test_onb_scraper_responsibility():
-    scraper = OesterreichischeNationalbibliothekScraper()
+    scraper = ONBScraper()
 
     assert scraper.responsible("http://data.onb.ac.at/rec/RZ00071734")
     assert scraper.responsible("https://data.onb.ac.at/rep/131A98B7")
@@ -62,7 +62,7 @@ def test_onb_scraper_becomes_unavailable_after_rate_limit(
         raise requests.HTTPError(response=response)
 
     monkeypatch.setattr(IIIFImageScraper, "download", fail_download)
-    scraper = OesterreichischeNationalbibliothekScraper()
+    scraper = ONBScraper()
 
     with pytest.raises(requests.HTTPError):
         scraper.download("https://viewer.onb.ac.at/131A98B7", tmp_path)
@@ -96,9 +96,7 @@ def test_onb_scraper_follows_equivalent_page_links_with_beautiful_soup():
     }
     session = FakeIIIFSession(responses)
 
-    assert OesterreichischeNationalbibliothekScraper().manifest_urls(
-        record_url, session
-    ) == [manifest_url]
+    assert ONBScraper().manifest_urls(record_url, session) == [manifest_url]
     assert session.requests == [
         (record_url, {"timeout": 30}),
         (representation_url, {"timeout": 30}),
@@ -146,9 +144,7 @@ def test_onb_scraper_uses_primo_api_when_record_html_is_javascript_shell():
     }
     session = FakeIIIFSession(responses)
 
-    assert OesterreichischeNationalbibliothekScraper().manifest_urls(
-        record_url, session
-    ) == [manifest_url]
+    assert ONBScraper().manifest_urls(record_url, session) == [manifest_url]
     assert session.requests == [
         (record_url, {"timeout": 30}),
         (

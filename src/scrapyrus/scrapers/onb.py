@@ -8,7 +8,7 @@ from scrapyrus.images import RateLimitedMixin
 from scrapyrus.scrapers.iiif import IIIFImageScraper
 
 
-class OesterreichischeNationalbibliothekScraper(
+class ONBScraper(
     RateLimitedMixin,
     IIIFImageScraper,
 ):
