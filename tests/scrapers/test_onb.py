@@ -1,3 +1,7 @@
+import pytest
+import requests
+
+from scrapyrus.scrapers.iiif import IIIFImageScraper
 from scrapyrus.scrapers.onb import OesterreichischeNationalbibliothekScraper
 
 
@@ -39,6 +43,31 @@ def test_onb_scraper_responsibility():
     )
     assert not scraper.responsible("https://data.onb.ac.at/unrelated/RZ00071734")
     assert not scraper.responsible("https://data.onb.ac.at.example/rec/RZ00071734")
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_available"),
+    [(429, False), (500, True)],
+)
+def test_onb_scraper_becomes_unavailable_after_rate_limit(
+    status_code,
+    expected_available,
+    tmp_path,
+    monkeypatch,
+):
+    response = requests.Response()
+    response.status_code = status_code
+
+    def fail_download(self, url, target):
+        raise requests.HTTPError(response=response)
+
+    monkeypatch.setattr(IIIFImageScraper, "download", fail_download)
+    scraper = OesterreichischeNationalbibliothekScraper()
+
+    with pytest.raises(requests.HTTPError):
+        scraper.download("https://viewer.onb.ac.at/131A98B7", tmp_path)
+
+    assert scraper.available() is expected_available
 
 
 def test_onb_scraper_follows_equivalent_page_links_with_beautiful_soup():

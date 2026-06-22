@@ -1,12 +1,17 @@
+from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
+from scrapyrus.images import RateLimitedMixin
 from scrapyrus.scrapers.iiif import IIIFImageScraper
 
 
-class OesterreichischeNationalbibliothekScraper(IIIFImageScraper):
+class OesterreichischeNationalbibliothekScraper(
+    RateLimitedMixin,
+    IIIFImageScraper,
+):
     """Find and download IIIF images exposed by Austrian National Library pages."""
 
     SOURCE_HOSTS = frozenset(
@@ -66,6 +71,14 @@ class OesterreichischeNationalbibliothekScraper(IIIFImageScraper):
                 )
             )
         )
+
+    def download(self, url: str, target: Path) -> None:
+        try:
+            super().download(url, target)
+        except requests.HTTPError as error:
+            if error.response is not None and error.response.status_code == 429:
+                self.mark_rate_limited()
+            raise
 
     @staticmethod
     def _response_url(response: requests.Response, fallback: str) -> str:

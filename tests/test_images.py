@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scrapyrus.images import ImageScraperBase, scrape_images
+from scrapyrus.images import ImageScraperBase, RateLimitedMixin, scrape_images
 
 
 def write_metadata(path: Path, urls: list[str]) -> None:
@@ -23,6 +23,18 @@ def test_image_scraper_subclasses_register_in_definition_order(monkeypatch):
         pass
 
     assert ImageScraperBase.registered_scrapers() == (FirstScraper, SecondScraper)
+
+
+def test_rate_limited_mixin_marks_scraper_unavailable():
+    class Scraper(RateLimitedMixin, ImageScraperBase, register=False):
+        pass
+
+    scraper = Scraper()
+
+    assert scraper.available()
+    scraper.mark_rate_limited()
+    assert not scraper.available()
+    assert Scraper().available()
 
 
 def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monkeypatch):
@@ -261,21 +273,14 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
 
     events = []
 
-    class RateLimitedScraper(ImageScraperBase):
-        def __init__(self):
-            self.is_available = True
-
+    class RateLimitedScraper(RateLimitedMixin, ImageScraperBase):
         def responsible(self, url: str) -> bool:
             events.append(("responsible", url))
             return True
 
-        def available(self) -> bool:
-            events.append(("available", self.is_available))
-            return self.is_available
-
         def download(self, url: str, target: Path) -> None:
             events.append(("download", url))
-            self.is_available = False
+            self.mark_rate_limited()
 
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
@@ -284,9 +289,7 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
     assert events == [
         ("responsible", urls[0]),
         ("responsible", urls[1]),
-        ("available", True),
         ("download", urls[0]),
-        ("available", False),
     ]
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""

@@ -14,6 +14,22 @@ TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
 GRAPHIC_PATH = "./tei:text/tei:body/tei:div/tei:p/tei:figure/tei:graphic"
 
 
+class RateLimitedMixin:
+    """Track whether an image scraper encountered a rate limit."""
+
+    _rate_limited = False
+
+    def mark_rate_limited(self) -> None:
+        """Make this scraper unavailable for the remainder of the run."""
+
+        self._rate_limited = True
+
+    def available(self) -> bool:
+        """Return whether this scraper has not encountered a rate limit."""
+
+        return not self._rate_limited
+
+
 class ImageScraperBase:
     """Base class for image scrapers selected by source URL.
 
