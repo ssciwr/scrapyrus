@@ -114,7 +114,34 @@ def test_onb_scraper_follows_equivalent_page_links_with_beautiful_soup():
     ]
 
 
-def test_onb_scraper_uses_primo_api_when_record_html_is_javascript_shell():
+def test_onb_scraper_follows_digitales_objekt_link():
+    record_url = "http://data.onb.ac.at/rec/RZ00007957"
+    primo_url = "https://search.onb.ac.at/primo-explore/fulldisplay?docid=record"
+    digital_object_url = "http://data.onb.ac.at/dtl/8504968"
+    viewer_url = "https://viewer.onb.ac.at/112EF1AF"
+    manifest_url = "https://api.onb.ac.at/iiif/presentation/v3/manifest/112EF1AF"
+    responses = {
+        record_url: FakeIIIFResponse(
+            primo_url,
+            text=f'<a href="{digital_object_url}">Digitales Objekt</a>',
+        ),
+        digital_object_url: FakeIIIFResponse(viewer_url),
+    }
+    session = FakeIIIFSession(responses)
+
+    assert ONBScraper().manifest_urls(record_url, session) == [manifest_url]
+    assert session.requests == [
+        (record_url, {"timeout": 30}),
+        (digital_object_url, {"timeout": 30}),
+    ]
+
+
+@pytest.mark.parametrize(
+    "full_digitization_label", ["Volldigitalisat", "Digitales Objekt"]
+)
+def test_onb_scraper_uses_primo_api_when_record_html_is_javascript_shell(
+    full_digitization_label,
+):
     record_url = "http://data.onb.ac.at/rec/RZ00071734"
     primo_url = (
         "https://search.onb.ac.at/primo-explore/fulldisplay"
@@ -141,7 +168,7 @@ def test_onb_scraper_uses_primo_api_when_record_html_is_javascript_shell():
                 "delivery": {
                     "link": [
                         {
-                            "displayLabel": "Volldigitalisat",
+                            "displayLabel": full_digitization_label,
                             "linkURL": representation_url,
                         }
                     ]

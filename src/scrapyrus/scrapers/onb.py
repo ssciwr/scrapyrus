@@ -29,7 +29,7 @@ class ONBScraper(
         }
     )
     MANIFEST_ROOT = "https://api.onb.ac.at/iiif/presentation/v3/manifest/"
-    LINK_LABEL = "Volldigitalisat"
+    FULL_DIGITIZATION_LABELS = ("Volldigitalisat", "Digitales Objekt")
     DIGITALISAT_LABEL = "Zum Digitalisat"
 
     @staticmethod
@@ -202,9 +202,13 @@ class ONBScraper(
                 strip=True,
             )
             link_url = link.get("linkURL")
-            if label == cls.LINK_LABEL and isinstance(link_url, str) and link_url:
+            if (
+                label in cls.FULL_DIGITIZATION_LABELS
+                and isinstance(link_url, str)
+                and link_url
+            ):
                 return urljoin(page_url, link_url)
-        raise ValueError("ONB Primo record has no 'Volldigitalisat' link")
+        raise ValueError("ONB Primo record has no full-digitization link")
 
     @classmethod
     def _full_digitization_url(
@@ -214,16 +218,18 @@ class ONBScraper(
         requested_url: str,
     ) -> str:
         page_url = cls._response_url(page_response, requested_url)
-        link_url = cls._link_url_by_text(
-            page_response.text,
-            page_url,
-            cls.LINK_LABEL,
-        )
-        if link_url is not None:
-            return link_url
+        for label in cls.FULL_DIGITIZATION_LABELS:
+            link_url = cls._link_url_by_text(
+                page_response.text,
+                page_url,
+                label,
+            )
+            if link_url is not None:
+                logger.debug("Found ONB %r link: %s", label, link_url)
+                return link_url
         if urlparse(page_url).hostname == "search.onb.ac.at":
             return cls._primo_full_digitization_url(session, page_url)
-        raise ValueError("ONB record has no 'Volldigitalisat' link")
+        raise ValueError("ONB record has no full-digitization link")
 
     def manifest_urls(self, url: str, session: requests.Session) -> list[str]:
         direct_manifest_url = self._manifest_url_from_direct_url(url)
