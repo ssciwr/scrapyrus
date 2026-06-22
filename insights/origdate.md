@@ -18,7 +18,7 @@ This model directly supports “2nd century”, “same time”, BCE dates, open
 
 ## Scope and method
 
-The profile covers every metadata XML returned by `iterate_hgv_triples` from `idp.data` revision `1fa45b6d755efdc90707816ed8c2c1d9c6609e1a`:
+The profile covers every metadata XML returned by `iterate_hgv_triples` from `idp.data` revision `1fa45b6d755efdc90707816ed8c2c1d9c6609e1a`, including the two local corrections documented under data quality below:
 
 - 66,261 HGV metadata records;
 - 69,224 `<origDate>` elements under `msDesc/history/origin`;
@@ -128,12 +128,12 @@ The normalized year spans are often broad:
 | Width | Elements | Share |
 |---|---:|---:|
 | 1 year | 23,161 | 33.46% |
-| 2–5 years | 6,321 | 9.13% |
+| 2–5 years | 6,323 | 9.13% |
 | 6–25 years | 5,727 | 8.27% |
 | 26–50 years | 7,618 | 11.00% |
 | 51–100 years | 12,553 | 18.13% |
 | More than 100 years | 11,016 | 15.91% |
-| Open or invalid range | 1,909 | 2.76% |
+| Open range | 1,907 | 2.75% |
 | Text only | 919 | 1.33% |
 
 More than one third of assertions span at least 51 years. Consequently, overlap alone is suitable for high-recall candidate generation but not for final ranking: a 300-year interval should not automatically rank alongside a precise date merely because both overlap the same century.
@@ -194,16 +194,14 @@ Of the 919 text-only records:
 
 Thus 914 of 919 text-only records contain no recoverable date. Parsing labels would add at most five candidates without manual correction, so it should be an offline curation task rather than query-time behavior. Note also that 909 labels are empty across the entire corpus while their attributes may still be perfectly queryable; label presence must not control indexing.
 
-### Data-quality exceptions
+### Data-quality corrections
 
-Two closed ranges are reversed:
+Two reversed closed ranges found by the initial profile were corrected in the source data:
 
-- HGV 19007: `notBefore="0554"`, `notAfter="0545"`;
-- HGV 957826: `notBefore="0408"`, `notAfter="0407"`.
+- HGV 19007 changed from `554–545` to `544–545`. The record’s own commentary explicitly identifies `544–545` as the third alternative, so this corrects the mistyped first endpoint rather than blindly swapping the values.
+- HGV 957826 changed from `408–407` to `407–408`, consistent with its preceding alternative `392–393` and the 15-year cycle.
 
-Both records also have other valid alternatives. Mark these two assertions `invalid_range` and exclude them from temporal filtering until curated. Do not silently swap their endpoints: the source may intend alternatives rather than a typographical reversal.
-
-No other lexical, year-zero, month, day, or Gregorian-calendar errors were found in standard date attributes.
+After these corrections, no reversed ranges or lexical, year-zero, month, day, or Gregorian-calendar errors remain in standard date attributes.
 
 ## Recommended concise schema
 
@@ -450,5 +448,5 @@ The database layer—not the language model—should turn that object into range
 - Use overlap for recall, containment for strict queries, and interval distance for “same time”.
 - Preserve but do not numerically reinterpret TEI precision/certainty annotations.
 - Keep labels and raw TEI-derived JSON for display, provenance, and future migration.
-- Quarantine the two reversed ranges; leave 919 text-only records unindexed temporally unless curated.
+- Reject or quarantine future reversed ranges during ingestion; leave 919 text-only records unindexed temporally unless curated.
 - Apply temporal filtering before vector retrieval and explain the match mode in generated answers.
