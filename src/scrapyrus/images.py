@@ -84,6 +84,7 @@ def scrape_images(
     target: Path,
     todo_filename: str | Path,
     error_filename: str | Path,
+    unavailable_filename: str | Path,
     *,
     idp_data: str | Path = Path("idp.data"),
 ) -> None:
@@ -93,15 +94,17 @@ def scrape_images(
     Unknown image sources are written to *todo_filename*, one per line in
     ``HGV_ID: URL`` form. Sources whose download fails are written in the same
     form to *error_filename*. Sources already listed there are not retried.
-    Temporarily unavailable sources are skipped without being written to
-    either file. Existing HGV directories are left untouched. A summary of
-    scraped, skipped, and failed image references is printed after processing.
+    Temporarily unavailable sources are skipped and written in the same form
+    to *unavailable_filename*. Existing HGV directories are left untouched. A
+    summary of scraped, skipped, and failed image references is printed after
+    processing.
     """
 
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
     todo_path = Path(todo_filename)
     error_path = Path(error_filename)
+    unavailable_path = Path(unavailable_filename)
     existing_error_text = (
         error_path.read_text(encoding="utf-8") if error_path.exists() else ""
     )
@@ -124,6 +127,7 @@ def scrape_images(
     with (
         todo_path.open("w", encoding="utf-8") as todo_file,
         error_path.open("a", encoding="utf-8") as error_file,
+        unavailable_path.open("w", encoding="utf-8") as unavailable_file,
     ):
         for hgv_id, metadata, _, _ in iterate_hgv_triples(idp_data):
             root = ElementTree.parse(metadata).getroot()
@@ -162,6 +166,7 @@ def scrape_images(
         ):
             if not download.scraper.available():
                 unavailable_scraper_count += 1
+                unavailable_file.write(f"{download.hgv_id}: {download.url}\n")
                 continue
             download.target.mkdir(parents=True, exist_ok=True)
             try:

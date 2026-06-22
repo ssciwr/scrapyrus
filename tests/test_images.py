@@ -69,7 +69,14 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
     monkeypatch.chdir(tmp_path)
     todo = Path("todo.txt")
     error = Path("error.txt")
-    scrape_images(output, todo, error, idp_data=tmp_path / "idp.data")
+    unavailable = Path("unavailable.txt")
+    scrape_images(
+        output,
+        todo,
+        error,
+        unavailable,
+        idp_data=tmp_path / "idp.data",
+    )
 
     assert (output / "2" / "image").read_text(encoding="utf-8") == (
         "https://known.example/recto"
@@ -82,6 +89,7 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
     ]
     assert todo.read_text(encoding="utf-8") == "3: https://unknown.example/verso\n"
     assert error.read_text(encoding="utf-8") == ""
+    assert unavailable.read_text(encoding="utf-8") == ""
     assert not (output / "todo.txt").exists()
 
 
@@ -113,8 +121,10 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
     output = tmp_path / "images"
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
+    unavailable = tmp_path / "unavailable.txt"
+    unavailable.write_text("stale entry\n", encoding="utf-8")
 
-    scrape_images(output, todo, error)
+    scrape_images(output, todo, error, unavailable)
 
     assert downloaded == [
         ("https://images.example/recto", output / "42"),
@@ -128,6 +138,7 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
     )
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
+    assert unavailable.read_text(encoding="utf-8") == ""
 
 
 def test_scrape_images_reuses_each_scraper_instance_for_the_full_run(
@@ -172,6 +183,7 @@ def test_scrape_images_reuses_each_scraper_instance_for_the_full_run(
         tmp_path / "images",
         tmp_path / "todo.txt",
         tmp_path / "error.txt",
+        tmp_path / "unavailable.txt",
     )
 
     assert events == [
@@ -211,12 +223,14 @@ def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
     (output / "42").mkdir(parents=True)
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
+    unavailable = tmp_path / "unavailable.txt"
 
-    scrape_images(output, todo, error)
+    scrape_images(output, todo, error, unavailable)
 
     assert downloads == []
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
+    assert unavailable.read_text(encoding="utf-8") == ""
 
 
 def test_scrape_images_skips_unavailable_responsible_scraper(tmp_path, monkeypatch):
@@ -250,13 +264,15 @@ def test_scrape_images_skips_unavailable_responsible_scraper(tmp_path, monkeypat
     output = tmp_path / "images"
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
+    unavailable = tmp_path / "unavailable.txt"
 
-    scrape_images(output, todo, error)
+    scrape_images(output, todo, error, unavailable)
 
     assert events == [("responsible", url), ("available", None)]
     assert not (output / "42").exists()
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
+    assert unavailable.read_text(encoding="utf-8") == f"42: {url}\n"
 
 
 def test_scrape_images_rechecks_stateful_scraper_availability_before_each_download(
@@ -284,7 +300,8 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
 
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
-    scrape_images(tmp_path / "images", todo, error)
+    unavailable = tmp_path / "unavailable.txt"
+    scrape_images(tmp_path / "images", todo, error, unavailable)
 
     assert events == [
         ("responsible", urls[0]),
@@ -293,6 +310,7 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
     ]
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
+    assert unavailable.read_text(encoding="utf-8") == f"42: {urls[1]}\n"
 
 
 def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypatch):
@@ -315,12 +333,14 @@ def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypa
     output = tmp_path / "images"
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
+    unavailable = tmp_path / "unavailable.txt"
 
-    scrape_images(output, todo, error)
+    scrape_images(output, todo, error, unavailable)
 
     assert not (output / "42").exists()
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == f"42: {url}\n"
+    assert unavailable.read_text(encoding="utf-8") == ""
 
 
 def test_scrape_images_skips_and_preserves_existing_error_entries(
@@ -349,7 +369,12 @@ def test_scrape_images_skips_and_preserves_existing_error_entries(
     error = tmp_path / "error.txt"
     error.write_text(f"42: {skipped_url}", encoding="utf-8")
 
-    scrape_images(tmp_path / "images", tmp_path / "todo.txt", error)
+    scrape_images(
+        tmp_path / "images",
+        tmp_path / "todo.txt",
+        error,
+        tmp_path / "unavailable.txt",
+    )
 
     assert attempted_urls == [failing_url]
     assert error.read_text(encoding="utf-8") == (
@@ -394,11 +419,20 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
     output = tmp_path / "images"
     (output / "existing").mkdir(parents=True)
 
-    scrape_images(output, tmp_path / "todo.txt", tmp_path / "error.txt")
+    unavailable = tmp_path / "unavailable.txt"
+    scrape_images(
+        output,
+        tmp_path / "todo.txt",
+        tmp_path / "error.txt",
+        unavailable,
+    )
 
     assert capsys.readouterr().out == (
         "Images scraped: 1; skipped because they exist: 2; "
         "skipped because no scraper was responsible: 1; "
         "skipped because the responsible scraper was unavailable: 1; "
         "errors: 1\n"
+    )
+    assert unavailable.read_text(encoding="utf-8") == (
+        "unavailable: https://unavailable.example/image\n"
     )
