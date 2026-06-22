@@ -1,3 +1,4 @@
+from scrapyrus.scrapers.british_museum import BritishMuseumScraper
 from scrapyrus.scrapers.iiif import IIIFImageScraper
 from scrapyrus.scrapers.louvre import LouvreScraper
 from scrapyrus.scrapers.nakala import NakalaScraper
@@ -11,6 +12,7 @@ from scrapyrus.scrapers.uc_berkeley import UCBerkeleyScraper
 
 __all__ = [
     "BerlPapScraper",
+    "BritishMuseumScraper",
     "IIIFImageScraper",
     "LouvreScraper",
     "NakalaScraper",
