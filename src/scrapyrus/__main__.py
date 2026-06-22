@@ -2,7 +2,7 @@ from pathlib import Path
 
 import click
 
-from scrapyrus.images import scrape_images
+from scrapyrus.images import image_log_file, scrape_images
 
 
 idp_data = click.option(
@@ -33,6 +33,24 @@ def main(context: click.Context, idp_data: Path) -> None:
 @click.argument("todo_filename", default="images_todo.txt")
 @click.argument("error_filename", default="images_error.txt")
 @click.argument("unavailable_filename", default="images_unavailable.txt")
+@click.option(
+    "--log-file",
+    "log_filename",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("images.log"),
+    show_default=True,
+    help="Write image scraper logs to this file",
+)
+@click.option(
+    "--log-level",
+    type=click.Choice(
+        ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        case_sensitive=False,
+    ),
+    default="INFO",
+    show_default=True,
+    help="Minimum level to write to the image scraper log",
+)
 @click.pass_context
 def images(
     context: click.Context,
@@ -40,16 +58,19 @@ def images(
     todo_filename: str,
     error_filename: str,
     unavailable_filename: str,
+    log_filename: Path,
+    log_level: str,
 ) -> None:
     """Scrape images and record unsupported, failed, or unavailable URLs."""
 
-    scrape_images(
-        target,
-        todo_filename,
-        error_filename,
-        unavailable_filename,
-        idp_data=context.obj["idp_data"],
-    )
+    with image_log_file(log_filename, log_level):
+        scrape_images(
+            target,
+            todo_filename,
+            error_filename,
+            unavailable_filename,
+            idp_data=context.obj["idp_data"],
+        )
 
 
 if __name__ == "__main__":

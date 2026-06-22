@@ -1,10 +1,14 @@
 import json
+import logging
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import requests
 
 from scrapyrus.images import ImageScraperBase
+
+
+logger = logging.getLogger("scrapyrus.images.scrapers.iiif")
 
 
 class IIIFImageScraper(ImageScraperBase, register=False):
@@ -168,9 +172,13 @@ class IIIFImageScraper(ImageScraperBase, register=False):
             return json.loads(response.text)
 
     def download(self, url: str, target: Path) -> None:
+        logger.info("Resolving IIIF manifests with %s: %s", type(self).__name__, url)
         with requests.Session() as session:
             image_urls = []
-            for manifest_url in self.manifest_urls(url, session):
+            manifest_urls = self.manifest_urls(url, session)
+            logger.info("Resolved %d IIIF manifest(s): %s", len(manifest_urls), url)
+            for manifest_url in manifest_urls:
+                logger.debug("Fetching IIIF manifest: %s", manifest_url)
                 manifest_response = session.get(
                     manifest_url,
                     timeout=self.REQUEST_TIMEOUT,
@@ -180,14 +188,14 @@ class IIIFImageScraper(ImageScraperBase, register=False):
                     self._manifest_image_urls(self._response_json(manifest_response))
                 )
 
-            for image_number, image_url in enumerate(
-                dict.fromkeys(image_urls),
-                start=1,
-            ):
+            image_urls = list(dict.fromkeys(image_urls))
+            logger.info("Resolved %d IIIF image(s): %s", len(image_urls), url)
+            for image_number, image_url in enumerate(image_urls, start=1):
                 parsed_url = urlparse(image_url)
                 if parsed_url.scheme not in {"http", "https"}:
                     raise ValueError(f"Unsupported IIIF image URL: {image_url}")
                 filename = f"{image_number:04d}{self._image_suffix(image_url)}"
+                logger.debug("Downloading IIIF image to %s: %s", filename, image_url)
                 with session.get(
                     image_url,
                     timeout=self.REQUEST_TIMEOUT,
@@ -197,3 +205,4 @@ class IIIFImageScraper(ImageScraperBase, register=False):
                     with (target / filename).open("wb") as image_file:
                         for chunk in image_response.iter_content(chunk_size=64 * 1024):
                             image_file.write(chunk)
+        logger.info("Completed IIIF download with %s: %s", type(self).__name__, url)

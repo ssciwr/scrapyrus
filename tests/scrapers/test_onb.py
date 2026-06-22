@@ -1,6 +1,7 @@
 import pytest
 import requests
 
+from scrapyrus.images import image_log_file
 from scrapyrus.scrapers.iiif import IIIFImageScraper
 from scrapyrus.scrapers.onb import ONBScraper
 
@@ -63,11 +64,21 @@ def test_onb_scraper_becomes_unavailable_after_rate_limit(
 
     monkeypatch.setattr(IIIFImageScraper, "download", fail_download)
     scraper = ONBScraper()
+    log = tmp_path / "images.log"
 
-    with pytest.raises(requests.HTTPError):
+    with (
+        image_log_file(log, "WARNING"),
+        pytest.raises(requests.HTTPError),
+    ):
         scraper.download("https://viewer.onb.ac.at/131A98B7", tmp_path)
 
     assert scraper.available() is expected_available
+    log_text = log.read_text(encoding="utf-8")
+    if status_code == 429:
+        assert "ONB rate limit triggered by HTTP 429" in log_text
+        assert "https://viewer.onb.ac.at/131A98B7" in log_text
+    else:
+        assert log_text == ""
 
 
 def test_onb_scraper_follows_equivalent_page_links_with_beautiful_soup():

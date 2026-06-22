@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
@@ -6,6 +7,9 @@ from bs4 import BeautifulSoup
 
 from scrapyrus.images import RateLimitedMixin
 from scrapyrus.scrapers.iiif import IIIFImageScraper
+
+
+logger = logging.getLogger("scrapyrus.images.scrapers.onb")
 
 
 class ONBScraper(
@@ -73,12 +77,19 @@ class ONBScraper(
         )
 
     def download(self, url: str, target: Path) -> None:
+        logger.info("Starting ONB download: %s", url)
         try:
             super().download(url, target)
         except requests.HTTPError as error:
             if error.response is not None and error.response.status_code == 429:
                 self.mark_rate_limited()
+                logger.warning(
+                    "ONB rate limit triggered by HTTP 429 for %s (response URL: %s)",
+                    url,
+                    error.response.url or url,
+                )
             raise
+        logger.info("Completed ONB download: %s", url)
 
     @staticmethod
     def _response_url(response: requests.Response, fallback: str) -> str:

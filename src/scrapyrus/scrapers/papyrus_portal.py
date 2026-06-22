@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
@@ -8,6 +9,9 @@ import requests
 from bs4 import BeautifulSoup
 
 from scrapyrus.images import ImageScraperBase
+
+
+logger = logging.getLogger("scrapyrus.images.scrapers.papyrus_portal")
 
 
 METS_NAMESPACE = "http://www.loc.gov/METS/"
@@ -181,6 +185,7 @@ class PapyrusPortalScraper(ImageScraperBase):
         if not filename:
             raise ValueError(f"Image URL has no filename: {image_url}")
 
+        logger.debug("Downloading PapyrusPortal image to %s: %s", filename, image_url)
         with session.get(
             image_url,
             timeout=self.REQUEST_TIMEOUT,
@@ -225,11 +230,17 @@ class PapyrusPortalScraper(ImageScraperBase):
             if start_file is not None:
                 image_paths = [start_file]
 
+        logger.info(
+            "PapyrusPortal viewer contains %d image(s): %s",
+            len(image_paths),
+            final_viewer_url,
+        )
         for image_path in image_paths:
             image_url = urljoin(derivate_url.rstrip("/") + "/", image_path.lstrip("/"))
             self._download_image(session, image_url, target)
 
     def download(self, url: str, target: Path) -> None:
+        logger.info("Fetching PapyrusPortal record: %s", url)
         with requests.Session() as session:
             page_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
             page_response.raise_for_status()
@@ -242,7 +253,15 @@ class PapyrusPortalScraper(ImageScraperBase):
                     target,
                     viewer_response=page_response,
                 )
+                logger.info("Completed PapyrusPortal viewer: %s", final_url)
                 return
 
-            for viewer_url in self._viewer_urls(page_response.text, final_url):
+            viewer_urls = self._viewer_urls(page_response.text, final_url)
+            logger.info(
+                "PapyrusPortal record contains %d viewer(s): %s",
+                len(viewer_urls),
+                final_url,
+            )
+            for viewer_url in viewer_urls:
                 self._download_viewer(session, viewer_url, target)
+        logger.info("Completed PapyrusPortal record: %s", url)

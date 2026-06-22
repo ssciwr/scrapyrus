@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -12,6 +15,44 @@ from scrapyrus.hgv import iterate_hgv_triples
 
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
 GRAPHIC_PATH = "./tei:text/tei:body/tei:div/tei:p/tei:figure/tei:graphic"
+LOGGER_NAME = "scrapyrus.images"
+
+
+logger = logging.getLogger(LOGGER_NAME)
+logger.addHandler(logging.NullHandler())
+logger.propagate = False
+
+
+@contextmanager
+def image_log_file(
+    filename: str | Path,
+    level: str | int,
+) -> Iterator[None]:
+    """Write image scraper logs to *filename* for the duration of the context."""
+
+    if isinstance(level, str):
+        numeric_level = getattr(logging, level.upper(), None)
+        if not isinstance(numeric_level, int):
+            raise ValueError(f"Unknown logging level: {level}")
+    else:
+        numeric_level = level
+
+    handler = logging.FileHandler(filename, encoding="utf-8")
+    handler.setLevel(numeric_level)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+    )
+    previous_level = logger.level
+    logger.setLevel(numeric_level)
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        handler.close()
 
 
 class RateLimitedMixin:
@@ -100,6 +141,7 @@ def scrape_images(
     processing.
     """
 
+    logger.info("Starting image scrape: target=%s idp_data=%s", target, idp_data)
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
     todo_path = Path(todo_filename)
@@ -138,6 +180,11 @@ def scrape_images(
             papyrus_target = target / hgv_id
             if graphics and papyrus_target.exists():
                 existing_count += len(graphics)
+                logger.debug(
+                    "Skipping %d existing image reference(s) for HGV %s",
+                    len(graphics),
+                    hgv_id,
+                )
                 continue
 
             for graphic in graphics:
@@ -146,6 +193,7 @@ def scrape_images(
                     continue
                 error_entry = f"{hgv_id}: {url}"
                 if error_entry in existing_errors:
+                    logger.debug("Skipping known error: %s", error_entry)
                     continue
 
                 for scraper in scrapers:
@@ -157,6 +205,11 @@ def scrape_images(
                 else:
                     no_responsible_scraper_count += 1
                     todo_file.write(f"{hgv_id}: {url}\n")
+                    logger.warning(
+                        "No image scraper is responsible for HGV %s: %s",
+                        hgv_id,
+                        url,
+                    )
 
         for download in tqdm(
             downloads,
@@ -167,8 +220,20 @@ def scrape_images(
             if not download.scraper.available():
                 unavailable_scraper_count += 1
                 unavailable_file.write(f"{download.hgv_id}: {download.url}\n")
+                logger.warning(
+                    "Image scraper %s is unavailable; skipping HGV %s: %s",
+                    type(download.scraper).__name__,
+                    download.hgv_id,
+                    download.url,
+                )
                 continue
             download.target.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                "Downloading HGV %s with %s: %s",
+                download.hgv_id,
+                type(download.scraper).__name__,
+                download.url,
+            )
             try:
                 download.scraper.download(download.url, download.target)
             except Exception:
@@ -181,10 +246,17 @@ def scrape_images(
                     f"{error_separator}{download.hgv_id}: {download.url}\n"
                 )
                 error_separator = ""
+                logger.exception(
+                    "Image download failed for HGV %s with %s: %s",
+                    download.hgv_id,
+                    type(download.scraper).__name__,
+                    download.url,
+                )
             else:
                 scraped_count += 1
+                logger.info("Downloaded HGV %s: %s", download.hgv_id, download.url)
 
-    print(
+    summary = (
         f"Images scraped: {scraped_count}; "
         f"skipped because they exist: {existing_count}; "
         "skipped because no scraper was responsible: "
@@ -193,6 +265,8 @@ def scrape_images(
         f"{unavailable_scraper_count}; "
         f"errors: {error_count}"
     )
+    logger.info(summary)
+    print(summary)
 
 
 # Import built-in scrapers after defining the base class so subclasses register.

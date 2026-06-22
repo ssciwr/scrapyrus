@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 
@@ -5,6 +6,9 @@ import requests
 from bs4 import BeautifulSoup
 
 from scrapyrus.images import ImageScraperBase
+
+
+logger = logging.getLogger("scrapyrus.images.scrapers.berlpap")
 
 
 class BerlPapScraper(ImageScraperBase):
@@ -47,13 +51,18 @@ class BerlPapScraper(ImageScraperBase):
         return image_urls
 
     def download(self, url: str, target: Path) -> None:
+        logger.info("Fetching BerlPap record: %s", url)
         page_response = requests.get(url, timeout=self.REQUEST_TIMEOUT)
         page_response.raise_for_status()
 
-        for image_url in self._image_urls(page_response.text, url):
+        image_urls = self._image_urls(page_response.text, url)
+        logger.info("BerlPap record contains %d image(s): %s", len(image_urls), url)
+        for image_url in image_urls:
             filename = Path(unquote(urlparse(image_url).path)).name
             if not filename:
+                logger.warning("BerlPap image URL has no filename: %s", image_url)
                 continue
+            logger.debug("Downloading BerlPap image: %s", image_url)
             with requests.get(
                 image_url,
                 timeout=self.REQUEST_TIMEOUT,
@@ -63,3 +72,4 @@ class BerlPapScraper(ImageScraperBase):
                 with (target / filename).open("wb") as image_file:
                     for chunk in image_response.iter_content(chunk_size=64 * 1024):
                         image_file.write(chunk)
+        logger.info("Completed BerlPap record: %s", url)

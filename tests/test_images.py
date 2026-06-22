@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from scrapyrus.images import ImageScraperBase, RateLimitedMixin, scrape_images
+from scrapyrus.images import (
+    ImageScraperBase,
+    RateLimitedMixin,
+    image_log_file,
+    scrape_images,
+)
 
 
 def write_metadata(path: Path, urls: list[str]) -> None:
@@ -313,7 +318,11 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
     assert unavailable.read_text(encoding="utf-8") == f"42: {urls[1]}\n"
 
 
-def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypatch):
+def test_scrape_images_writes_download_failures_to_error_file(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
     metadata = tmp_path / "42.xml"
     url = "https://images.example/recto"
     write_metadata(metadata, [url])
@@ -334,13 +343,20 @@ def test_scrape_images_writes_download_failures_to_error_file(tmp_path, monkeypa
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
     unavailable = tmp_path / "unavailable.txt"
+    log = tmp_path / "images.log"
 
-    scrape_images(output, todo, error, unavailable)
+    with image_log_file(log, "ERROR"):
+        scrape_images(output, todo, error, unavailable)
 
     assert not (output / "42").exists()
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == f"42: {url}\n"
     assert unavailable.read_text(encoding="utf-8") == ""
+    log_text = log.read_text(encoding="utf-8")
+    assert f"Image download failed for HGV 42 with FailingScraper: {url}" in log_text
+    assert "RuntimeError: download failed" in log_text
+    captured = capsys.readouterr()
+    assert "RuntimeError: download failed" not in captured.out + captured.err
 
 
 def test_scrape_images_skips_and_preserves_existing_error_entries(

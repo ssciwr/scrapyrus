@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from scrapyrus.__main__ import main
@@ -7,6 +8,7 @@ from click.testing import CliRunner
 
 def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
     calls = []
+    log = tmp_path / "images.log"
 
     def fake_scrape_images(
         target,
@@ -16,6 +18,9 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
         *,
         idp_data,
     ):
+        logging.getLogger("scrapyrus.images.scrapers.test").debug(
+            "scraper debug details"
+        )
         calls.append(
             (target, todo_filename, error_filename, unavailable_filename, idp_data)
         )
@@ -31,6 +36,10 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
             "--idp-data",
             str(idp_data),
             "images",
+            "--log-file",
+            str(log),
+            "--log-level",
+            "DEBUG",
             str(target),
             "todo.txt",
             "error.txt",
@@ -40,6 +49,10 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert calls == [(target, "todo.txt", "error.txt", "unavailable.txt", idp_data)]
+    assert "DEBUG scrapyrus.images.scrapers.test: scraper debug details" in (
+        log.read_text(encoding="utf-8")
+    )
+    assert result.output == ""
 
 
 def test_images_subcommand_uses_defaults(monkeypatch):
@@ -57,7 +70,9 @@ def test_images_subcommand_uses_defaults(monkeypatch):
     )
     runner = CliRunner()
 
-    result = runner.invoke(main, ("images",))
+    with runner.isolated_filesystem():
+        result = runner.invoke(main, ("images",))
+        assert Path("images.log").exists()
 
     assert result.exit_code == 0
     assert calls == [
