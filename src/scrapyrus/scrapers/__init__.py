@@ -4,6 +4,7 @@ from scrapyrus.scrapers.cairo_museum import CairoMuseumScraper
 from scrapyrus.scrapers.egnet import EgnetScraper
 from scrapyrus.scrapers.iiif import IIIFImageScraper
 from scrapyrus.scrapers.louvre import LouvreScraper
+from scrapyrus.scrapers.met_museum import MetMuseumScraper
 from scrapyrus.scrapers.nakala import NakalaScraper
 from scrapyrus.scrapers.onb import ONBScraper
 from scrapyrus.scrapers.berlpap import BerlPapScraper
@@ -23,6 +24,7 @@ __all__ = [
     "EgnetScraper",
     "IIIFImageScraper",
     "LouvreScraper",
+    "MetMuseumScraper",
     "NakalaScraper",
     "ONBScraper",
     "PapyrusPortalScraper",
