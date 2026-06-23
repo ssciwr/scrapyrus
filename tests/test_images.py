@@ -6,6 +6,7 @@ from scrapyrus.images import (
     image_log_file,
     scrape_images,
 )
+from scrapyrus.scrapers.doi import DOIScraper
 
 
 def write_metadata(path: Path, urls: list[str]) -> None:
@@ -96,6 +97,203 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
     assert error.read_text(encoding="utf-8") == ""
     assert unavailable.read_text(encoding="utf-8") == ""
     assert not (output / "todo.txt").exists()
+
+
+def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
+    tmp_path, monkeypatch
+):
+    source_url = "https://doi.org/10.1234/example"
+    resolved_url = "https://known.example/recto"
+    metadata = tmp_path / "42.xml"
+    write_metadata(metadata, [source_url])
+    events = []
+
+    def triples():
+        events.append("iterating")
+        yield "42", metadata, None, None
+        events.append("iteration complete")
+
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: triples(),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    downloaded_urls = []
+
+    class DestinationScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return url.startswith("https://known.example/")
+
+        def download(self, url: str, target: Path) -> None:
+            events.append("download")
+            downloaded_urls.append(url)
+            (target / "image").write_text(url, encoding="utf-8")
+
+    monkeypatch.setattr(
+        ImageScraperBase,
+        "_scrapers",
+        [DOIScraper, DestinationScraper],
+    )
+
+    class FakeResponse:
+        url = resolved_url
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            pass
+
+    def resolve_doi(url, **kwargs):
+        events.append("resolve DOI")
+        return FakeResponse()
+
+    monkeypatch.setattr("scrapyrus.scrapers.doi.requests.get", resolve_doi)
+
+    output = tmp_path / "images"
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+    unavailable = tmp_path / "unavailable.txt"
+    scrape_images(output, todo, error, unavailable)
+
+    assert downloaded_urls == [resolved_url]
+    assert events == ["iterating", "iteration complete", "resolve DOI", "download"]
+    assert (output / "42" / "image").read_text(encoding="utf-8") == resolved_url
+    assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == ""
+
+
+def test_scrape_images_writes_unsupported_resolved_doi_url_to_todo(
+    tmp_path, monkeypatch
+):
+    source_url = "https://doi.org/10.1234/example"
+    resolved_url = "https://unsupported.example/record/42"
+    metadata = tmp_path / "42.xml"
+    write_metadata(metadata, [source_url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [DOIScraper])
+
+    class FakeResponse:
+        url = resolved_url
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.doi.requests.get",
+        lambda url, **kwargs: FakeResponse(),
+    )
+
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+    scrape_images(
+        tmp_path / "images",
+        todo,
+        error,
+        tmp_path / "unavailable.txt",
+    )
+
+    assert todo.read_text(encoding="utf-8") == f"42: {resolved_url}\n"
+    assert error.read_text(encoding="utf-8") == ""
+
+
+def test_scrape_images_writes_failed_resolved_doi_url_to_error(tmp_path, monkeypatch):
+    source_url = "https://doi.org/10.1234/example"
+    resolved_url = "https://failing.example/record/42"
+    metadata = tmp_path / "42.xml"
+    write_metadata(metadata, [source_url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    class FailingScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return url.startswith("https://failing.example/")
+
+        def download(self, url: str, target: Path) -> None:
+            raise RuntimeError("download failed")
+
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [DOIScraper, FailingScraper])
+
+    class FakeResponse:
+        url = resolved_url
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.doi.requests.get",
+        lambda url, **kwargs: FakeResponse(),
+    )
+
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+    scrape_images(
+        tmp_path / "images",
+        todo,
+        error,
+        tmp_path / "unavailable.txt",
+    )
+
+    assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == f"42: {resolved_url}\n"
+
+
+def test_scrape_images_reports_url_resolution_cycles_as_errors(tmp_path, monkeypatch):
+    first_url = "https://first.example/record/42"
+    second_url = "https://second.example/record/42"
+    metadata = tmp_path / "42.xml"
+    write_metadata(metadata, [first_url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    class FirstResolver(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return url == first_url
+
+        def resolve(self, url: str) -> str:
+            return second_url
+
+    class SecondResolver(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return url == second_url
+
+        def resolve(self, url: str) -> str:
+            return first_url
+
+    error = tmp_path / "error.txt"
+    scrape_images(
+        tmp_path / "images",
+        tmp_path / "todo.txt",
+        error,
+        tmp_path / "unavailable.txt",
+    )
+
+    assert error.read_text(encoding="utf-8") == f"42: {first_url}\n"
 
 
 def test_scrape_images_passes_papyrus_directory_for_multiple_images(

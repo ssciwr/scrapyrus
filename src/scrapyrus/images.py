@@ -107,6 +107,15 @@ class ImageScraperBase:
 
         return True
 
+    def resolve(self, url: str) -> str:
+        """Return the URL that should be offered to the scraper chain.
+
+        Downloading scrapers return *url* unchanged. Resolver scrapers return a
+        different URL, which restarts selection at the beginning of the chain.
+        """
+
+        return url
+
     def download(self, url: str, target: Path) -> None:
         """Download images referenced by *url* into *target*."""
 
@@ -119,6 +128,68 @@ class _ImageDownload:
     url: str
     target: Path
     scraper: ImageScraperBase
+
+
+class _ImageURLResolutionError(RuntimeError):
+    """Report a failure while resolving an effective image URL."""
+
+    def __init__(self, url: str, message: str) -> None:
+        super().__init__(message)
+        self.url = url
+
+
+def _resolve_scraper(
+    url: str,
+    scraper: ImageScraperBase,
+    scrapers: tuple[ImageScraperBase, ...],
+) -> tuple[str, ImageScraperBase | None]:
+    """Resolve *url* and return its effective URL and responsible scraper."""
+
+    effective_url = url
+    seen_urls = {effective_url}
+
+    while True:
+        try:
+            resolved_url = scraper.resolve(effective_url)
+        except Exception as error:
+            raise _ImageURLResolutionError(
+                effective_url,
+                f"{type(scraper).__name__} failed to resolve {effective_url}",
+            ) from error
+
+        if resolved_url == effective_url:
+            return effective_url, scraper
+        if not resolved_url:
+            raise _ImageURLResolutionError(
+                effective_url,
+                f"{type(scraper).__name__} resolved {effective_url} to an empty URL",
+            )
+        if resolved_url in seen_urls:
+            raise _ImageURLResolutionError(
+                resolved_url,
+                f"Image scraper URL resolution cycle detected at {resolved_url}",
+            )
+
+        logger.info(
+            "Image scraper %s resolved %s to %s",
+            type(scraper).__name__,
+            effective_url,
+            resolved_url,
+        )
+        seen_urls.add(resolved_url)
+        effective_url = resolved_url
+
+        next_scraper = next(
+            (
+                candidate
+                for candidate in scrapers
+                if candidate.responsible(effective_url)
+            ),
+            None,
+        )
+        if next_scraper is None:
+            return effective_url, None
+        scraper = next_scraper
 
 
 def scrape_images(
@@ -134,12 +205,14 @@ def scrape_images(
     Each HGV record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
     ``HGV_ID: URL`` form. Sources whose download fails are written in the same
-    form to *error_filename*. A download that returns without writing an image
-    file is also treated as a failure. Sources already listed there are not
-    retried. Temporarily unavailable sources are skipped and written in the
-    same form to *unavailable_filename*. Existing HGV directories are left
-    untouched. A summary of scraped, skipped, and failed image references is
-    printed after processing.
+    form to *error_filename*. Resolver scrapers replace source URLs before
+    responsibility is checked again, and these effective URLs are used in the
+    todo and error files. A download that returns without writing an image file
+    is also treated as a failure. Sources already listed there are not retried.
+    Temporarily unavailable sources are skipped and written in the same form to
+    *unavailable_filename*. Existing HGV directories are left untouched. A
+    summary of scraped, skipped, and failed image references is printed after
+    processing.
     """
 
     logger.info("Starting image scrape: target=%s idp_data=%s", target, idp_data)
@@ -192,18 +265,16 @@ def scrape_images(
                 url = graphic.get("url")
                 if not url:
                     continue
-                error_entry = f"{hgv_id}: {url}"
-                if error_entry in existing_errors:
-                    logger.debug("Skipping known error: %s", error_entry)
+                source_error_entry = f"{hgv_id}: {url}"
+                if source_error_entry in existing_errors:
+                    logger.debug("Skipping known error: %s", source_error_entry)
                     continue
 
-                for scraper in scrapers:
-                    if scraper.responsible(url):
-                        downloads.append(
-                            _ImageDownload(hgv_id, url, papyrus_target, scraper)
-                        )
-                        break
-                else:
+                scraper = next(
+                    (candidate for candidate in scrapers if candidate.responsible(url)),
+                    None,
+                )
+                if scraper is None:
                     no_responsible_scraper_count += 1
                     todo_file.write(f"{hgv_id}: {url}\n")
                     logger.warning(
@@ -211,6 +282,16 @@ def scrape_images(
                         hgv_id,
                         url,
                     )
+                    continue
+
+                downloads.append(
+                    _ImageDownload(
+                        hgv_id,
+                        url,
+                        papyrus_target,
+                        scraper,
+                    )
+                )
 
         for download in tqdm(
             downloads,
@@ -218,29 +299,65 @@ def scrape_images(
             unit="image",
             desc="Downloading images",
         ):
-            if not download.scraper.available():
+            try:
+                effective_url, scraper = _resolve_scraper(
+                    download.url,
+                    download.scraper,
+                    scrapers,
+                )
+            except _ImageURLResolutionError as error:
+                error_entry = f"{download.hgv_id}: {error.url}"
+                if error_entry in existing_errors:
+                    logger.debug("Skipping known error: %s", error_entry)
+                    continue
+                error_count += 1
+                error_file.write(f"{error_separator}{error_entry}\n")
+                error_separator = ""
+                existing_errors.add(error_entry)
+                logger.exception(
+                    "Image URL resolution failed for HGV %s: %s",
+                    download.hgv_id,
+                    error.url,
+                )
+                continue
+
+            error_entry = f"{download.hgv_id}: {effective_url}"
+            if error_entry in existing_errors:
+                logger.debug("Skipping known error: %s", error_entry)
+                continue
+
+            if scraper is None:
+                no_responsible_scraper_count += 1
+                todo_file.write(f"{download.hgv_id}: {effective_url}\n")
+                logger.warning(
+                    "No image scraper is responsible for HGV %s: %s",
+                    download.hgv_id,
+                    effective_url,
+                )
+                continue
+
+            if not scraper.available():
                 unavailable_scraper_count += 1
-                unavailable_file.write(f"{download.hgv_id}: {download.url}\n")
+                unavailable_file.write(f"{download.hgv_id}: {effective_url}\n")
                 logger.warning(
                     "Image scraper %s is unavailable; skipping HGV %s: %s",
-                    type(download.scraper).__name__,
+                    type(scraper).__name__,
                     download.hgv_id,
-                    download.url,
+                    effective_url,
                 )
                 continue
             download.target.mkdir(parents=True, exist_ok=True)
             logger.info(
                 "Downloading HGV %s with %s: %s",
                 download.hgv_id,
-                type(download.scraper).__name__,
-                download.url,
+                type(scraper).__name__,
+                effective_url,
             )
             try:
-                download.scraper.download(download.url, download.target)
+                scraper.download(effective_url, download.target)
                 if not any(path.is_file() for path in download.target.iterdir()):
                     raise RuntimeError(
-                        f"{type(download.scraper).__name__}.download did not write "
-                        "any images"
+                        f"{type(scraper).__name__}.download did not write any images"
                     )
             except Exception:
                 try:
@@ -249,18 +366,18 @@ def scrape_images(
                     pass
                 error_count += 1
                 error_file.write(
-                    f"{error_separator}{download.hgv_id}: {download.url}\n"
+                    f"{error_separator}{download.hgv_id}: {effective_url}\n"
                 )
                 error_separator = ""
                 logger.exception(
                     "Image download failed for HGV %s with %s: %s",
                     download.hgv_id,
-                    type(download.scraper).__name__,
-                    download.url,
+                    type(scraper).__name__,
+                    effective_url,
                 )
             else:
                 scraped_count += 1
-                logger.info("Downloaded HGV %s: %s", download.hgv_id, download.url)
+                logger.info("Downloaded HGV %s: %s", download.hgv_id, effective_url)
 
     summary = (
         f"Images scraped: {scraped_count}; "
