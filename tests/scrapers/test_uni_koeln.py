@@ -1,3 +1,6 @@
+import pytest
+import requests
+
 from scrapyrus.scrapers.uni_koeln import UniKoelnScraper
 
 
@@ -120,3 +123,32 @@ def test_uni_koeln_scraper_handles_page_without_abbildung(tmp_path, monkeypatch)
 
     assert list(tmp_path.iterdir()) == []
     assert session.requests == [(page_url, {"timeout": 30})]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_available"),
+    [(429, False), (500, True)],
+)
+def test_uni_koeln_scraper_becomes_unavailable_after_rate_limit(
+    status_code,
+    expected_available,
+    tmp_path,
+    monkeypatch,
+):
+    page_url = (
+        "https://www.uni-koeln.de/phil-fak/ifa/NRWakademie/"
+        "papyrologie/bubastos/01PBub01.html"
+    )
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = page_url
+    session = FakeSession({page_url: response})
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.uni_koeln.requests.Session", lambda: session
+    )
+    scraper = UniKoelnScraper()
+
+    with pytest.raises(requests.HTTPError):
+        scraper.download(page_url, tmp_path)
+
+    assert scraper.available() is expected_available

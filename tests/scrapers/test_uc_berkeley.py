@@ -1,5 +1,8 @@
 import json
 
+import pytest
+import requests
+
 from scrapyrus.scrapers.uc_berkeley import UCBerkeleyScraper
 
 
@@ -118,3 +121,29 @@ def test_uc_berkeley_scraper_handles_record_without_json_ld(tmp_path, monkeypatc
 
     assert list(tmp_path.iterdir()) == []
     assert session.requests == [(page_url, {"timeout": 30})]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_available"),
+    [(429, False), (500, True)],
+)
+def test_uc_berkeley_scraper_becomes_unavailable_after_rate_limit(
+    status_code,
+    expected_available,
+    tmp_path,
+    monkeypatch,
+):
+    page_url = "https://digicoll.lib.berkeley.edu/record/230935"
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = page_url
+    session = FakeSession({page_url: response})
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.uc_berkeley.requests.Session", lambda: session
+    )
+    scraper = UCBerkeleyScraper()
+
+    with pytest.raises(requests.HTTPError):
+        scraper.download(page_url, tmp_path)
+
+    assert scraper.available() is expected_available
