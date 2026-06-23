@@ -9,13 +9,23 @@ PAGE_URL = (
     "P_Oxy_LXXII_4896_Loan_of_Money/21180334?file=37555639"
 )
 CANONICAL_PAGE_URL = PAGE_URL.partition("?")[0]
-IMAGE_URL = "https://portal.sds.ox.ac.uk/ndownloader/files/37555639"
+IMAGE_URL = "https://ndownloader.figshare.com/files/37555639"
 API_URL = "https://api.figshare.com/v2/articles/21180334"
+IMAGE_HEADERS = {"Content-Type": "image/jpeg"}
 
 
 class FakeResponse:
-    def __init__(self, *, url="", headers=None, json_data=None, chunks=()):
+    def __init__(
+        self,
+        *,
+        url="",
+        status_code=200,
+        headers=None,
+        json_data=None,
+        chunks=(),
+    ):
         self.url = url
+        self.status_code = status_code
         self.headers = {} if headers is None else headers
         self.json_data = json_data
         self.chunks = chunks
@@ -92,9 +102,10 @@ def test_oxford_scraper_downloads_translated_image(tmp_path, monkeypatch):
     response = FakeResponse(
         url="https://storage.example/37555639/image.jpg",
         headers={
+            **IMAGE_HEADERS,
             "Content-Disposition": (
                 'attachment; filename="POxy.v0072.n4896.a.01.hires.jpg"'
-            )
+            ),
         },
         chunks=(b"oxford ", b"image"),
     )
@@ -112,25 +123,39 @@ def test_oxford_scraper_downloads_translated_image(tmp_path, monkeypatch):
 def test_oxford_scraper_fetches_all_images_for_canonical_article_url(
     tmp_path, monkeypatch
 ):
-    first_image_url = "https://portal.sds.ox.ac.uk/ndownloader/files/37555639"
-    second_image_url = "https://portal.sds.ox.ac.uk/ndownloader/files/37555640"
+    first_image_url = "https://download.example/first"
+    second_image_url = "https://download.example/second"
     session = FakeSession(
         {
             API_URL: FakeResponse(
                 json_data={
                     "files": [
-                        {"id": 37555639, "mimetype": "image/jpeg"},
-                        {"id": 37555640, "mimetype": "image/jpeg"},
-                        {"id": 37555641, "mimetype": "application/pdf"},
+                        {
+                            "id": 37555639,
+                            "mimetype": "image/jpeg",
+                            "download_url": first_image_url,
+                        },
+                        {
+                            "id": 37555640,
+                            "mimetype": "image/jpeg",
+                            "download_url": second_image_url,
+                        },
+                        {
+                            "id": 37555641,
+                            "mimetype": "application/pdf",
+                            "download_url": "https://download.example/document",
+                        },
                     ]
                 }
             ),
             first_image_url: FakeResponse(
                 url="https://storage.example/first.jpg",
+                headers=IMAGE_HEADERS,
                 chunks=(b"first",),
             ),
             second_image_url: FakeResponse(
                 url="https://storage.example/second.jpg",
+                headers=IMAGE_HEADERS,
                 chunks=(b"second",),
             ),
         }
@@ -155,6 +180,7 @@ def test_oxford_scraper_fetches_all_images_for_canonical_article_url(
 def test_oxford_scraper_uses_redirect_filename_as_fallback(tmp_path, monkeypatch):
     response = FakeResponse(
         url="https://storage.example/37555639/POxy%20image.jpg",
+        headers=IMAGE_HEADERS,
         chunks=(b"image",),
     )
     session = FakeSession({IMAGE_URL: response})
@@ -166,6 +192,33 @@ def test_oxford_scraper_uses_redirect_filename_as_fallback(tmp_path, monkeypatch
     OxfordScraper().download(PAGE_URL, tmp_path)
 
     assert (tmp_path / "POxy image.jpg").read_bytes() == b"image"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        FakeResponse(
+            url=IMAGE_URL,
+            status_code=202,
+            headers={"Content-Type": "text/html"},
+        ),
+        FakeResponse(
+            url="https://storage.example/image.jpg",
+            headers=IMAGE_HEADERS,
+        ),
+    ],
+    ids=["waf-challenge", "empty-image"],
+)
+def test_oxford_scraper_rejects_invalid_image_responses(
+    response, tmp_path, monkeypatch
+):
+    session = FakeSession({IMAGE_URL: response})
+    monkeypatch.setattr("scrapyrus.scrapers.oxford.requests.Session", lambda: session)
+
+    with pytest.raises(ValueError):
+        OxfordScraper().download(PAGE_URL, tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(

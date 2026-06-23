@@ -21,7 +21,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
     )
     FILE_IDENTIFIER_PATTERN = re.compile(r"^\d+$")
     API_URL_ROOT = "https://api.figshare.com/v2/articles/"
-    DOWNLOAD_URL_ROOT = "https://portal.sds.ox.ac.uk/ndownloader/files/"
+    DOWNLOAD_URL_ROOT = "https://ndownloader.figshare.com/files/"
     REQUEST_TIMEOUT = 30
 
     @classmethod
@@ -70,7 +70,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
         return cls.DOWNLOAD_URL_ROOT + file_identifier
 
     @classmethod
-    def _file_identifiers(cls, record: object) -> list[str]:
+    def _download_urls(cls, record: object) -> list[str]:
         if not isinstance(record, dict):
             raise ValueError("Oxford repository API record must be an object")
 
@@ -78,22 +78,21 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
         if not isinstance(files, list):
             raise ValueError("Oxford repository API files section must be a list")
 
-        identifiers = []
+        download_urls = []
         for file in files:
             if not isinstance(file, dict):
                 continue
-            identifier = file.get("id")
             mimetype = file.get("mimetype")
+            download_url = file.get("download_url")
             if (
-                not isinstance(identifier, int)
-                or isinstance(identifier, bool)
-                or identifier < 0
-                or not isinstance(mimetype, str)
+                not isinstance(mimetype, str)
                 or not mimetype.startswith("image/")
+                or not isinstance(download_url, str)
+                or not download_url
             ):
                 continue
-            identifiers.append(str(identifier))
-        return list(dict.fromkeys(identifiers))
+            download_urls.append(download_url)
+        return list(dict.fromkeys(download_urls))
 
     def _image_urls(self, url: str, session: requests.Session) -> list[str]:
         article_identifier = self._article_identifier(url)
@@ -106,10 +105,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
         self.wait_for_request_slot()
         response = session.get(api_url, timeout=self.REQUEST_TIMEOUT)
         response.raise_for_status()
-        return [
-            self.DOWNLOAD_URL_ROOT + identifier
-            for identifier in self._file_identifiers(response.json())
-        ]
+        return self._download_urls(response.json())
 
     @staticmethod
     def _content_disposition_filename(response: requests.Response) -> str | None:
@@ -137,6 +133,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
         return filename
 
     def download(self, url: str, target: Path) -> None:
+        created_files: list[Path] = []
         try:
             with requests.Session() as session:
                 image_urls = self._image_urls(url, session)
@@ -153,13 +150,40 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
                         stream=True,
                     ) as response:
                         response.raise_for_status()
+                        if response.status_code != requests.codes.ok:
+                            raise ValueError(
+                                "Oxford image download returned HTTP "
+                                f"{response.status_code}: {image_url}"
+                            )
+                        content_type = response.headers.get("Content-Type", "")
+                        if not content_type.lower().startswith("image/"):
+                            raise ValueError(
+                                "Oxford image download returned non-image content "
+                                f"({content_type or 'unknown content type'}): {image_url}"
+                            )
                         filename = self._filename(response, image_url)
-                        with (target / filename).open("wb") as image_file:
+                        image_path = target / filename
+                        created_files.append(image_path)
+                        bytes_written = 0
+                        with image_path.open("wb") as image_file:
                             for chunk in response.iter_content(chunk_size=64 * 1024):
+                                if not chunk:
+                                    continue
                                 image_file.write(chunk)
+                                bytes_written += len(chunk)
+                        if bytes_written == 0:
+                            raise ValueError(
+                                f"Oxford image download returned an empty body: {image_url}"
+                            )
                     logger.info("Completed Oxford repository image: %s", image_url)
-        except requests.HTTPError as error:
-            if error.response is not None and error.response.status_code in {403, 429}:
+        except Exception as error:
+            for image_path in created_files:
+                image_path.unlink(missing_ok=True)
+            if (
+                isinstance(error, requests.HTTPError)
+                and error.response is not None
+                and error.response.status_code in {403, 429}
+            ):
                 self.mark_rate_limited()
                 logger.warning(
                     "Oxford rate limit triggered by HTTP %d for %s (response URL: %s)",
