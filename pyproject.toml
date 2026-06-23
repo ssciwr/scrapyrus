@@ -29,6 +29,7 @@ dependencies = [
     "beautifulsoup4",
     "click",
     "requests",
+    "termgraph >=0.7.6",
     "tqdm",
 ]
 

@@ -1,8 +1,12 @@
 from pathlib import Path
 
 from scrapyrus.images import (
+    REPORT_CATEGORIES,
+    REPORT_COLORS,
+    REPORT_WIDTH,
     ImageScraperBase,
     RateLimitedMixin,
+    _normalized_widths,
     _read_broken_image_entries,
     image_log_file,
     scrape_images,
@@ -37,6 +41,13 @@ def test_read_broken_image_entries_ignores_blank_and_comment_lines(tmp_path):
         "42: https://images.example/recto",
         "44: https://images.example/verso",
     }
+
+
+def test_normalized_widths_keep_every_nonzero_category_visible():
+    widths = _normalized_widths([10_000, 1, 0, 1, 1], width=10)
+
+    assert widths == [7, 1, 0, 1, 1]
+    assert sum(widths) == 10
 
 
 def test_image_scraper_subclasses_register_in_definition_order(monkeypatch):
@@ -138,7 +149,7 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
 
 
 def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch
 ):
     source_url = "https://doi.org/10.1234/example"
     resolved_url = "https://known.example/recto"
@@ -203,15 +214,6 @@ def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
     assert (output / "42" / "image").read_text(encoding="utf-8") == resolved_url
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
-    assert capsys.readouterr().out == (
-        "Images scraped: 1; skipped because they exist: 0; "
-        "skipped because no scraper was responsible: 0; "
-        "skipped because the responsible scraper was unavailable: 0; "
-        "errors: 0\n"
-        "By scraper class:\n"
-        "  DestinationScraper: scraped: 1; skipped because they exist: 0; "
-        "skipped because unavailable: 0; errors: 0\n"
-    )
 
 
 def test_scrape_images_routes_resolved_oxford_doi_to_oxford_scraper(
@@ -366,7 +368,6 @@ def test_scrape_images_writes_failed_resolved_doi_url_to_error(tmp_path, monkeyp
 def test_scrape_images_reports_url_resolution_cycles_as_errors(
     tmp_path,
     monkeypatch,
-    capsys,
 ):
     first_url = "https://first.example/record/42"
     second_url = "https://second.example/record/42"
@@ -401,15 +402,6 @@ def test_scrape_images_reports_url_resolution_cycles_as_errors(
     )
 
     assert error.read_text(encoding="utf-8") == f"42: {first_url}\n"
-    assert capsys.readouterr().out == (
-        "Images scraped: 0; skipped because they exist: 0; "
-        "skipped because no scraper was responsible: 0; "
-        "skipped because the responsible scraper was unavailable: 0; "
-        "errors: 1\n"
-        "By scraper class:\n"
-        "  SecondResolver: scraped: 0; skipped because they exist: 0; "
-        "skipped because unavailable: 0; errors: 1\n"
-    )
 
 
 def test_scrape_images_passes_papyrus_directory_for_multiple_images(
@@ -678,7 +670,6 @@ def test_scrape_images_writes_download_failures_to_error_file(
 def test_scrape_images_reports_downloads_without_images_as_errors(
     tmp_path,
     monkeypatch,
-    capsys,
 ):
     metadata = tmp_path / "42.xml"
     url = "https://images.example/recto"
@@ -712,15 +703,6 @@ def test_scrape_images_reports_downloads_without_images_as_errors(
     assert error.read_text(encoding="utf-8") == f"42: {url}\n"
     assert "EmptyScraper.download did not write any images" in log.read_text(
         encoding="utf-8"
-    )
-    assert capsys.readouterr().out == (
-        "Images scraped: 0; skipped because they exist: 0; "
-        "skipped because no scraper was responsible: 0; "
-        "skipped because the responsible scraper was unavailable: 0; "
-        "errors: 1\n"
-        "By scraper class:\n"
-        "  EmptyScraper: scraped: 0; skipped because they exist: 0; "
-        "skipped because unavailable: 0; errors: 1\n"
     )
 
 
@@ -760,19 +742,22 @@ def test_scrape_images_skips_known_broken_urls_and_overwrites_error_file(
         broken_filename=broken,
     )
 
-    assert attempted_urls == [failing_url]
+    assert attempted_urls == [skipped_url, failing_url]
     assert broken.read_text(encoding="utf-8") == f"42: {skipped_url}"
     assert error.read_text(encoding="utf-8") == f"42: {failing_url}\n"
 
 
-def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
+def test_scrape_images_prints_normalized_stacked_outcome_chart(
+    tmp_path, monkeypatch, capsys
+):
     metadata_paths = []
     for hgv_id, urls in (
         ("existing", ["https://images.example/recto", "https://images.example/verso"]),
-        ("scraped", ["https://images.example/success"]),
+        ("downloaded", ["https://images.example/success"]),
         ("unsupported", ["https://unsupported.example/image"]),
         ("unavailable", ["https://unavailable.example/image"]),
         ("failed", ["https://images.example/failure"]),
+        ("broken", ["https://images.example/broken"]),
     ):
         metadata = tmp_path / f"{hgv_id}.xml"
         write_metadata(metadata, urls)
@@ -802,6 +787,11 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
 
     output = tmp_path / "images"
     (output / "existing").mkdir(parents=True)
+    broken = tmp_path / "broken.txt"
+    broken.write_text(
+        "broken: https://images.example/broken\n",
+        encoding="utf-8",
+    )
 
     unavailable = tmp_path / "unavailable.txt"
     scrape_images(
@@ -809,19 +799,24 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
         tmp_path / "todo.txt",
         tmp_path / "error.txt",
         unavailable,
+        broken_filename=broken,
     )
 
-    assert capsys.readouterr().out == (
-        "Images scraped: 1; skipped because they exist: 2; "
-        "skipped because no scraper was responsible: 1; "
-        "skipped because the responsible scraper was unavailable: 1; "
-        "errors: 1\n"
-        "By scraper class:\n"
-        "  Scraper: scraped: 1; skipped because they exist: 2; "
-        "skipped because unavailable: 0; errors: 1\n"
-        "  UnavailableScraper: scraped: 0; skipped because they exist: 0; "
-        "skipped because unavailable: 1; errors: 0\n"
-    )
+    output_lines = capsys.readouterr().out.splitlines()
+    legend, _, scraper_row, unavailable_row = output_lines
+
+    for category, color in zip(REPORT_CATEGORIES, REPORT_COLORS):
+        assert f"\033[{color}m▇ {category} \033[0m" in legend
+
+    assert scraper_row.count("▇") == REPORT_WIDTH
+    assert scraper_row.endswith(" 5")
+    for color, segment_width in zip(REPORT_COLORS, [20, 10, 0, 10, 10]):
+        if segment_width:
+            assert f"\033[{color}m{'▇' * segment_width}\033[0m" in scraper_row
+
+    assert unavailable_row.count("▇") == REPORT_WIDTH
+    assert unavailable_row.endswith(" 1")
+    assert f"\033[{REPORT_COLORS[2]}m{'▇' * REPORT_WIDTH}\033[0m" in unavailable_row
     assert unavailable.read_text(encoding="utf-8") == (
         "unavailable: https://unavailable.example/image\n"
     )
