@@ -250,6 +250,18 @@ def _format_scraper_outcomes(
     return "\n".join(lines)
 
 
+def _read_broken_image_entries(filename: Path) -> set[str]:
+    """Read broken image entries, ignoring blank and comment lines."""
+
+    if not filename.exists():
+        return set()
+    return {
+        line
+        for line in filename.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+
 def scrape_images(
     target: Path,
     todo_filename: str | Path,
@@ -263,7 +275,8 @@ def scrape_images(
 
     Each HGV record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
-    ``HGV_ID: URL`` form. Sources listed in *broken_filename* are not retried.
+    ``HGV_ID: URL`` form. Sources listed in *broken_filename* are not retried;
+    blank lines and lines starting with ``#`` in that file are ignored.
     Sources whose download fails during this run are written in the same form
     to *error_filename*, replacing any previous contents. Resolver scrapers
     replace source URLs before responsibility is checked again, and these
@@ -283,11 +296,7 @@ def scrape_images(
     broken_path = Path(broken_filename)
     error_path = Path(error_filename)
     unavailable_path = Path(unavailable_filename)
-    known_broken = set(
-        broken_path.read_text(encoding="utf-8").splitlines()
-        if broken_path.exists()
-        else ()
-    )
+    known_broken = _read_broken_image_entries(broken_path)
     scraped_count = 0
     existing_count = 0
     no_responsible_scraper_count = 0

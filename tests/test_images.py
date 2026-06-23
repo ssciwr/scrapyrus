@@ -3,6 +3,7 @@ from pathlib import Path
 from scrapyrus.images import (
     ImageScraperBase,
     RateLimitedMixin,
+    _read_broken_image_entries,
     image_log_file,
     scrape_images,
 )
@@ -18,6 +19,24 @@ def write_metadata(path: Path, urls: list[str]) -> None:
         "</TEI>",
         encoding="utf-8",
     )
+
+
+def test_read_broken_image_entries_ignores_blank_and_comment_lines(tmp_path):
+    broken = tmp_path / "broken.txt"
+    broken.write_text(
+        "\n"
+        "# Entries below are known to be broken\n"
+        "42: https://images.example/recto\n"
+        "   \n"
+        "#43: https://images.example/commented-out\n"
+        "44: https://images.example/verso\n",
+        encoding="utf-8",
+    )
+
+    assert _read_broken_image_entries(broken) == {
+        "42: https://images.example/recto",
+        "44: https://images.example/verso",
+    }
 
 
 def test_image_scraper_subclasses_register_in_definition_order(monkeypatch):
