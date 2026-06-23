@@ -99,5 +99,12 @@ class UniKoelnScraper(RateLimitedMixin, ImageScraperBase):
                     error.response.url or url,
                 )
             raise
+        except requests.ConnectionError:
+            self.mark_rate_limited()
+            logger.warning(
+                "Uni Koeln server is unavailable after a connection failure for %s",
+                url,
+            )
+            raise
 
         logger.info("Completed Uni Koeln papyrus record: %s", url)

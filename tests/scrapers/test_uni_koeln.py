@@ -152,3 +152,29 @@ def test_uni_koeln_scraper_becomes_unavailable_after_rate_limit(
         scraper.download(page_url, tmp_path)
 
     assert scraper.available() is expected_available
+
+
+def test_uni_koeln_scraper_becomes_unavailable_after_connection_failure(
+    tmp_path,
+    monkeypatch,
+):
+    page_url = (
+        "https://www.uni-koeln.de/phil-fak/ifa/NRWakademie/"
+        "papyrologie/bubastos/01PBub01.html"
+    )
+    session = FakeSession({})
+    connection_error = requests.ConnectionError("Network is unreachable")
+
+    def fail_to_connect(url, **kwargs):
+        raise connection_error
+
+    monkeypatch.setattr(session, "get", fail_to_connect)
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.uni_koeln.requests.Session", lambda: session
+    )
+    scraper = UniKoelnScraper()
+
+    with pytest.raises(requests.ConnectionError, match="Network is unreachable"):
+        scraper.download(page_url, tmp_path)
+
+    assert not scraper.available()
