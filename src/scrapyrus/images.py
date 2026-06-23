@@ -144,12 +144,38 @@ class _ImageDownload:
     scraper: ImageScraperBase
 
 
+@dataclass
+class _ScraperOutcomeCounts:
+    scraped: int = 0
+    existing: int = 0
+    unavailable: int = 0
+    errors: int = 0
+
+
 class _ImageURLResolutionError(RuntimeError):
     """Report a failure while resolving an effective image URL."""
 
-    def __init__(self, url: str, message: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        scraper: ImageScraperBase,
+        message: str,
+    ) -> None:
         super().__init__(message)
         self.url = url
+        self.scraper = scraper
+
+
+def _responsible_scraper(
+    url: str,
+    scrapers: tuple[ImageScraperBase, ...],
+) -> ImageScraperBase | None:
+    """Return the first scraper responsible for *url*, if any."""
+
+    return next(
+        (candidate for candidate in scrapers if candidate.responsible(url)),
+        None,
+    )
 
 
 def _resolve_scraper(
@@ -168,6 +194,7 @@ def _resolve_scraper(
         except Exception as error:
             raise _ImageURLResolutionError(
                 effective_url,
+                scraper,
                 f"{type(scraper).__name__} failed to resolve {effective_url}",
             ) from error
 
@@ -176,11 +203,13 @@ def _resolve_scraper(
         if not resolved_url:
             raise _ImageURLResolutionError(
                 effective_url,
+                scraper,
                 f"{type(scraper).__name__} resolved {effective_url} to an empty URL",
             )
         if resolved_url in seen_urls:
             raise _ImageURLResolutionError(
                 resolved_url,
+                scraper,
                 f"Image scraper URL resolution cycle detected at {resolved_url}",
             )
 
@@ -193,17 +222,32 @@ def _resolve_scraper(
         seen_urls.add(resolved_url)
         effective_url = resolved_url
 
-        next_scraper = next(
-            (
-                candidate
-                for candidate in scrapers
-                if candidate.responsible(effective_url)
-            ),
-            None,
-        )
+        next_scraper = _responsible_scraper(effective_url, scrapers)
         if next_scraper is None:
             return effective_url, None
         scraper = next_scraper
+
+
+def _format_scraper_outcomes(
+    outcomes: dict[type[ImageScraperBase], _ScraperOutcomeCounts],
+) -> str:
+    """Format outcome counts grouped by responsible scraper class."""
+
+    if not outcomes:
+        return "By scraper class: none"
+
+    lines = ["By scraper class:"]
+    for scraper_type, counts in sorted(
+        outcomes.items(),
+        key=lambda item: item[0].__name__,
+    ):
+        lines.append(
+            f"  {scraper_type.__name__}: scraped: {counts.scraped}; "
+            f"skipped because they exist: {counts.existing}; "
+            f"skipped because unavailable: {counts.unavailable}; "
+            f"errors: {counts.errors}"
+        )
+    return "\n".join(lines)
 
 
 def scrape_images(
@@ -225,8 +269,9 @@ def scrape_images(
     is also treated as a failure. Sources already listed there are not retried.
     Temporarily unavailable sources are skipped and written in the same form to
     *unavailable_filename*. Existing HGV directories are left untouched. A
-    summary of scraped, skipped, and failed image references is printed after
-    processing.
+    summary of scraped, skipped, and failed image references, followed by the
+    class-level spread of outcomes that have a responsible scraper, is printed
+    after processing.
     """
 
     logger.info("Starting image scrape: target=%s idp_data=%s", target, idp_data)
@@ -249,6 +294,10 @@ def scrape_images(
     no_responsible_scraper_count = 0
     unavailable_scraper_count = 0
     error_count = 0
+    outcomes_by_scraper: dict[
+        type[ImageScraperBase],
+        _ScraperOutcomeCounts,
+    ] = {}
     downloads: list[_ImageDownload] = []
     scrapers = tuple(
         scraper_type() for scraper_type in ImageScraperBase.registered_scrapers()
@@ -268,6 +317,16 @@ def scrape_images(
             papyrus_target = target / hgv_id
             if graphics and papyrus_target.exists():
                 existing_count += len(graphics)
+                for graphic in graphics:
+                    url = graphic.get("url")
+                    if not url:
+                        continue
+                    scraper = _responsible_scraper(url, scrapers)
+                    if scraper is not None:
+                        outcomes_by_scraper.setdefault(
+                            type(scraper),
+                            _ScraperOutcomeCounts(),
+                        ).existing += 1
                 logger.debug(
                     "Skipping %d existing image reference(s) for HGV %s",
                     len(graphics),
@@ -284,10 +343,7 @@ def scrape_images(
                     logger.debug("Skipping known error: %s", source_error_entry)
                     continue
 
-                scraper = next(
-                    (candidate for candidate in scrapers if candidate.responsible(url)),
-                    None,
-                )
+                scraper = _responsible_scraper(url, scrapers)
                 if scraper is None:
                     no_responsible_scraper_count += 1
                     todo_file.write(f"{hgv_id}: {url}\n")
@@ -325,6 +381,10 @@ def scrape_images(
                     logger.debug("Skipping known error: %s", error_entry)
                     continue
                 error_count += 1
+                outcomes_by_scraper.setdefault(
+                    type(error.scraper),
+                    _ScraperOutcomeCounts(),
+                ).errors += 1
                 error_file.write(f"{error_separator}{error_entry}\n")
                 error_separator = ""
                 existing_errors.add(error_entry)
@@ -352,6 +412,10 @@ def scrape_images(
 
             if not scraper.available():
                 unavailable_scraper_count += 1
+                outcomes_by_scraper.setdefault(
+                    type(scraper),
+                    _ScraperOutcomeCounts(),
+                ).unavailable += 1
                 unavailable_file.write(f"{download.hgv_id}: {effective_url}\n")
                 logger.warning(
                     "Image scraper %s is unavailable; skipping HGV %s: %s",
@@ -379,6 +443,10 @@ def scrape_images(
                 except OSError:
                     pass
                 error_count += 1
+                outcomes_by_scraper.setdefault(
+                    type(scraper),
+                    _ScraperOutcomeCounts(),
+                ).errors += 1
                 error_file.write(
                     f"{error_separator}{download.hgv_id}: {effective_url}\n"
                 )
@@ -391,6 +459,10 @@ def scrape_images(
                 )
             else:
                 scraped_count += 1
+                outcomes_by_scraper.setdefault(
+                    type(scraper),
+                    _ScraperOutcomeCounts(),
+                ).scraped += 1
                 logger.info("Downloaded HGV %s: %s", download.hgv_id, effective_url)
 
     summary = (
@@ -402,8 +474,9 @@ def scrape_images(
         f"{unavailable_scraper_count}; "
         f"errors: {error_count}"
     )
-    logger.info(summary)
-    print(summary)
+    report = f"{summary}\n{_format_scraper_outcomes(outcomes_by_scraper)}"
+    logger.info(report)
+    print(report)
 
 
 # Import built-in scrapers after defining the base class so subclasses register.

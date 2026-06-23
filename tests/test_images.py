@@ -119,7 +119,7 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
 
 
 def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     source_url = "https://doi.org/10.1234/example"
     resolved_url = "https://known.example/recto"
@@ -184,6 +184,15 @@ def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
     assert (output / "42" / "image").read_text(encoding="utf-8") == resolved_url
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
+    assert capsys.readouterr().out == (
+        "Images scraped: 1; skipped because they exist: 0; "
+        "skipped because no scraper was responsible: 0; "
+        "skipped because the responsible scraper was unavailable: 0; "
+        "errors: 0\n"
+        "By scraper class:\n"
+        "  DestinationScraper: scraped: 1; skipped because they exist: 0; "
+        "skipped because unavailable: 0; errors: 0\n"
+    )
 
 
 def test_scrape_images_routes_resolved_oxford_doi_to_oxford_scraper(
@@ -335,7 +344,11 @@ def test_scrape_images_writes_failed_resolved_doi_url_to_error(tmp_path, monkeyp
     assert error.read_text(encoding="utf-8") == f"42: {resolved_url}\n"
 
 
-def test_scrape_images_reports_url_resolution_cycles_as_errors(tmp_path, monkeypatch):
+def test_scrape_images_reports_url_resolution_cycles_as_errors(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
     first_url = "https://first.example/record/42"
     second_url = "https://second.example/record/42"
     metadata = tmp_path / "42.xml"
@@ -369,6 +382,15 @@ def test_scrape_images_reports_url_resolution_cycles_as_errors(tmp_path, monkeyp
     )
 
     assert error.read_text(encoding="utf-8") == f"42: {first_url}\n"
+    assert capsys.readouterr().out == (
+        "Images scraped: 0; skipped because they exist: 0; "
+        "skipped because no scraper was responsible: 0; "
+        "skipped because the responsible scraper was unavailable: 0; "
+        "errors: 1\n"
+        "By scraper class:\n"
+        "  SecondResolver: scraped: 0; skipped because they exist: 0; "
+        "skipped because unavailable: 0; errors: 1\n"
+    )
 
 
 def test_scrape_images_passes_papyrus_directory_for_multiple_images(
@@ -677,6 +699,9 @@ def test_scrape_images_reports_downloads_without_images_as_errors(
         "skipped because no scraper was responsible: 0; "
         "skipped because the responsible scraper was unavailable: 0; "
         "errors: 1\n"
+        "By scraper class:\n"
+        "  EmptyScraper: scraped: 0; skipped because they exist: 0; "
+        "skipped because unavailable: 0; errors: 1\n"
     )
 
 
@@ -770,6 +795,11 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
         "skipped because no scraper was responsible: 1; "
         "skipped because the responsible scraper was unavailable: 1; "
         "errors: 1\n"
+        "By scraper class:\n"
+        "  Scraper: scraped: 1; skipped because they exist: 2; "
+        "skipped because unavailable: 0; errors: 1\n"
+        "  UnavailableScraper: scraped: 0; skipped because they exist: 0; "
+        "skipped because unavailable: 1; errors: 0\n"
     )
     assert unavailable.read_text(encoding="utf-8") == (
         "unavailable: https://unavailable.example/image\n"
