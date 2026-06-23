@@ -17,6 +17,10 @@ def test_berlpap_scraper_downloads_deduplicated_original_images(tmp_path, monkey
     html = f"""
         <table><tr><td><img src="/unrelated.jpg" /></td></tr></table>
         <table>
+            <tr><td><b>Publizierte Abbildungen:</b></td></tr>
+            <tr><td><a href="https://images.example/record">external</a></td></tr>
+        </table>
+        <table>
             <tr><td><b>Digitalisate</b>:</td></tr>
             <tr><td><a href="{recto_url}">521 dpi</a></td></tr>
             <tr><td><a href="{recto_url}">preview</a></td></tr>
@@ -56,7 +60,9 @@ def test_berlpap_scraper_downloads_deduplicated_original_images(tmp_path, monkey
 
     monkeypatch.setattr("scrapyrus.scrapers.berlpap.requests.get", fake_get)
 
-    BerlPapScraper().download(page_url, tmp_path)
+    scraper = BerlPapScraper()
+    assert scraper.resolve(page_url) == page_url
+    scraper.download(page_url, tmp_path)
 
     assert (tmp_path / "P_25014_R_4_001.jpg").read_bytes() == b"recto image"
     assert (tmp_path / "P_25014_V_4_001.jpg").read_bytes() == b"verso image"
@@ -65,6 +71,36 @@ def test_berlpap_scraper_downloads_deduplicated_original_images(tmp_path, monkey
         (recto_url, {"timeout": 30, "stream": True}),
         (verso_url, {"timeout": 30, "stream": True}),
     ]
+
+
+def test_berlpap_scraper_resolves_published_image_record(monkeypatch):
+    page_url = "https://berlpap.smb.museum/03129/"
+    published_url = "http://www.papyrology.uw.edu.pl/papyri/pberlin11586.htm"
+    html = f"""
+        <table><tr><td><a href="https://unrelated.example/">unrelated</a></td></tr></table>
+        <table>
+            <tr><td><b>Publizierte Abbildungen:</b><br>
+                <a href="{published_url}">Warschau, Institut für Papyrologie</a>
+            </td></tr>
+        </table>
+    """
+
+    class FakeResponse:
+        text = html
+
+        def raise_for_status(self):
+            pass
+
+    requests = []
+
+    def fake_get(url, **kwargs):
+        requests.append((url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr("scrapyrus.scrapers.berlpap.requests.get", fake_get)
+
+    assert BerlPapScraper().resolve(page_url) == published_url
+    assert requests == [(page_url, {"timeout": BerlPapScraper.REQUEST_TIMEOUT})]
 
 
 def test_berlpap_scraper_handles_page_without_digitalisate(tmp_path, monkeypatch):

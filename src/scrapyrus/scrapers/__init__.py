@@ -17,6 +17,7 @@ from scrapyrus.scrapers.uni_koeln import UniKoelnScraper
 from scrapyrus.scrapers.umichigan import UMichiganScraper
 from scrapyrus.scrapers.ucl import UCLScraper
 from scrapyrus.scrapers.uc_berkeley import UCBerkeleyScraper
+from scrapyrus.scrapers.warsaw import WarsawScraper
 from scrapyrus.scrapers.yale import YaleScraper
 
 
@@ -40,5 +41,6 @@ __all__ = [
     "UMichiganScraper",
     "UCLScraper",
     "UCBerkeleyScraper",
+    "WarsawScraper",
     "YaleScraper",
 ]
