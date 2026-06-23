@@ -1,3 +1,6 @@
+import pytest
+import requests
+
 from scrapyrus.scrapers.british_museum import BritishMuseumScraper
 
 
@@ -150,3 +153,30 @@ def test_british_museum_scraper_downloads_all_images(tmp_path, monkeypatch):
         (second_page_url, {"timeout": 30}),
         (second_download_url, {"timeout": 30, "stream": True}),
     ]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_available"),
+    [(403, False), (429, True), (500, True)],
+)
+def test_british_museum_scraper_becomes_unavailable_after_forbidden_response(
+    status_code,
+    expected_available,
+    tmp_path,
+    monkeypatch,
+):
+    source_url = "https://www.britishmuseum.org/collection/object/Y_EA55761"
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = source_url
+    session = FakeSession({source_url: response})
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.british_museum.requests.Session",
+        lambda: session,
+    )
+    scraper = BritishMuseumScraper()
+
+    with pytest.raises(requests.HTTPError):
+        scraper.download(source_url, tmp_path)
+
+    assert scraper.available() is expected_available

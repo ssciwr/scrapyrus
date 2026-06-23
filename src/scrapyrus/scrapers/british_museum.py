@@ -7,13 +7,13 @@ from urllib.parse import unquote, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from scrapyrus.images import ImageScraperBase
+from scrapyrus.images import ImageScraperBase, RateLimitedMixin
 
 
 logger = logging.getLogger("scrapyrus.images.scrapers.british_museum")
 
 
-class BritishMuseumScraper(ImageScraperBase):
+class BritishMuseumScraper(RateLimitedMixin, ImageScraperBase):
     """Download images offered for reuse by British Museum object records."""
 
     HOST = "www.britishmuseum.org"
@@ -93,39 +93,55 @@ class BritishMuseumScraper(ImageScraperBase):
 
     def download(self, url: str, target: Path) -> None:
         logger.info("Fetching British Museum object record: %s", url)
-        with requests.Session() as session:
-            object_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
-            object_response.raise_for_status()
-            object_url = object_response.url or url
-            image_page_urls = self._image_page_urls(object_response.text, object_url)
-            logger.info(
-                "British Museum record contains %d image(s): %s",
-                len(image_page_urls),
-                object_url,
-            )
-
-            for image_page_url in image_page_urls:
-                image_page_response = session.get(
-                    image_page_url,
-                    timeout=self.REQUEST_TIMEOUT,
+        try:
+            with requests.Session() as session:
+                object_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
+                object_response.raise_for_status()
+                object_url = object_response.url or url
+                image_page_urls = self._image_page_urls(
+                    object_response.text,
+                    object_url,
                 )
-                image_page_response.raise_for_status()
-                final_image_page_url = image_page_response.url or image_page_url
-                download_url = self._download_url(
-                    image_page_response.text,
-                    final_image_page_url,
+                logger.info(
+                    "British Museum record contains %d image(s): %s",
+                    len(image_page_urls),
+                    object_url,
                 )
 
-                logger.debug("Downloading British Museum image: %s", download_url)
-                with session.get(
-                    download_url,
-                    timeout=self.REQUEST_TIMEOUT,
-                    stream=True,
-                ) as image_response:
-                    image_response.raise_for_status()
-                    filename = self._filename(image_response, download_url)
-                    with (target / filename).open("wb") as image_file:
-                        for chunk in image_response.iter_content(chunk_size=64 * 1024):
-                            image_file.write(chunk)
+                for image_page_url in image_page_urls:
+                    image_page_response = session.get(
+                        image_page_url,
+                        timeout=self.REQUEST_TIMEOUT,
+                    )
+                    image_page_response.raise_for_status()
+                    final_image_page_url = image_page_response.url or image_page_url
+                    download_url = self._download_url(
+                        image_page_response.text,
+                        final_image_page_url,
+                    )
+
+                    logger.debug("Downloading British Museum image: %s", download_url)
+                    with session.get(
+                        download_url,
+                        timeout=self.REQUEST_TIMEOUT,
+                        stream=True,
+                    ) as image_response:
+                        image_response.raise_for_status()
+                        filename = self._filename(image_response, download_url)
+                        with (target / filename).open("wb") as image_file:
+                            for chunk in image_response.iter_content(
+                                chunk_size=64 * 1024
+                            ):
+                                image_file.write(chunk)
+        except requests.HTTPError as error:
+            if error.response is not None and error.response.status_code == 403:
+                self.mark_rate_limited()
+                logger.warning(
+                    "British Museum rate limit triggered by HTTP 403 for %s "
+                    "(response URL: %s)",
+                    url,
+                    error.response.url or url,
+                )
+            raise
 
         logger.info("Completed British Museum record: %s", url)
