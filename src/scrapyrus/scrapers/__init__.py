@@ -8,6 +8,7 @@ from scrapyrus.scrapers.louvre import LouvreScraper
 from scrapyrus.scrapers.met_museum import MetMuseumScraper
 from scrapyrus.scrapers.nakala import NakalaScraper
 from scrapyrus.scrapers.onb import ONBScraper
+from scrapyrus.scrapers.oxford import OxfordScraper
 from scrapyrus.scrapers.berlpap import BerlPapScraper
 from scrapyrus.scrapers.papyrus_portal import PapyrusPortalScraper
 from scrapyrus.scrapers.psi_online import PSIOnlineScraper
@@ -29,6 +30,7 @@ __all__ = [
     "MetMuseumScraper",
     "NakalaScraper",
     "ONBScraper",
+    "OxfordScraper",
     "PapyrusPortalScraper",
     "PSIOnlineScraper",
     "UniKoelnScraper",
