@@ -16,7 +16,7 @@ class CairoMuseumScraper(ImageScraperBase):
 
     HOST = "ipap.csad.ox.ac.uk"
     RECORD_PATH = "/4DLink4/4DACTION/IPAPwebquery"
-    DOWNLOAD_LABEL = "300 dpi image (b/w)"
+    DOWNLOAD_LABELS = frozenset({"300 dpi image (b/w)", "300 dpi image (colour)"})
     IMAGE_SUFFIXES = frozenset(
         {".bmp", ".gif", ".jp2", ".jpeg", ".jpg", ".png", ".tif", ".tiff"}
     )
@@ -50,7 +50,7 @@ class CairoMuseumScraper(ImageScraperBase):
 
         for link in soup.find_all("a", href=True):
             label = link.get_text(" ", strip=True)
-            if label.casefold() != cls.DOWNLOAD_LABEL.casefold():
+            if label.casefold() not in cls.DOWNLOAD_LABELS:
                 continue
 
             image_url = urljoin(page_url, link["href"])

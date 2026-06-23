@@ -74,6 +74,9 @@ def test_cairo_museum_scraper_extracts_300_dpi_image_links():
         <a href="/POxy-bw/300dpi/P.Oxy.XVI.1908.jpg">
           300 dpi image (b/w)
         </a>
+        <a href="/POxy-colour/300dpi/P.Oxy.XVI.1908-colour.jpg">
+          300 dpi image (colour)
+        </a>
         <a href="/POxy-bw/300dpi/P.Oxy.XVI.1908.jpg">
           300 dpi image (b/w)
         </a>
@@ -82,7 +85,8 @@ def test_cairo_museum_scraper_extracts_300_dpi_image_links():
     """
 
     assert CairoMuseumScraper._image_urls(html, page_url) == [
-        "http://ipap.csad.ox.ac.uk/POxy-bw/300dpi/P.Oxy.XVI.1908.jpg"
+        "http://ipap.csad.ox.ac.uk/POxy-bw/300dpi/P.Oxy.XVI.1908.jpg",
+        "http://ipap.csad.ox.ac.uk/POxy-colour/300dpi/P.Oxy.XVI.1908-colour.jpg",
     ]
 
 
@@ -94,17 +98,22 @@ def test_cairo_museum_scraper_downloads_record_images(tmp_path, monkeypatch):
     page_url = source_url.replace("http://", "https://")
     recto_url = "https://ipap.csad.ox.ac.uk/POxy-bw/300dpi/P.Oxy.XVI.1908.jpg"
     verso_url = "https://ipap.csad.ox.ac.uk/POxy-bw/300dpi/P.Oxy.XVI.1908%20v.jpg"
+    colour_url = (
+        "https://ipap.csad.ox.ac.uk/POxy-colour/300dpi/P.Oxy.XVI.1908-colour.jpg"
+    )
     html = f"""
         <a href="/POxy-bw/72dpi/P.Oxy.XVI.1908.jpg">72 dpi image (b/w)</a>
         <a href="{recto_url}">300 dpi image (b/w)</a>
         <a href="/POxy-bw/300dpi/P.Oxy.XVI.1908%20v.jpg">
           300 dpi image (b/w)
         </a>
+        <a href="{colour_url}">300 dpi image (colour)</a>
     """
     responses = {
         source_url: FakeResponse(page_url, text=html),
         recto_url: FakeResponse(recto_url, chunks=(b"recto ", b"image")),
         verso_url: FakeResponse(verso_url, chunks=(b"verso image",)),
+        colour_url: FakeResponse(colour_url, chunks=(b"colour image",)),
     }
     session = FakeSession(responses)
     monkeypatch.setattr(
@@ -115,10 +124,12 @@ def test_cairo_museum_scraper_downloads_record_images(tmp_path, monkeypatch):
 
     assert (tmp_path / "P.Oxy.XVI.1908.jpg").read_bytes() == b"recto image"
     assert (tmp_path / "P.Oxy.XVI.1908 v.jpg").read_bytes() == b"verso image"
+    assert (tmp_path / "P.Oxy.XVI.1908-colour.jpg").read_bytes() == b"colour image"
     assert session.requests == [
         (source_url, {"timeout": 30}),
         (recto_url, {"timeout": 30, "stream": True}),
         (verso_url, {"timeout": 30, "stream": True}),
+        (colour_url, {"timeout": 30, "stream": True}),
     ]
 
 
