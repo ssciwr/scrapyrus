@@ -183,6 +183,7 @@ def test_scrape_images_reuses_each_scraper_instance_for_the_full_run(
             assert self.responsible_urls == urls
             self.downloaded_urls.append(url)
             events.append(("download", url))
+            (target / url.rpartition("/")[2]).write_text(url, encoding="utf-8")
 
     scrape_images(
         tmp_path / "images",
@@ -301,6 +302,7 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
 
         def download(self, url: str, target: Path) -> None:
             events.append(("download", url))
+            (target / "image").write_text(url, encoding="utf-8")
             self.mark_rate_limited()
 
     todo = tmp_path / "todo.txt"
@@ -357,6 +359,52 @@ def test_scrape_images_writes_download_failures_to_error_file(
     assert "RuntimeError: download failed" in log_text
     captured = capsys.readouterr()
     assert "RuntimeError: download failed" not in captured.out + captured.err
+
+
+def test_scrape_images_reports_downloads_without_images_as_errors(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    metadata = tmp_path / "42.xml"
+    url = "https://images.example/recto"
+    write_metadata(metadata, [url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    class EmptyScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return True
+
+        def download(self, url: str, target: Path) -> None:
+            pass
+
+    output = tmp_path / "images"
+    error = tmp_path / "error.txt"
+    log = tmp_path / "images.log"
+
+    with image_log_file(log, "ERROR"):
+        scrape_images(
+            output,
+            tmp_path / "todo.txt",
+            error,
+            tmp_path / "unavailable.txt",
+        )
+
+    assert not (output / "42").exists()
+    assert error.read_text(encoding="utf-8") == f"42: {url}\n"
+    assert "EmptyScraper.download did not write any images" in log.read_text(
+        encoding="utf-8"
+    )
+    assert capsys.readouterr().out == (
+        "Images scraped: 0; skipped because they exist: 0; "
+        "skipped because no scraper was responsible: 0; "
+        "skipped because the responsible scraper was unavailable: 0; "
+        "errors: 1\n"
+    )
 
 
 def test_scrape_images_skips_and_preserves_existing_error_entries(
@@ -431,6 +479,7 @@ def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
         def download(self, url: str, target: Path) -> None:
             if url.endswith("/failure"):
                 raise RuntimeError("download failed")
+            (target / "image").write_text(url, encoding="utf-8")
 
     output = tmp_path / "images"
     (output / "existing").mkdir(parents=True)

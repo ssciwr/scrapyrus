@@ -134,11 +134,12 @@ def scrape_images(
     Each HGV record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
     ``HGV_ID: URL`` form. Sources whose download fails are written in the same
-    form to *error_filename*. Sources already listed there are not retried.
-    Temporarily unavailable sources are skipped and written in the same form
-    to *unavailable_filename*. Existing HGV directories are left untouched. A
-    summary of scraped, skipped, and failed image references is printed after
-    processing.
+    form to *error_filename*. A download that returns without writing an image
+    file is also treated as a failure. Sources already listed there are not
+    retried. Temporarily unavailable sources are skipped and written in the
+    same form to *unavailable_filename*. Existing HGV directories are left
+    untouched. A summary of scraped, skipped, and failed image references is
+    printed after processing.
     """
 
     logger.info("Starting image scrape: target=%s idp_data=%s", target, idp_data)
@@ -236,6 +237,11 @@ def scrape_images(
             )
             try:
                 download.scraper.download(download.url, download.target)
+                if not any(path.is_file() for path in download.target.iterdir()):
+                    raise RuntimeError(
+                        f"{type(download.scraper).__name__}.download did not write "
+                        "any images"
+                    )
             except Exception:
                 try:
                     download.target.rmdir()
