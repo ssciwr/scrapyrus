@@ -16,13 +16,21 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
         error_filename,
         unavailable_filename,
         *,
+        broken_filename,
         idp_data,
     ):
         logging.getLogger("scrapyrus.images.scrapers.test").debug(
             "scraper debug details"
         )
         calls.append(
-            (target, todo_filename, error_filename, unavailable_filename, idp_data)
+            (
+                target,
+                todo_filename,
+                broken_filename,
+                error_filename,
+                unavailable_filename,
+                idp_data,
+            )
         )
 
     monkeypatch.setattr("scrapyrus.__main__.scrape_images", fake_scrape_images)
@@ -40,15 +48,29 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
             str(log),
             "--log-level",
             "DEBUG",
-            str(target),
+            "--todo-file",
             "todo.txt",
+            "--broken-file",
+            "broken.txt",
+            "--error-file",
             "error.txt",
+            "--unavailable-file",
             "unavailable.txt",
+            str(target),
         ),
     )
 
     assert result.exit_code == 0
-    assert calls == [(target, "todo.txt", "error.txt", "unavailable.txt", idp_data)]
+    assert calls == [
+        (
+            target,
+            Path("todo.txt"),
+            Path("broken.txt"),
+            Path("error.txt"),
+            Path("unavailable.txt"),
+            idp_data,
+        )
+    ]
     assert "DEBUG scrapyrus.images.scrapers.test: scraper debug details" in (
         log.read_text(encoding="utf-8")
     )
@@ -64,8 +86,16 @@ def test_images_subcommand_uses_defaults(monkeypatch):
         error_filename,
         unavailable_filename,
         *,
+        broken_filename,
         idp_data: calls.append(
-            (target, todo_filename, error_filename, unavailable_filename, idp_data)
+            (
+                target,
+                todo_filename,
+                broken_filename,
+                error_filename,
+                unavailable_filename,
+                idp_data,
+            )
         ),
     )
     runner = CliRunner()
@@ -78,9 +108,10 @@ def test_images_subcommand_uses_defaults(monkeypatch):
     assert calls == [
         (
             Path("images"),
-            "images_todo.txt",
-            "images_error.txt",
-            "images_unavailable.txt",
+            Path("images_todo.txt"),
+            Path("images_broken.txt"),
+            Path("images_error.txt"),
+            Path("images_unavailable.txt"),
             Path("idp.data"),
         )
     ]

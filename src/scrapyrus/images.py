@@ -256,38 +256,37 @@ def scrape_images(
     error_filename: str | Path,
     unavailable_filename: str | Path,
     *,
+    broken_filename: str | Path = Path("images_broken.txt"),
     idp_data: str | Path = Path("idp.data"),
 ) -> None:
     """Download images referenced by all HGV metadata records.
 
     Each HGV record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
-    ``HGV_ID: URL`` form. Sources whose download fails are written in the same
-    form to *error_filename*. Resolver scrapers replace source URLs before
-    responsibility is checked again, and these effective URLs are used in the
-    todo and error files. A download that returns without writing an image file
-    is also treated as a failure. Sources already listed there are not retried.
-    Temporarily unavailable sources are skipped and written in the same form to
-    *unavailable_filename*. Existing HGV directories are left untouched. A
-    summary of scraped, skipped, and failed image references, followed by the
-    class-level spread of outcomes that have a responsible scraper, is printed
-    after processing.
+    ``HGV_ID: URL`` form. Sources listed in *broken_filename* are not retried.
+    Sources whose download fails during this run are written in the same form
+    to *error_filename*, replacing any previous contents. Resolver scrapers
+    replace source URLs before responsibility is checked again, and these
+    effective URLs are used in the todo, broken, and error file processing. A
+    download that returns without writing an image file is also treated as a
+    failure. Temporarily unavailable sources are skipped and written in the
+    same form to *unavailable_filename*. Existing HGV directories are left
+    untouched. A summary of scraped, skipped, and failed image references,
+    followed by the class-level spread of outcomes that have a responsible
+    scraper, is printed after processing.
     """
 
     logger.info("Starting image scrape: target=%s idp_data=%s", target, idp_data)
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
     todo_path = Path(todo_filename)
+    broken_path = Path(broken_filename)
     error_path = Path(error_filename)
     unavailable_path = Path(unavailable_filename)
-    existing_error_text = (
-        error_path.read_text(encoding="utf-8") if error_path.exists() else ""
-    )
-    existing_errors = set(existing_error_text.splitlines())
-    error_separator = (
-        "\n"
-        if existing_error_text and not existing_error_text.endswith(("\n", "\r"))
-        else ""
+    known_broken = set(
+        broken_path.read_text(encoding="utf-8").splitlines()
+        if broken_path.exists()
+        else ()
     )
     scraped_count = 0
     existing_count = 0
@@ -305,7 +304,7 @@ def scrape_images(
 
     with (
         todo_path.open("w", encoding="utf-8") as todo_file,
-        error_path.open("a", encoding="utf-8") as error_file,
+        error_path.open("w", encoding="utf-8") as error_file,
         unavailable_path.open("w", encoding="utf-8") as unavailable_file,
     ):
         for hgv_id, metadata, _, _ in iterate_hgv_triples(idp_data):
@@ -338,9 +337,9 @@ def scrape_images(
                 url = graphic.get("url")
                 if not url:
                     continue
-                source_error_entry = f"{hgv_id}: {url}"
-                if source_error_entry in existing_errors:
-                    logger.debug("Skipping known error: %s", source_error_entry)
+                source_entry = f"{hgv_id}: {url}"
+                if source_entry in known_broken:
+                    logger.debug("Skipping known broken URL: %s", source_entry)
                     continue
 
                 scraper = _responsible_scraper(url, scrapers)
@@ -377,17 +376,15 @@ def scrape_images(
                 )
             except _ImageURLResolutionError as error:
                 error_entry = f"{download.hgv_id}: {error.url}"
-                if error_entry in existing_errors:
-                    logger.debug("Skipping known error: %s", error_entry)
+                if error_entry in known_broken:
+                    logger.debug("Skipping known broken URL: %s", error_entry)
                     continue
                 error_count += 1
                 outcomes_by_scraper.setdefault(
                     type(error.scraper),
                     _ScraperOutcomeCounts(),
                 ).errors += 1
-                error_file.write(f"{error_separator}{error_entry}\n")
-                error_separator = ""
-                existing_errors.add(error_entry)
+                error_file.write(f"{error_entry}\n")
                 logger.exception(
                     "Image URL resolution failed for HGV %s: %s",
                     download.hgv_id,
@@ -396,8 +393,8 @@ def scrape_images(
                 continue
 
             error_entry = f"{download.hgv_id}: {effective_url}"
-            if error_entry in existing_errors:
-                logger.debug("Skipping known error: %s", error_entry)
+            if error_entry in known_broken:
+                logger.debug("Skipping known broken URL: %s", error_entry)
                 continue
 
             if scraper is None:
@@ -447,10 +444,7 @@ def scrape_images(
                     type(scraper),
                     _ScraperOutcomeCounts(),
                 ).errors += 1
-                error_file.write(
-                    f"{error_separator}{download.hgv_id}: {effective_url}\n"
-                )
-                error_separator = ""
+                error_file.write(f"{download.hgv_id}: {effective_url}\n")
                 logger.exception(
                     "Image download failed for HGV %s with %s: %s",
                     download.hgv_id,

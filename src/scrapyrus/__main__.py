@@ -30,9 +30,38 @@ def main(context: click.Context, idp_data: Path) -> None:
     type=click.Path(path_type=Path, file_okay=False),
     default=Path("images"),
 )
-@click.argument("todo_filename", default="images_todo.txt")
-@click.argument("error_filename", default="images_error.txt")
-@click.argument("unavailable_filename", default="images_unavailable.txt")
+@click.option(
+    "--todo-file",
+    "todo_filename",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("images_todo.txt"),
+    show_default=True,
+    help="Write URLs without a responsible scraper to this file",
+)
+@click.option(
+    "--broken-file",
+    "broken_filename",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("images_broken.txt"),
+    show_default=True,
+    help="Read known broken URLs from this file",
+)
+@click.option(
+    "--error-file",
+    "error_filename",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("images_error.txt"),
+    show_default=True,
+    help="Write errors from this run to this file, replacing its contents",
+)
+@click.option(
+    "--unavailable-file",
+    "unavailable_filename",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("images_unavailable.txt"),
+    show_default=True,
+    help="Write URLs skipped because their scraper was unavailable to this file",
+)
 @click.option(
     "--log-file",
     "log_filename",
@@ -55,9 +84,10 @@ def main(context: click.Context, idp_data: Path) -> None:
 def images(
     context: click.Context,
     target: Path,
-    todo_filename: str,
-    error_filename: str,
-    unavailable_filename: str,
+    todo_filename: Path,
+    broken_filename: Path,
+    error_filename: Path,
+    unavailable_filename: Path,
     log_filename: Path,
     log_level: str,
 ) -> None:
@@ -69,6 +99,7 @@ def images(
             todo_filename,
             error_filename,
             unavailable_filename,
+            broken_filename=broken_filename,
             idp_data=context.obj["idp_data"],
         )
 

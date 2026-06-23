@@ -705,7 +705,7 @@ def test_scrape_images_reports_downloads_without_images_as_errors(
     )
 
 
-def test_scrape_images_skips_and_preserves_existing_error_entries(
+def test_scrape_images_skips_known_broken_urls_and_overwrites_error_file(
     tmp_path, monkeypatch
 ):
     metadata = tmp_path / "42.xml"
@@ -728,20 +728,22 @@ def test_scrape_images_skips_and_preserves_existing_error_entries(
         def download(self, url: str, target: Path) -> None:
             raise RuntimeError("download failed")
 
+    broken = tmp_path / "broken.txt"
+    broken.write_text(f"42: {skipped_url}", encoding="utf-8")
     error = tmp_path / "error.txt"
-    error.write_text(f"42: {skipped_url}", encoding="utf-8")
+    error.write_text("stale error\n", encoding="utf-8")
 
     scrape_images(
         tmp_path / "images",
         tmp_path / "todo.txt",
         error,
         tmp_path / "unavailable.txt",
+        broken_filename=broken,
     )
 
     assert attempted_urls == [failing_url]
-    assert error.read_text(encoding="utf-8") == (
-        f"42: {skipped_url}\n42: {failing_url}\n"
-    )
+    assert broken.read_text(encoding="utf-8") == f"42: {skipped_url}"
+    assert error.read_text(encoding="utf-8") == f"42: {failing_url}\n"
 
 
 def test_scrape_images_prints_outcome_counts(tmp_path, monkeypatch, capsys):
