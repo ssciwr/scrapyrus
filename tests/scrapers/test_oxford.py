@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from scrapyrus.scrapers.oxford import OxfordScraper
 
@@ -135,11 +136,15 @@ def test_oxford_scraper_fetches_all_images_for_canonical_article_url(
         }
     )
     monkeypatch.setattr("scrapyrus.scrapers.oxford.requests.Session", lambda: session)
+    scraper = OxfordScraper()
+    wait_calls = []
+    monkeypatch.setattr(scraper, "wait_for_request_slot", lambda: wait_calls.append(1))
 
-    OxfordScraper().download(CANONICAL_PAGE_URL, tmp_path)
+    scraper.download(CANONICAL_PAGE_URL, tmp_path)
 
     assert (tmp_path / "first.jpg").read_bytes() == b"first"
     assert (tmp_path / "second.jpg").read_bytes() == b"second"
+    assert wait_calls == [1]
     assert session.requests == [
         (API_URL, {"timeout": 30}),
         (first_image_url, {"timeout": 30, "stream": True}),
@@ -161,3 +166,26 @@ def test_oxford_scraper_uses_redirect_filename_as_fallback(tmp_path, monkeypatch
     OxfordScraper().download(PAGE_URL, tmp_path)
 
     assert (tmp_path / "POxy image.jpg").read_bytes() == b"image"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_available"),
+    [(403, False), (429, False), (500, True)],
+)
+def test_oxford_scraper_becomes_unavailable_after_rate_limit(
+    status_code,
+    expected_available,
+    tmp_path,
+    monkeypatch,
+):
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = API_URL
+    session = FakeSession({API_URL: response})
+    monkeypatch.setattr("scrapyrus.scrapers.oxford.requests.Session", lambda: session)
+    scraper = OxfordScraper()
+
+    with pytest.raises(requests.HTTPError):
+        scraper.download(CANONICAL_PAGE_URL, tmp_path)
+
+    assert scraper.available() is expected_available

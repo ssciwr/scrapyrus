@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -56,9 +57,22 @@ def image_log_file(
 
 
 class RateLimitedMixin:
-    """Track whether an image scraper encountered a rate limit."""
+    """Pace requests and track whether a scraper encountered a rate limit."""
 
+    REQUEST_INTERVAL = 1.0
     _rate_limited = False
+    _last_request_at: float | None = None
+
+    def wait_for_request_slot(self) -> None:
+        """Wait until the configured interval has passed since the last request."""
+
+        now = time.monotonic()
+        if self._last_request_at is not None:
+            delay = self.REQUEST_INTERVAL - (now - self._last_request_at)
+            if delay > 0:
+                time.sleep(delay)
+                now = time.monotonic()
+        self._last_request_at = now
 
     def mark_rate_limited(self) -> None:
         """Make this scraper unavailable for the remainder of the run."""

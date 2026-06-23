@@ -6,13 +6,13 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 
-from scrapyrus.images import ImageScraperBase
+from scrapyrus.images import ImageScraperBase, RateLimitedMixin
 
 
 logger = logging.getLogger("scrapyrus.images.scrapers.oxford")
 
 
-class OxfordScraper(ImageScraperBase):
+class OxfordScraper(RateLimitedMixin, ImageScraperBase):
     """Download images attached to Oxford research repository records."""
 
     HOST = "portal.sds.ox.ac.uk"
@@ -95,20 +95,20 @@ class OxfordScraper(ImageScraperBase):
             identifiers.append(str(identifier))
         return list(dict.fromkeys(identifiers))
 
-    @classmethod
-    def _image_urls(cls, url: str, session: requests.Session) -> list[str]:
-        article_identifier = cls._article_identifier(url)
-        file_identifier = cls._file_identifier(url)
+    def _image_urls(self, url: str, session: requests.Session) -> list[str]:
+        article_identifier = self._article_identifier(url)
+        file_identifier = self._file_identifier(url)
         if file_identifier is not None:
-            return [cls.DOWNLOAD_URL_ROOT + file_identifier]
+            return [self.DOWNLOAD_URL_ROOT + file_identifier]
 
-        api_url = cls.API_URL_ROOT + article_identifier
+        api_url = self.API_URL_ROOT + article_identifier
         logger.info("Fetching Oxford repository API record: %s", api_url)
-        response = session.get(api_url, timeout=cls.REQUEST_TIMEOUT)
+        self.wait_for_request_slot()
+        response = session.get(api_url, timeout=self.REQUEST_TIMEOUT)
         response.raise_for_status()
         return [
-            cls.DOWNLOAD_URL_ROOT + identifier
-            for identifier in cls._file_identifiers(response.json())
+            self.DOWNLOAD_URL_ROOT + identifier
+            for identifier in self._file_identifiers(response.json())
         ]
 
     @staticmethod
@@ -137,23 +137,34 @@ class OxfordScraper(ImageScraperBase):
         return filename
 
     def download(self, url: str, target: Path) -> None:
-        with requests.Session() as session:
-            image_urls = self._image_urls(url, session)
-            logger.info(
-                "Oxford repository record contains %d image(s): %s",
-                len(image_urls),
-                url,
-            )
-            for image_url in image_urls:
-                logger.info("Downloading Oxford repository image: %s", image_url)
-                with session.get(
-                    image_url,
-                    timeout=self.REQUEST_TIMEOUT,
-                    stream=True,
-                ) as response:
-                    response.raise_for_status()
-                    filename = self._filename(response, image_url)
-                    with (target / filename).open("wb") as image_file:
-                        for chunk in response.iter_content(chunk_size=64 * 1024):
-                            image_file.write(chunk)
-                logger.info("Completed Oxford repository image: %s", image_url)
+        try:
+            with requests.Session() as session:
+                image_urls = self._image_urls(url, session)
+                logger.info(
+                    "Oxford repository record contains %d image(s): %s",
+                    len(image_urls),
+                    url,
+                )
+                for image_url in image_urls:
+                    logger.info("Downloading Oxford repository image: %s", image_url)
+                    with session.get(
+                        image_url,
+                        timeout=self.REQUEST_TIMEOUT,
+                        stream=True,
+                    ) as response:
+                        response.raise_for_status()
+                        filename = self._filename(response, image_url)
+                        with (target / filename).open("wb") as image_file:
+                            for chunk in response.iter_content(chunk_size=64 * 1024):
+                                image_file.write(chunk)
+                    logger.info("Completed Oxford repository image: %s", image_url)
+        except requests.HTTPError as error:
+            if error.response is not None and error.response.status_code in {403, 429}:
+                self.mark_rate_limited()
+                logger.warning(
+                    "Oxford rate limit triggered by HTTP %d for %s (response URL: %s)",
+                    error.response.status_code,
+                    url,
+                    error.response.url or url,
+                )
+            raise

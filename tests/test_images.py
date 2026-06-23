@@ -44,6 +44,24 @@ def test_rate_limited_mixin_marks_scraper_unavailable():
     assert Scraper().available()
 
 
+def test_rate_limited_mixin_paces_requests(monkeypatch):
+    class Scraper(RateLimitedMixin, ImageScraperBase, register=False):
+        pass
+
+    monotonic_times = iter([10.0, 10.25, 11.0])
+    sleep_calls = []
+    monkeypatch.setattr(
+        "scrapyrus.images.time.monotonic", lambda: next(monotonic_times)
+    )
+    monkeypatch.setattr("scrapyrus.images.time.sleep", sleep_calls.append)
+    scraper = Scraper()
+
+    scraper.wait_for_request_slot()
+    scraper.wait_for_request_slot()
+
+    assert sleep_calls == [0.75]
+
+
 def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monkeypatch):
     metadata_without_image = tmp_path / "1.xml"
     write_metadata(metadata_without_image, [])
