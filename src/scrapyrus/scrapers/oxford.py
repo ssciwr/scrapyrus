@@ -17,19 +17,31 @@ class OxfordScraper(ImageScraperBase):
 
     HOST = "portal.sds.ox.ac.uk"
     ARTICLE_PATH_PATTERN = re.compile(
-        r"^/articles/online_resource/[^/]+/\d+(?:/\d+)?/?$"
+        r"^/articles/online_resource/[^/]+/(\d+)(?:/\d+)?/?$"
     )
     FILE_IDENTIFIER_PATTERN = re.compile(r"^\d+$")
+    API_URL_ROOT = "https://api.figshare.com/v2/articles/"
     DOWNLOAD_URL_ROOT = "https://portal.sds.ox.ac.uk/ndownloader/files/"
     REQUEST_TIMEOUT = 30
 
     @classmethod
-    def _file_identifier(cls, url: str) -> str:
+    def _article_identifier(cls, url: str) -> str:
         parsed_url = urlparse(url)
-        file_identifiers = parse_qs(parsed_url.query).get("file", [])
+        match = cls.ARTICLE_PATH_PATTERN.fullmatch(parsed_url.path)
+        if match is None:
+            raise ValueError(f"Unsupported Oxford repository URL: {url}")
+        return match.group(1)
+
+    @classmethod
+    def _file_identifier(cls, url: str) -> str | None:
+        parsed_url = urlparse(url)
+        query = parse_qs(parsed_url.query, keep_blank_values=True)
+        if "file" not in query:
+            return None
+
+        file_identifiers = query["file"]
         if (
-            cls.ARTICLE_PATH_PATTERN.fullmatch(parsed_url.path) is None
-            or len(file_identifiers) != 1
+            len(file_identifiers) != 1
             or cls.FILE_IDENTIFIER_PATTERN.fullmatch(file_identifiers[0]) is None
         ):
             raise ValueError(f"Unsupported Oxford repository URL: {url}")
@@ -43,6 +55,7 @@ class OxfordScraper(ImageScraperBase):
             return False
 
         try:
+            self._article_identifier(url)
             self._file_identifier(url)
         except ValueError:
             return False
@@ -50,7 +63,53 @@ class OxfordScraper(ImageScraperBase):
 
     @classmethod
     def _image_url(cls, url: str) -> str:
-        return cls.DOWNLOAD_URL_ROOT + cls._file_identifier(url)
+        cls._article_identifier(url)
+        file_identifier = cls._file_identifier(url)
+        if file_identifier is None:
+            raise ValueError(f"Oxford repository URL has no file identifier: {url}")
+        return cls.DOWNLOAD_URL_ROOT + file_identifier
+
+    @classmethod
+    def _file_identifiers(cls, record: object) -> list[str]:
+        if not isinstance(record, dict):
+            raise ValueError("Oxford repository API record must be an object")
+
+        files = record.get("files")
+        if not isinstance(files, list):
+            raise ValueError("Oxford repository API files section must be a list")
+
+        identifiers = []
+        for file in files:
+            if not isinstance(file, dict):
+                continue
+            identifier = file.get("id")
+            mimetype = file.get("mimetype")
+            if (
+                not isinstance(identifier, int)
+                or isinstance(identifier, bool)
+                or identifier < 0
+                or not isinstance(mimetype, str)
+                or not mimetype.startswith("image/")
+            ):
+                continue
+            identifiers.append(str(identifier))
+        return list(dict.fromkeys(identifiers))
+
+    @classmethod
+    def _image_urls(cls, url: str, session: requests.Session) -> list[str]:
+        article_identifier = cls._article_identifier(url)
+        file_identifier = cls._file_identifier(url)
+        if file_identifier is not None:
+            return [cls.DOWNLOAD_URL_ROOT + file_identifier]
+
+        api_url = cls.API_URL_ROOT + article_identifier
+        logger.info("Fetching Oxford repository API record: %s", api_url)
+        response = session.get(api_url, timeout=cls.REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return [
+            cls.DOWNLOAD_URL_ROOT + identifier
+            for identifier in cls._file_identifiers(response.json())
+        ]
 
     @staticmethod
     def _content_disposition_filename(response: requests.Response) -> str | None:
@@ -78,17 +137,23 @@ class OxfordScraper(ImageScraperBase):
         return filename
 
     def download(self, url: str, target: Path) -> None:
-        image_url = self._image_url(url)
-
-        logger.info("Downloading Oxford repository image: %s", image_url)
-        with requests.get(
-            image_url,
-            timeout=self.REQUEST_TIMEOUT,
-            stream=True,
-        ) as response:
-            response.raise_for_status()
-            filename = self._filename(response, image_url)
-            with (target / filename).open("wb") as image_file:
-                for chunk in response.iter_content(chunk_size=64 * 1024):
-                    image_file.write(chunk)
-        logger.info("Completed Oxford repository image: %s", image_url)
+        with requests.Session() as session:
+            image_urls = self._image_urls(url, session)
+            logger.info(
+                "Oxford repository record contains %d image(s): %s",
+                len(image_urls),
+                url,
+            )
+            for image_url in image_urls:
+                logger.info("Downloading Oxford repository image: %s", image_url)
+                with session.get(
+                    image_url,
+                    timeout=self.REQUEST_TIMEOUT,
+                    stream=True,
+                ) as response:
+                    response.raise_for_status()
+                    filename = self._filename(response, image_url)
+                    with (target / filename).open("wb") as image_file:
+                        for chunk in response.iter_content(chunk_size=64 * 1024):
+                            image_file.write(chunk)
+                logger.info("Completed Oxford repository image: %s", image_url)

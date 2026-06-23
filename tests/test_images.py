@@ -7,6 +7,7 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.scrapers.doi import DOIScraper
+from scrapyrus.scrapers.oxford import OxfordScraper
 
 
 def write_metadata(path: Path, urls: list[str]) -> None:
@@ -163,6 +164,62 @@ def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
     assert downloaded_urls == [resolved_url]
     assert events == ["iterating", "iteration complete", "resolve DOI", "download"]
     assert (output / "42" / "image").read_text(encoding="utf-8") == resolved_url
+    assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == ""
+
+
+def test_scrape_images_routes_resolved_oxford_doi_to_oxford_scraper(
+    tmp_path, monkeypatch
+):
+    source_url = "https://doi.org/10.25446/oxford.21180640"
+    resolved_url = (
+        "https://portal.sds.ox.ac.uk/articles/online_resource/"
+        "P_Oxy_LXXIV_4991_Census_Declaration/21180640"
+    )
+    metadata = tmp_path / "128296.xml"
+    write_metadata(metadata, [source_url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_hgv_triples",
+        lambda idp_data: iter([("128296", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [DOIScraper, OxfordScraper])
+
+    class FakeDOIResponse:
+        url = resolved_url
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.doi.requests.get",
+        lambda url, **kwargs: FakeDOIResponse(),
+    )
+    downloaded_urls = []
+
+    def download(scraper, url, target):
+        downloaded_urls.append(url)
+        (target / "image.jpg").write_bytes(b"image")
+
+    monkeypatch.setattr(OxfordScraper, "download", download)
+
+    output = tmp_path / "images"
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+    scrape_images(
+        output,
+        todo,
+        error,
+        tmp_path / "unavailable.txt",
+    )
+
+    assert downloaded_urls == [resolved_url]
+    assert (output / "128296" / "image.jpg").read_bytes() == b"image"
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
 

@@ -7,19 +7,59 @@ PAGE_URL = (
     "https://portal.sds.ox.ac.uk/articles/online_resource/"
     "P_Oxy_LXXII_4896_Loan_of_Money/21180334?file=37555639"
 )
+CANONICAL_PAGE_URL = PAGE_URL.partition("?")[0]
 IMAGE_URL = "https://portal.sds.ox.ac.uk/ndownloader/files/37555639"
+API_URL = "https://api.figshare.com/v2/articles/21180334"
+
+
+class FakeResponse:
+    def __init__(self, *, url="", headers=None, json_data=None, chunks=()):
+        self.url = url
+        self.headers = {} if headers is None else headers
+        self.json_data = json_data
+        self.chunks = chunks
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.json_data
+
+    def iter_content(self, *, chunk_size):
+        assert chunk_size == 64 * 1024
+        return iter(self.chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception_type, exception, traceback):
+        pass
+
+
+class FakeSession:
+    def __init__(self, responses):
+        self.responses = responses
+        self.requests = []
+
+    def get(self, url, **kwargs):
+        self.requests.append((url, kwargs))
+        return self.responses[url]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception_type, exception, traceback):
+        pass
 
 
 def test_oxford_scraper_responsibility():
     scraper = OxfordScraper()
 
     assert scraper.responsible(PAGE_URL)
+    assert scraper.responsible(CANONICAL_PAGE_URL)
     assert scraper.responsible(
         "http://portal.sds.ox.ac.uk/articles/online_resource/record/21180334/1/"
         "?download=1&file=37555639"
-    )
-    assert not scraper.responsible(
-        "https://portal.sds.ox.ac.uk/articles/online_resource/record/21180334"
     )
     assert not scraper.responsible(
         "https://portal.sds.ox.ac.uk/articles/online_resource/record/21180334"
@@ -48,63 +88,74 @@ def test_oxford_scraper_rejects_unsupported_record_url():
 
 
 def test_oxford_scraper_downloads_translated_image(tmp_path, monkeypatch):
-    class FakeResponse:
-        url = "https://storage.example/37555639/image.jpg"
-        headers = {
+    response = FakeResponse(
+        url="https://storage.example/37555639/image.jpg",
+        headers={
             "Content-Disposition": (
                 'attachment; filename="POxy.v0072.n4896.a.01.hires.jpg"'
             )
-        }
-
-        def raise_for_status(self):
-            pass
-
-        def iter_content(self, *, chunk_size):
-            assert chunk_size == 64 * 1024
-            return iter((b"oxford ", b"image"))
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exception_type, exception, traceback):
-            pass
-
-    requests = []
-
-    def fake_get(url, **kwargs):
-        requests.append((url, kwargs))
-        return FakeResponse()
-
-    monkeypatch.setattr("scrapyrus.scrapers.oxford.requests.get", fake_get)
+        },
+        chunks=(b"oxford ", b"image"),
+    )
+    session = FakeSession({IMAGE_URL: response})
+    monkeypatch.setattr("scrapyrus.scrapers.oxford.requests.Session", lambda: session)
 
     OxfordScraper().download(PAGE_URL, tmp_path)
 
     assert (
         tmp_path / "POxy.v0072.n4896.a.01.hires.jpg"
     ).read_bytes() == b"oxford image"
-    assert requests == [(IMAGE_URL, {"timeout": 30, "stream": True})]
+    assert session.requests == [(IMAGE_URL, {"timeout": 30, "stream": True})]
+
+
+def test_oxford_scraper_fetches_all_images_for_canonical_article_url(
+    tmp_path, monkeypatch
+):
+    first_image_url = "https://portal.sds.ox.ac.uk/ndownloader/files/37555639"
+    second_image_url = "https://portal.sds.ox.ac.uk/ndownloader/files/37555640"
+    session = FakeSession(
+        {
+            API_URL: FakeResponse(
+                json_data={
+                    "files": [
+                        {"id": 37555639, "mimetype": "image/jpeg"},
+                        {"id": 37555640, "mimetype": "image/jpeg"},
+                        {"id": 37555641, "mimetype": "application/pdf"},
+                    ]
+                }
+            ),
+            first_image_url: FakeResponse(
+                url="https://storage.example/first.jpg",
+                chunks=(b"first",),
+            ),
+            second_image_url: FakeResponse(
+                url="https://storage.example/second.jpg",
+                chunks=(b"second",),
+            ),
+        }
+    )
+    monkeypatch.setattr("scrapyrus.scrapers.oxford.requests.Session", lambda: session)
+
+    OxfordScraper().download(CANONICAL_PAGE_URL, tmp_path)
+
+    assert (tmp_path / "first.jpg").read_bytes() == b"first"
+    assert (tmp_path / "second.jpg").read_bytes() == b"second"
+    assert session.requests == [
+        (API_URL, {"timeout": 30}),
+        (first_image_url, {"timeout": 30, "stream": True}),
+        (second_image_url, {"timeout": 30, "stream": True}),
+    ]
 
 
 def test_oxford_scraper_uses_redirect_filename_as_fallback(tmp_path, monkeypatch):
-    class FakeResponse:
-        url = "https://storage.example/37555639/POxy%20image.jpg"
-        headers = {}
-
-        def raise_for_status(self):
-            pass
-
-        def iter_content(self, *, chunk_size):
-            return iter((b"image",))
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exception_type, exception, traceback):
-            pass
-
+    response = FakeResponse(
+        url="https://storage.example/37555639/POxy%20image.jpg",
+        chunks=(b"image",),
+    )
+    session = FakeSession({IMAGE_URL: response})
     monkeypatch.setattr(
-        "scrapyrus.scrapers.oxford.requests.get",
-        lambda url, **kwargs: FakeResponse(),
+        "scrapyrus.scrapers.oxford.requests.Session",
+        lambda: session,
     )
 
     OxfordScraper().download(PAGE_URL, tmp_path)
