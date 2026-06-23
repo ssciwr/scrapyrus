@@ -6,13 +6,13 @@ from urllib.parse import unquote, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from scrapyrus.images import ImageScraperBase
+from scrapyrus.images import ImageScraperBase, RateLimitedMixin
 
 
 logger = logging.getLogger("scrapyrus.images.scrapers.met_museum")
 
 
-class MetMuseumScraper(ImageScraperBase):
+class MetMuseumScraper(RateLimitedMixin, ImageScraperBase):
     """Download original images from Metropolitan Museum object records."""
 
     HOST = "www.metmuseum.org"
@@ -61,36 +61,49 @@ class MetMuseumScraper(ImageScraperBase):
     def download(self, url: str, target: Path) -> None:
         logger.info("Fetching Met Museum object record: %s", url)
 
-        with requests.Session() as session:
-            record_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
-            record_response.raise_for_status()
-            record_url = record_response.url or url
-            image_urls = self._image_urls(record_response.text)
-            if not image_urls:
-                raise ValueError(
-                    f"Met Museum record has no downloadable images: {record_url}"
+        try:
+            with requests.Session() as session:
+                record_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
+                record_response.raise_for_status()
+                record_url = record_response.url or url
+                image_urls = self._image_urls(record_response.text)
+                if not image_urls:
+                    raise ValueError(
+                        f"Met Museum record has no downloadable images: {record_url}"
+                    )
+                logger.info(
+                    "Met Museum record contains %d image(s): %s",
+                    len(image_urls),
+                    record_url,
                 )
-            logger.info(
-                "Met Museum record contains %d image(s): %s",
-                len(image_urls),
-                record_url,
-            )
 
-            for image_url in image_urls:
-                filename = self._filename(image_url)
-                logger.debug(
-                    "Downloading Met Museum image to %s: %s",
-                    filename,
-                    image_url,
+                for image_url in image_urls:
+                    filename = self._filename(image_url)
+                    logger.debug(
+                        "Downloading Met Museum image to %s: %s",
+                        filename,
+                        image_url,
+                    )
+                    with session.get(
+                        image_url,
+                        timeout=self.REQUEST_TIMEOUT,
+                        stream=True,
+                    ) as image_response:
+                        image_response.raise_for_status()
+                        with (target / filename).open("wb") as image_file:
+                            for chunk in image_response.iter_content(
+                                chunk_size=64 * 1024
+                            ):
+                                image_file.write(chunk)
+        except requests.HTTPError as error:
+            if error.response is not None and error.response.status_code == 429:
+                self.mark_rate_limited()
+                logger.warning(
+                    "Met Museum rate limit triggered by HTTP 429 for %s "
+                    "(response URL: %s)",
+                    url,
+                    error.response.url or url,
                 )
-                with session.get(
-                    image_url,
-                    timeout=self.REQUEST_TIMEOUT,
-                    stream=True,
-                ) as image_response:
-                    image_response.raise_for_status()
-                    with (target / filename).open("wb") as image_file:
-                        for chunk in image_response.iter_content(chunk_size=64 * 1024):
-                            image_file.write(chunk)
+            raise
 
         logger.info("Completed Met Museum record: %s", url)

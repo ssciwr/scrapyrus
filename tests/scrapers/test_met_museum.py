@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from scrapyrus.scrapers.met_museum import MetMuseumScraper
 
@@ -143,3 +144,30 @@ def test_met_museum_scraper_rejects_record_without_downloadable_images(
 
     with pytest.raises(ValueError, match="has no downloadable images"):
         MetMuseumScraper().download(source_url, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_available"),
+    [(429, False), (500, True)],
+)
+def test_met_museum_scraper_becomes_unavailable_after_rate_limit(
+    status_code,
+    expected_available,
+    tmp_path,
+    monkeypatch,
+):
+    source_url = "https://www.metmuseum.org/art/collection/search/474971"
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = source_url
+    session = FakeSession({source_url: response})
+    monkeypatch.setattr(
+        "scrapyrus.scrapers.met_museum.requests.Session",
+        lambda: session,
+    )
+    scraper = MetMuseumScraper()
+
+    with pytest.raises(requests.HTTPError):
+        scraper.download(source_url, tmp_path)
+
+    assert scraper.available() is expected_available
