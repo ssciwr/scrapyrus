@@ -1,4 +1,5 @@
 images_*.txt
+!src/scrapyrus/images_broken.txt
 
 # Ignore the idp.data repository if it is here.
 idp.data

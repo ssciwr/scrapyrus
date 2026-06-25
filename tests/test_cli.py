@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from scrapyrus.images import DEFAULT_BROKEN_IMAGE_FILE
 from scrapyrus.__main__ import main
 
 from click.testing import CliRunner
@@ -109,7 +110,7 @@ def test_images_subcommand_uses_defaults(monkeypatch):
         (
             Path("images"),
             Path("images_todo.txt"),
-            Path("images_broken.txt"),
+            DEFAULT_BROKEN_IMAGE_FILE,
             Path("images_error.txt"),
             Path("images_unavailable.txt"),
             Path("idp.data"),

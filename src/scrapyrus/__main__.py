@@ -2,7 +2,11 @@ from pathlib import Path
 
 import click
 
-from scrapyrus.images import image_log_file, scrape_images
+from scrapyrus.images import (
+    DEFAULT_BROKEN_IMAGE_FILE,
+    image_log_file,
+    scrape_images,
+)
 
 
 idp_data = click.option(
@@ -42,7 +46,7 @@ def main(context: click.Context, idp_data: Path) -> None:
     "--broken-file",
     "broken_filename",
     type=click.Path(path_type=Path, dir_okay=False),
-    default=Path("images_broken.txt"),
+    default=DEFAULT_BROKEN_IMAGE_FILE,
     show_default=True,
     help="Read known broken URLs from this file",
 )

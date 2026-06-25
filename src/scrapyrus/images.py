@@ -34,6 +34,7 @@ REPORT_COLORS = [
     "38;2;255;0;0",  # bright red
     "38;2;255;127;127",  # light red
 ]
+DEFAULT_BROKEN_IMAGE_FILE = Path(__file__).with_name("images_broken.txt")
 
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -344,7 +345,7 @@ def scrape_images(
     error_filename: str | Path,
     unavailable_filename: str | Path,
     *,
-    broken_filename: str | Path = Path("images_broken.txt"),
+    broken_filename: str | Path = DEFAULT_BROKEN_IMAGE_FILE,
     idp_data: str | Path = Path("idp.data"),
 ) -> None:
     """Download images referenced by all idp.data metadata records.

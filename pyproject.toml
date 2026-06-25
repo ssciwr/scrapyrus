@@ -54,6 +54,9 @@ scrapyrus = "scrapyrus.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+scrapyrus = ["images_broken.txt"]
+
 # The following is the configuration for the pytest test suite
 [tool.pytest.ini_options]
 testpaths = [
