@@ -1,5 +1,6 @@
 from scrapyrus.scrapers.aphrodito import AphroditoScraper
 from scrapyrus.scrapers.british_museum import BritishMuseumScraper
+from scrapyrus.scrapers.bodleian import BodleianScraper
 from scrapyrus.scrapers.cairo_museum import CairoMuseumScraper
 from scrapyrus.scrapers.doi import DOIScraper
 from scrapyrus.scrapers.egnet import EgnetScraper
@@ -25,6 +26,7 @@ from scrapyrus.scrapers.yale import YaleScraper
 __all__ = [
     "AphroditoScraper",
     "BerlPapScraper",
+    "BodleianScraper",
     "BritishMuseumScraper",
     "CairoMuseumScraper",
     "DOIScraper",
