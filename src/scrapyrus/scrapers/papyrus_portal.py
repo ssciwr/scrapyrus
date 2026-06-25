@@ -36,6 +36,7 @@ class PapyrusPortalScraper(ImageScraperBase):
         {".bmp", ".gif", ".jp2", ".jpeg", ".jpg", ".png", ".tif", ".tiff"}
     )
     CONFIG_PATTERN = re.compile(r"\b(?:var\s+json|let\s+configuration)\s*=\s*")
+    CANONICAL_HOST = "www.papyrusportal.de"
 
     @staticmethod
     def _path_starts_with(path: str, prefix: str) -> bool:
@@ -49,6 +50,18 @@ class PapyrusPortalScraper(ImageScraperBase):
             and parsed_url.hostname in cls.HOSTS
             and cls._path_starts_with(parsed_url.path, cls.VIEWER_PATH)
         )
+
+    @classmethod
+    def _canonical_url(cls, url: str) -> str:
+        parsed_url = urlparse(url)
+        if parsed_url.scheme not in {"http", "https"}:
+            return url
+        if parsed_url.hostname not in cls.HOSTS:
+            return url
+        return parsed_url._replace(
+            scheme="https",
+            netloc=cls.CANONICAL_HOST,
+        ).geturl()
 
     def responsible(self, url: str) -> bool:
         parsed_url = urlparse(url)
@@ -240,11 +253,12 @@ class PapyrusPortalScraper(ImageScraperBase):
             self._download_image(session, image_url, target)
 
     def download(self, url: str, target: Path) -> None:
-        logger.info("Fetching PapyrusPortal record: %s", url)
+        request_url = self._canonical_url(url)
+        logger.info("Fetching PapyrusPortal record: %s", request_url)
         with requests.Session() as session:
-            page_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
+            page_response = session.get(request_url, timeout=self.REQUEST_TIMEOUT)
             page_response.raise_for_status()
-            final_url = self._response_url(page_response, url)
+            final_url = self._response_url(page_response, request_url)
 
             if self._is_viewer_url(final_url):
                 self._download_viewer(

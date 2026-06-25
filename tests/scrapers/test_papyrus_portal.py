@@ -152,7 +152,7 @@ def test_papyrus_portal_scraper_downloads_mets_master_images(tmp_path, monkeypat
 def test_papyrus_portal_scraper_follows_record_links_and_uses_start_file_fallback(
     tmp_path, monkeypatch
 ):
-    legacy_url = "https://papyri.uni-leipzig.de/receive/GiePapyri_schrift_00000830"
+    legacy_url = "http://papyri.uni-leipzig.de/receive/GiePapyri_schrift_00000830"
     record_url = "https://www.papyrusportal.de/receive/GiePapyri_schrift_00000830"
     recto_viewer = (
         "https://www.papyrusportal.de/rsc/viewer/GiePapyri_derivate_00000830/recto.jpg"
@@ -177,7 +177,7 @@ def test_papyrus_portal_scraper_follows_record_links_and_uses_start_file_fallbac
         </a>
     """
     responses = {
-        legacy_url: FakePapyrusPortalResponse(record_url, text=record_html),
+        record_url: FakePapyrusPortalResponse(record_url, text=record_html),
         recto_viewer: FakePapyrusPortalResponse(
             recto_viewer,
             text=viewer_html(
@@ -216,7 +216,7 @@ def test_papyrus_portal_scraper_follows_record_links_and_uses_start_file_fallbac
     assert (tmp_path / "recto.jpg").read_bytes() == b"recto"
     assert (tmp_path / "verso.jpg").read_bytes() == b"verso"
     assert [request[0] for request in session.requests] == [
-        legacy_url,
+        record_url,
         recto_viewer,
         recto_base + "recto.jpg",
         verso_viewer,
