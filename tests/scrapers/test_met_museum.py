@@ -28,6 +28,7 @@ class FakeSession:
     def __init__(self, responses):
         self.responses = responses
         self.requests = []
+        self.headers = {}
 
     def get(self, url, **kwargs):
         self.requests.append((url, kwargs))
@@ -127,6 +128,7 @@ def test_met_museum_scraper_downloads_all_original_images(tmp_path, monkeypatch)
         (first_image_url, {"timeout": 30, "stream": True}),
         (second_image_url, {"timeout": 30, "stream": True}),
     ]
+    assert session.headers == MetMuseumScraper.REQUEST_HEADERS
 
 
 def test_met_museum_scraper_rejects_record_without_downloadable_images(

@@ -25,6 +25,12 @@ class MetMuseumScraper(RateLimitedMixin, ImageScraperBase):
         r'originalImageUrl\\?"\s*:\s*\\?"(?P<url>[^"\\]+)'
     )
     REQUEST_TIMEOUT = 30
+    REQUEST_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+    }
 
     def responsible(self, url: str) -> bool:
         parsed_url = urlparse(url)
@@ -63,6 +69,7 @@ class MetMuseumScraper(RateLimitedMixin, ImageScraperBase):
 
         try:
             with requests.Session() as session:
+                session.headers.update(self.REQUEST_HEADERS)
                 record_response = session.get(url, timeout=self.REQUEST_TIMEOUT)
                 record_response.raise_for_status()
                 record_url = record_response.url or url
