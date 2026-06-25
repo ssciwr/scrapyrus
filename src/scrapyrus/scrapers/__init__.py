@@ -13,6 +13,7 @@ from scrapyrus.scrapers.berlpap import BerlPapScraper
 from scrapyrus.scrapers.papyrus_portal import PapyrusPortalScraper
 from scrapyrus.scrapers.psi_online import PSIOnlineScraper
 from scrapyrus.scrapers.ubhd import UBHDScraper
+from scrapyrus.scrapers.uni_hamburg import UniHamburgScraper
 from scrapyrus.scrapers.uni_koeln import UniKoelnScraper
 from scrapyrus.scrapers.umichigan import UMichiganScraper
 from scrapyrus.scrapers.ucl import UCLScraper
@@ -37,6 +38,7 @@ __all__ = [
     "PapyrusPortalScraper",
     "PSIOnlineScraper",
     "UBHDScraper",
+    "UniHamburgScraper",
     "UniKoelnScraper",
     "UMichiganScraper",
     "UCLScraper",
