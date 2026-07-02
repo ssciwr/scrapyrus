@@ -2,7 +2,9 @@ from types import GeneratorType
 from xml.etree import ElementTree
 
 from scrapyrus.idpdata import (
+    iterate_dclp_triples,
     iterate_hgv_triples,
+    iterate_idpdata_triples,
     transcription_xml_snippet,
     trismegistos_id,
 )
@@ -47,6 +49,29 @@ def test_transcription_xml_snippet_returns_none_without_edition(tmp_path):
     transcription.write_text('<TEI><div type="commentary" /></TEI>')
 
     assert transcription_xml_snippet(transcription) is None
+
+
+def _write_tei_metadata(
+    path,
+    *,
+    tm_id,
+    body="",
+    ddb_filename=None,
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ddb_idno = (
+        f'<idno type="ddb-filename">{ddb_filename}</idno>' if ddb_filename else ""
+    )
+    path.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        "<teiHeader><fileDesc><publicationStmt>"
+        f'<idno type="TM">{tm_id}</idno>'
+        f"{ddb_idno}"
+        "</publicationStmt></fileDesc></teiHeader>"
+        f"<text><body>{body}</body></text>"
+        "</TEI>",
+        encoding="utf-8",
+    )
 
 
 def test_iterate_hgv_triples_returns_generator(idp_data):
@@ -147,3 +172,95 @@ def test_iterate_hgv_triples_accepts_custom_progressbar_title(
     next(iterate_hgv_triples(idp_data, progressbar_title="Finding records"))
 
     assert progress["desc"] == "Finding records"
+
+
+def test_iterate_dclp_triples_returns_generator(tmp_path):
+    triples = iterate_dclp_triples(tmp_path / "idp.data")
+
+    assert isinstance(triples, GeneratorType)
+
+
+def test_iterate_dclp_triples_reuses_metadata_for_nonempty_edition(tmp_path):
+    idp_data = tmp_path / "idp.data"
+    with_transcription = idp_data / "DCLP" / "1" / "123.xml"
+    empty_transcription = idp_data / "DCLP" / "1" / "124.xml"
+    without_transcription = idp_data / "DCLP" / "2" / "125.xml"
+    _write_tei_metadata(
+        with_transcription,
+        tm_id="123",
+        body='<div type="edition"><ab>Text</ab></div>',
+    )
+    _write_tei_metadata(
+        empty_transcription,
+        tm_id="124",
+        body='<div type="edition" />',
+    )
+    _write_tei_metadata(
+        without_transcription,
+        tm_id="125",
+        body='<div type="commentary"><p>Commentary</p></div>',
+    )
+
+    assert list(iterate_dclp_triples(idp_data, progressbar=False)) == [
+        ("123", with_transcription, with_transcription, None),
+        ("124", empty_transcription, None, None),
+        ("125", without_transcription, None, None),
+    ]
+
+
+def test_iterate_dclp_triples_shows_progressbar_by_default(tmp_path, monkeypatch):
+    idp_data = tmp_path / "idp.data"
+    _write_tei_metadata(
+        idp_data / "DCLP" / "1" / "123.xml",
+        tm_id="123",
+        body='<div type="edition"><ab>Text</ab></div>',
+    )
+    progress = {}
+
+    def fake_tqdm(iterable, *, total, unit, desc):
+        progress.update(iterable=iterable, total=total, unit=unit, desc=desc)
+        return iterable
+
+    monkeypatch.setattr("scrapyrus.idpdata.tqdm", fake_tqdm)
+
+    next(iterate_dclp_triples(idp_data))
+
+    assert progress["total"] == len(progress["iterable"])
+    assert progress["unit"] == "record"
+    assert progress["desc"] == "Iterating DCLP"
+
+
+def test_iterate_idpdata_triples_concatenates_with_single_progressbar(
+    tmp_path,
+    monkeypatch,
+):
+    idp_data = tmp_path / "idp.data"
+    metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "1.xml"
+    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.1.xml"
+    dclp = idp_data / "DCLP" / "2" / "2.xml"
+    _write_tei_metadata(metadata, tm_id="1", ddb_filename="p.test.1")
+    transcription.parent.mkdir(parents=True)
+    transcription.write_text("<TEI />", encoding="utf-8")
+    _write_tei_metadata(
+        dclp,
+        tm_id="2",
+        body='<div type="edition"><ab>Text</ab></div>',
+    )
+    progress_calls = []
+
+    def fake_tqdm(iterable, *, total, unit, desc):
+        progress_calls.append(
+            {"iterable": iterable, "total": total, "unit": unit, "desc": desc}
+        )
+        return iterable
+
+    monkeypatch.setattr("scrapyrus.idpdata.tqdm", fake_tqdm)
+
+    assert list(iterate_idpdata_triples(idp_data)) == [
+        ("1", metadata, transcription, None),
+        ("2", dclp, dclp, None),
+    ]
+    assert len(progress_calls) == 1
+    assert progress_calls[0]["total"] == 2
+    assert progress_calls[0]["unit"] == "record"
+    assert progress_calls[0]["desc"] == "Iterating idp.data"

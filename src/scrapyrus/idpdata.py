@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from itertools import chain
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -45,6 +46,20 @@ def _ddb_filename(metadata: Path) -> str | None:
     """Return the DDbDP filename referenced by an HGV metadata file."""
 
     return _identifier_text(metadata, "ddb-filename")
+
+
+def _has_nonempty_edition(metadata: Path) -> bool:
+    """Return whether an XML file contains a non-empty edition division."""
+
+    for element in ElementTree.parse(metadata).iter():
+        local_name = element.tag.rpartition("}")[2]
+        if (
+            local_name == "div"
+            and element.get("type") == "edition"
+            and ((element.text and element.text.strip()) or len(element))
+        ):
+            return True
+    return False
 
 
 def trismegistos_id(metadata: Path) -> str:
@@ -106,3 +121,69 @@ def iterate_hgv_triples(
             transcription,
             translation if translation.is_file() else None,
         )
+
+
+def iterate_dclp_triples(
+    idp_data: str | Path,
+    *,
+    progressbar: bool = True,
+    progressbar_title: str = "Iterating DCLP",
+) -> Iterator[tuple[str, Path, Path | None, Path | None]]:
+    """Yield the files associated with every DCLP metadata record.
+
+    Each result contains the Trismegistos ID followed by its DCLP metadata,
+    transcription, and translation paths. DCLP metadata and transcriptions are
+    stored in the same XML file, so records with a non-empty edition division
+    repeat the same path in the metadata and transcription positions. Records
+    without a transcription contain ``None`` in the transcription position.
+    DCLP translations are not represented as separate files and are yielded as
+    ``None``.
+    """
+
+    idp_data = Path(idp_data)
+    dclp_files = sorted((idp_data / "DCLP").rglob("*.xml"))
+    dclp_iterator = (
+        tqdm(
+            dclp_files,
+            total=len(dclp_files),
+            unit="record",
+            desc=progressbar_title,
+        )
+        if progressbar
+        else dclp_files
+    )
+    for metadata in dclp_iterator:
+        transcription = metadata if _has_nonempty_edition(metadata) else None
+        yield (trismegistos_id(metadata), metadata, transcription, None)
+
+
+def iterate_idpdata_triples(
+    idp_data: str | Path,
+    *,
+    progressbar: bool = True,
+    progressbar_title: str = "Iterating idp.data",
+) -> Iterator[tuple[str, Path, Path | None, Path | None]]:
+    """Yield HGV triples followed by DCLP triples.
+
+    Set ``progressbar`` to ``False`` to disable progress reporting. When
+    progress reporting is enabled, a single progress bar covers the full sweep
+    across both data sets.
+    """
+
+    idp_data = Path(idp_data)
+    triples = chain(
+        iterate_hgv_triples(idp_data, progressbar=False),
+        iterate_dclp_triples(idp_data, progressbar=False),
+    )
+    if not progressbar:
+        yield from triples
+        return
+
+    hgv_count = len(list((idp_data / "HGV_meta_EpiDoc").glob("HGV*/*.xml")))
+    dclp_count = len(list((idp_data / "DCLP").rglob("*.xml")))
+    yield from tqdm(
+        triples,
+        total=hgv_count + dclp_count,
+        unit="record",
+        desc=progressbar_title,
+    )
