@@ -25,6 +25,18 @@ def write_metadata(path: Path, urls: list[str]) -> None:
     )
 
 
+def write_dclp_metadata(path: Path, urls: list[str]) -> None:
+    graphics = "".join(f'<graphic url="{url}" />' for url in urls)
+    path.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        "<teiHeader><fileDesc><sourceDesc><msDesc><additional><adminInfo>"
+        f"<custodialHist><custEvent>{graphics}</custEvent></custodialHist>"
+        "</adminInfo></additional></msDesc></sourceDesc></fileDesc></teiHeader>"
+        "</TEI>",
+        encoding="utf-8",
+    )
+
+
 def test_read_broken_image_entries_ignores_blank_and_comment_lines(tmp_path):
     broken = tmp_path / "broken.txt"
     broken.write_text(
@@ -106,7 +118,7 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
         ("3", unknown_metadata, None, None),
     ]
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples", lambda idp_data: iter(triples)
+        "scrapyrus.images.iterate_idpdata_triples", lambda idp_data: iter(triples)
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -148,6 +160,37 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
     assert not (output / "todo.txt").exists()
 
 
+def test_scrape_images_finds_dclp_header_graphics(tmp_path, monkeypatch):
+    metadata = tmp_path / "dclp.xml"
+    write_dclp_metadata(metadata, ["https://dclp-images.example/recto"])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_idpdata_triples",
+        lambda idp_data: iter([("123", metadata, metadata, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    class DCLPScraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return url.startswith("https://dclp-images.example/")
+
+        def download(self, url: str, target: Path) -> None:
+            (target / "image").write_text(url, encoding="utf-8")
+
+    output = tmp_path / "images"
+    todo = tmp_path / "todo.txt"
+    error = tmp_path / "error.txt"
+    unavailable = tmp_path / "unavailable.txt"
+
+    scrape_images(output, todo, error, unavailable)
+
+    assert (output / "123" / "image").read_text(encoding="utf-8") == (
+        "https://dclp-images.example/recto"
+    )
+    assert todo.read_text(encoding="utf-8") == ""
+    assert error.read_text(encoding="utf-8") == ""
+    assert unavailable.read_text(encoding="utf-8") == ""
+
+
 def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
     tmp_path, monkeypatch
 ):
@@ -163,7 +206,7 @@ def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
         events.append("iteration complete")
 
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: triples(),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -227,7 +270,7 @@ def test_scrape_images_routes_resolved_oxford_doi_to_oxford_scraper(
     metadata = tmp_path / "128296.xml"
     write_metadata(metadata, [source_url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("128296", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [DOIScraper, OxfordScraper])
@@ -280,7 +323,7 @@ def test_scrape_images_writes_unsupported_resolved_doi_url_to_todo(
     metadata = tmp_path / "42.xml"
     write_metadata(metadata, [source_url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [DOIScraper])
@@ -321,7 +364,7 @@ def test_scrape_images_writes_failed_resolved_doi_url_to_error(tmp_path, monkeyp
     metadata = tmp_path / "42.xml"
     write_metadata(metadata, [source_url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -374,7 +417,7 @@ def test_scrape_images_reports_url_resolution_cycles_as_errors(
     metadata = tmp_path / "42.xml"
     write_metadata(metadata, [first_url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -413,7 +456,7 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
         ["https://images.example/recto", "https://images.example/verso"],
     )
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -459,7 +502,7 @@ def test_scrape_images_reuses_each_scraper_instance_for_the_full_run(
     urls = ["https://images.example/recto", "https://images.example/verso"]
     write_metadata(metadata, urls)
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -517,7 +560,7 @@ def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
     metadata = tmp_path / "42.xml"
     write_metadata(metadata, ["https://images.example/recto"])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -550,7 +593,7 @@ def test_scrape_images_skips_unavailable_responsible_scraper(tmp_path, monkeypat
     url = "https://images.example/recto"
     write_metadata(metadata, [url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -594,7 +637,7 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
     urls = ["https://images.example/recto", "https://images.example/verso"]
     write_metadata(metadata, urls)
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -635,7 +678,7 @@ def test_scrape_images_writes_download_failures_to_error_file(
     url = "https://images.example/recto"
     write_metadata(metadata, [url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -675,7 +718,7 @@ def test_scrape_images_reports_downloads_without_images_as_errors(
     url = "https://images.example/recto"
     write_metadata(metadata, [url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -714,7 +757,7 @@ def test_scrape_images_skips_known_broken_urls_and_overwrites_error_file(
     failing_url = "https://images.example/failing"
     write_metadata(metadata, [skipped_url, failing_url])
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter([("42", metadata, None, None)]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
@@ -764,7 +807,7 @@ def test_scrape_images_prints_normalized_stacked_outcome_chart(
         metadata_paths.append((tm_id, metadata, None, None))
 
     monkeypatch.setattr(
-        "scrapyrus.images.iterate_hgv_triples",
+        "scrapyrus.images.iterate_idpdata_triples",
         lambda idp_data: iter(metadata_paths),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])

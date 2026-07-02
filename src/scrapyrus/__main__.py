@@ -18,7 +18,7 @@ idp_data = click.option(
 @idp_data
 @click.pass_context
 def main(context: click.Context, idp_data: Path) -> None:
-    """Work with papyri.info HGV data."""
+    """Work with papyri.info idp.data."""
 
     context.ensure_object(dict)
     context.obj["idp_data"] = idp_data

@@ -13,11 +13,11 @@ from xml.etree import ElementTree
 from termgraph import Args, Data, StackedChart
 from tqdm import tqdm
 
-from scrapyrus.idpdata import iterate_hgv_triples
+from scrapyrus.idpdata import iterate_idpdata_triples
 
 
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
-GRAPHIC_PATH = "./tei:text/tei:body/tei:div/tei:p/tei:figure/tei:graphic"
+GRAPHIC_PATH = ".//tei:graphic"
 LOGGER_NAME = "scrapyrus.images"
 REPORT_WIDTH = 50
 REPORT_CATEGORIES = [
@@ -347,7 +347,7 @@ def scrape_images(
     broken_filename: str | Path = Path("images_broken.txt"),
     idp_data: str | Path = Path("idp.data"),
 ) -> None:
-    """Download images referenced by all HGV metadata records.
+    """Download images referenced by all idp.data metadata records.
 
     Each TM record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
@@ -386,7 +386,7 @@ def scrape_images(
         error_path.open("w", encoding="utf-8") as error_file,
         unavailable_path.open("w", encoding="utf-8") as unavailable_file,
     ):
-        for tm_id, metadata, _, _ in iterate_hgv_triples(idp_data):
+        for tm_id, metadata, _, _ in iterate_idpdata_triples(idp_data):
             root = ElementTree.parse(metadata).getroot()
             graphics = root.findall(
                 GRAPHIC_PATH,
