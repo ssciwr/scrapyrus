@@ -661,7 +661,7 @@ def test_scrape_images_writes_download_failures_to_error_file(
     assert error.read_text(encoding="utf-8") == f"42: {url}\n"
     assert unavailable.read_text(encoding="utf-8") == ""
     log_text = log.read_text(encoding="utf-8")
-    assert f"Image download failed for HGV 42 with FailingScraper: {url}" in log_text
+    assert f"Image download failed for TM 42 with FailingScraper: {url}" in log_text
     assert "RuntimeError: download failed" in log_text
     captured = capsys.readouterr()
     assert "RuntimeError: download failed" not in captured.out + captured.err
@@ -751,7 +751,7 @@ def test_scrape_images_prints_normalized_stacked_outcome_chart(
     tmp_path, monkeypatch, capsys
 ):
     metadata_paths = []
-    for hgv_id, urls in (
+    for tm_id, urls in (
         ("existing", ["https://images.example/recto", "https://images.example/verso"]),
         ("downloaded", ["https://images.example/success"]),
         ("unsupported", ["https://unsupported.example/image"]),
@@ -759,9 +759,9 @@ def test_scrape_images_prints_normalized_stacked_outcome_chart(
         ("failed", ["https://images.example/failure"]),
         ("broken", ["https://images.example/broken"]),
     ):
-        metadata = tmp_path / f"{hgv_id}.xml"
+        metadata = tmp_path / f"{tm_id}.xml"
         write_metadata(metadata, urls)
-        metadata_paths.append((hgv_id, metadata, None, None))
+        metadata_paths.append((tm_id, metadata, None, None))
 
     monkeypatch.setattr(
         "scrapyrus.images.iterate_hgv_triples",

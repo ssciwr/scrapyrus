@@ -155,7 +155,7 @@ class ImageScraperBase:
 
 @dataclass(frozen=True)
 class _ImageDownload:
-    hgv_id: str
+    tm_id: str
     url: str
     target: Path
     scraper: ImageScraperBase
@@ -349,9 +349,9 @@ def scrape_images(
 ) -> None:
     """Download images referenced by all HGV metadata records.
 
-    Each HGV record is downloaded into its own directory below *target*.
+    Each TM record is downloaded into its own directory below *target*.
     Unknown image sources are written to *todo_filename*, one per line in
-    ``HGV_ID: URL`` form. Sources listed in *broken_filename* are not retried;
+    ``TM_ID: URL`` form. Sources listed in *broken_filename* are not retried;
     blank lines and lines starting with ``#`` in that file are ignored.
     Sources whose download fails during this run are written in the same form
     to *error_filename*, replacing any previous contents. Resolver scrapers
@@ -359,7 +359,7 @@ def scrape_images(
     effective URLs are used in the todo, broken, and error file processing. A
     download that returns without writing an image file is also treated as a
     failure. Temporarily unavailable sources are skipped and written in the
-    same form to *unavailable_filename*. Existing HGV directories are left
+    same form to *unavailable_filename*. Existing TM directories are left
     untouched. A normalized stacked bar chart of outcomes by responsible
     scraper class is printed after processing.
     """
@@ -386,13 +386,13 @@ def scrape_images(
         error_path.open("w", encoding="utf-8") as error_file,
         unavailable_path.open("w", encoding="utf-8") as unavailable_file,
     ):
-        for hgv_id, metadata, _, _ in iterate_hgv_triples(idp_data):
+        for tm_id, metadata, _, _ in iterate_hgv_triples(idp_data):
             root = ElementTree.parse(metadata).getroot()
             graphics = root.findall(
                 GRAPHIC_PATH,
                 namespaces={"tei": TEI_NAMESPACE},
             )
-            papyrus_target = target / hgv_id
+            papyrus_target = target / tm_id
             if graphics and papyrus_target.exists():
                 for graphic in graphics:
                     url = graphic.get("url")
@@ -405,9 +405,9 @@ def scrape_images(
                             _ScraperOutcomeCounts(),
                         ).already_present += 1
                 logger.debug(
-                    "Skipping %d existing image reference(s) for HGV %s",
+                    "Skipping %d existing image reference(s) for TM %s",
                     len(graphics),
-                    hgv_id,
+                    tm_id,
                 )
                 continue
 
@@ -415,7 +415,7 @@ def scrape_images(
                 url = graphic.get("url")
                 if not url:
                     continue
-                source_entry = f"{hgv_id}: {url}"
+                source_entry = f"{tm_id}: {url}"
                 scraper = _responsible_scraper(url, scrapers)
                 if source_entry in known_broken:
                     if scraper is not None:
@@ -427,17 +427,17 @@ def scrape_images(
                     continue
 
                 if scraper is None:
-                    todo_file.write(f"{hgv_id}: {url}\n")
+                    todo_file.write(f"{tm_id}: {url}\n")
                     logger.warning(
-                        "No image scraper is responsible for HGV %s: %s",
-                        hgv_id,
+                        "No image scraper is responsible for TM %s: %s",
+                        tm_id,
                         url,
                     )
                     continue
 
                 downloads.append(
                     _ImageDownload(
-                        hgv_id,
+                        tm_id,
                         url,
                         papyrus_target,
                         scraper,
@@ -457,7 +457,7 @@ def scrape_images(
                     scrapers,
                 )
             except _ImageURLResolutionError as error:
-                error_entry = f"{download.hgv_id}: {error.url}"
+                error_entry = f"{download.tm_id}: {error.url}"
                 if error_entry in known_broken:
                     outcomes_by_scraper.setdefault(
                         type(error.scraper),
@@ -471,13 +471,13 @@ def scrape_images(
                 ).failed += 1
                 error_file.write(f"{error_entry}\n")
                 logger.exception(
-                    "Image URL resolution failed for HGV %s: %s",
-                    download.hgv_id,
+                    "Image URL resolution failed for TM %s: %s",
+                    download.tm_id,
                     error.url,
                 )
                 continue
 
-            error_entry = f"{download.hgv_id}: {effective_url}"
+            error_entry = f"{download.tm_id}: {effective_url}"
             if error_entry in known_broken:
                 if scraper is not None:
                     outcomes_by_scraper.setdefault(
@@ -488,10 +488,10 @@ def scrape_images(
                 continue
 
             if scraper is None:
-                todo_file.write(f"{download.hgv_id}: {effective_url}\n")
+                todo_file.write(f"{download.tm_id}: {effective_url}\n")
                 logger.warning(
-                    "No image scraper is responsible for HGV %s: %s",
-                    download.hgv_id,
+                    "No image scraper is responsible for TM %s: %s",
+                    download.tm_id,
                     effective_url,
                 )
                 continue
@@ -501,18 +501,18 @@ def scrape_images(
                     type(scraper),
                     _ScraperOutcomeCounts(),
                 ).unavailable += 1
-                unavailable_file.write(f"{download.hgv_id}: {effective_url}\n")
+                unavailable_file.write(f"{download.tm_id}: {effective_url}\n")
                 logger.warning(
-                    "Image scraper %s is unavailable; skipping HGV %s: %s",
+                    "Image scraper %s is unavailable; skipping TM %s: %s",
                     type(scraper).__name__,
-                    download.hgv_id,
+                    download.tm_id,
                     effective_url,
                 )
                 continue
             download.target.mkdir(parents=True, exist_ok=True)
             logger.info(
-                "Downloading HGV %s with %s: %s",
-                download.hgv_id,
+                "Downloading TM %s with %s: %s",
+                download.tm_id,
                 type(scraper).__name__,
                 effective_url,
             )
@@ -531,10 +531,10 @@ def scrape_images(
                     type(scraper),
                     _ScraperOutcomeCounts(),
                 ).failed += 1
-                error_file.write(f"{download.hgv_id}: {effective_url}\n")
+                error_file.write(f"{download.tm_id}: {effective_url}\n")
                 logger.exception(
-                    "Image download failed for HGV %s with %s: %s",
-                    download.hgv_id,
+                    "Image download failed for TM %s with %s: %s",
+                    download.tm_id,
                     type(scraper).__name__,
                     effective_url,
                 )
@@ -543,7 +543,7 @@ def scrape_images(
                     type(scraper),
                     _ScraperOutcomeCounts(),
                 ).downloaded += 1
-                logger.info("Downloaded HGV %s: %s", download.hgv_id, effective_url)
+                logger.info("Downloaded TM %s: %s", download.tm_id, effective_url)
 
     logger.info("Image scrape outcomes by scraper: %s", outcomes_by_scraper)
     _draw_scraper_outcomes(outcomes_by_scraper)

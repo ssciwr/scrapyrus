@@ -199,7 +199,7 @@ def analyze(idp_data: Path, *, progress: bool) -> dict[str, object]:
     all_intervals: list[tuple[int | None, int | None]] = []
     document_intervals: dict[str, list[tuple[int | None, int | None]]] = {}
 
-    for hgv_id, metadata, _, _ in iterator:
+    for tm_id, metadata, _, _ in iterator:
         root = ElementTree.parse(metadata).getroot()
         elements = root.findall(ORIG_DATE_PATH)
         document_cardinality[len(elements)] += 1
@@ -247,7 +247,7 @@ def analyze(idp_data: Path, *, progress: bool) -> dict[str, object]:
                     and len(anomaly_examples[result.status]) < 20
                 ):
                     anomaly_examples[result.status].append(
-                        {"hgv_id": hgv_id, "attribute": name, "value": attributes[name]}
+                        {"tm_id": tm_id, "attribute": name, "value": attributes[name]}
                     )
 
             interval = interval_for(attributes, parsed)
@@ -262,7 +262,7 @@ def analyze(idp_data: Path, *, progress: bool) -> dict[str, object]:
                 if len(anomaly_examples["reversed_range"]) < 20:
                     anomaly_examples["reversed_range"].append(
                         {
-                            "hgv_id": hgv_id,
+                            "tm_id": tm_id,
                             "notBefore": attributes.get("notBefore", ""),
                             "notAfter": attributes.get("notAfter", ""),
                         }
@@ -302,7 +302,7 @@ def analyze(idp_data: Path, *, progress: bool) -> dict[str, object]:
         records_with_children += bool(document_child_tags)
         records_with_low_certainty += has_low_certainty
         records_with_low_precision += has_low_precision
-        document_intervals[hgv_id] = intervals
+        document_intervals[tm_id] = intervals
         valid_intervals = [
             interval
             for interval in intervals

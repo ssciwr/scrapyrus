@@ -5,6 +5,9 @@ from xml.etree import ElementTree
 from tqdm import tqdm
 
 
+TEI_IDNO = "{http://www.tei-c.org/ns/1.0}idno"
+
+
 def transcription_xml_snippet(
     transcription: Path,
     *,
@@ -29,15 +32,28 @@ def transcription_xml_snippet(
     return None
 
 
+def _identifier_text(metadata: Path, identifier_type: str) -> str | None:
+    """Return a metadata ``idno`` value by type."""
+
+    for identifier in ElementTree.parse(metadata).iter(TEI_IDNO):
+        if identifier.get("type") == identifier_type and identifier.text:
+            return identifier.text.strip()
+    return None
+
+
 def _ddb_filename(metadata: Path) -> str | None:
     """Return the DDbDP filename referenced by an HGV metadata file."""
 
-    for identifier in ElementTree.parse(metadata).iter(
-        "{http://www.tei-c.org/ns/1.0}idno"
-    ):
-        if identifier.get("type") == "ddb-filename":
-            return identifier.text
-    return None
+    return _identifier_text(metadata, "ddb-filename")
+
+
+def trismegistos_id(metadata: Path) -> str:
+    """Return the Trismegistos identifier declared by an HGV metadata file."""
+
+    tm_id = _identifier_text(metadata, "TM")
+    if tm_id is None:
+        raise ValueError(f"{metadata} does not contain an idno with type='TM'")
+    return tm_id
 
 
 def iterate_hgv_triples(
@@ -48,11 +64,11 @@ def iterate_hgv_triples(
 ) -> Iterator[tuple[str, Path, Path | None, Path | None]]:
     """Yield the files associated with every HGV metadata record.
 
-    Each result contains the HGV ID followed by its metadata, transcription,
-    and translation paths. Records without a transcription or translation
-    contain ``None`` in the corresponding position. Set ``progressbar`` to
-    ``False`` to disable progress reporting. Use ``progressbar_title`` to
-    customize the progress bar description.
+    Each result contains the Trismegistos ID followed by its HGV metadata,
+    transcription, and translation paths. Records without a transcription or
+    translation contain ``None`` in the corresponding position. Set
+    ``progressbar`` to ``False`` to disable progress reporting. Use
+    ``progressbar_title`` to customize the progress bar description.
     """
 
     idp_data = Path(idp_data)
@@ -79,12 +95,13 @@ def iterate_hgv_triples(
         else metadata_files
     )
     for metadata in metadata_iterator:
+        tm_id = trismegistos_id(metadata)
         hgv_id = metadata.stem
         transcription = transcriptions.get(_ddb_filename(metadata))
         translation = translation_root / f"{hgv_id}.xml"
 
         yield (
-            hgv_id,
+            tm_id,
             metadata,
             transcription,
             translation if translation.is_file() else None,

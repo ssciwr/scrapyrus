@@ -1,6 +1,6 @@
 # Used to extract namespace-free TEI edition `<div>` snippets from every
 # transcription linked by HGV metadata in `idp.data`, writing one XML file per
-# HGV ID to `transcriptions/`.
+# TM ID to `transcriptions/`.
 
 from pathlib import Path
 
@@ -11,10 +11,10 @@ idp_data = Path("idp.data")
 output_directory = Path("transcriptions")
 output_directory.mkdir(exist_ok=True)
 
-for hgv_id, _, transcription, _ in iterate_hgv_triples(idp_data):
+for tm_id, _, transcription, _ in iterate_hgv_triples(idp_data):
     if transcription is None:
         continue
 
     snippet = transcription_xml_snippet(transcription, remove_namespaces=True)
     if snippet is not None:
-        (output_directory / f"{hgv_id}.xml").write_text(snippet, encoding="utf-8")
+        (output_directory / f"{tm_id}.xml").write_text(snippet, encoding="utf-8")

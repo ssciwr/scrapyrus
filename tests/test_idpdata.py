@@ -1,7 +1,11 @@
 from types import GeneratorType
 from xml.etree import ElementTree
 
-from scrapyrus.idpdata import iterate_hgv_triples, transcription_xml_snippet
+from scrapyrus.idpdata import (
+    iterate_hgv_triples,
+    transcription_xml_snippet,
+    trismegistos_id,
+)
 
 
 def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
@@ -79,6 +83,37 @@ def test_iterate_hgv_triples_finds_associated_files(idp_data):
         None,
         None,
     )
+
+
+def test_iterate_hgv_triples_returns_tm_id_from_metadata(tmp_path):
+    idp_data = tmp_path / "idp.data"
+    metadata_root = idp_data / "HGV_meta_EpiDoc" / "HGV999"
+    transcription_root = idp_data / "DDB_EpiDoc_XML" / "p.test"
+    translation_root = idp_data / "HGV_trans_EpiDoc"
+    metadata_root.mkdir(parents=True)
+    transcription_root.mkdir(parents=True)
+    translation_root.mkdir(parents=True)
+
+    metadata = metadata_root / "999999.xml"
+    metadata.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        "<teiHeader><fileDesc><publicationStmt>"
+        '<idno type="filename">999999</idno>'
+        '<idno type="TM">123456</idno>'
+        '<idno type="ddb-filename">p.test.1</idno>'
+        "</publicationStmt></fileDesc></teiHeader>"
+        "</TEI>",
+        encoding="utf-8",
+    )
+    transcription = transcription_root / "p.test.1.xml"
+    transcription.write_text("<TEI />", encoding="utf-8")
+    translation = translation_root / "999999.xml"
+    translation.write_text("<TEI />", encoding="utf-8")
+
+    assert trismegistos_id(metadata) == "123456"
+    assert list(iterate_hgv_triples(idp_data, progressbar=False)) == [
+        ("123456", metadata, transcription, translation)
+    ]
 
 
 def test_iterate_hgv_triples_shows_progressbar_by_default(idp_data, monkeypatch):

@@ -418,9 +418,9 @@ def render_report(
         "",
         "## Corpus linkage",
         "",
-        "| Item | Count | HGV record coverage |",
+        "| Item | Count | Record coverage |",
         "|---|---:|---:|",
-        f"| HGV records / metadata XML files | {triples:,} | 100.00% |",
+        f"| Metadata records / XML files | {triples:,} | 100.00% |",
         f"| Records linked to a transcription | {transcription_links:,} | {percentage(transcription_links, triples)} |",
         f"| Unique linked transcription XML files | {unique_transcriptions:,} | {percentage(unique_transcriptions, triples)} |",
         f"| Records linked to a translation | {translation_links:,} | {percentage(translation_links, triples)} |",
@@ -445,8 +445,8 @@ def render_report(
         [
             "## Database-design takeaways",
             "",
-            "- Keep the HGV record, transcription, and translation as separate entities. Their coverage differs, and the "
-            "same transcription can be linked from multiple HGV records.",
+            "- Keep the metadata record, transcription, and translation as separate entities. Their coverage differs, and the "
+            "same transcription can be linked from multiple metadata records.",
             "- Model identifiers, provenance places, keywords, bibliography entries, languages, revision events, and "
             "typed text divisions as child tables: they are repeatable and carry type/subtype or authority attributes.",
             "- Preserve normalized core columns alongside the source XML. TEI permits mixed content, nested bibliography, "

@@ -256,7 +256,7 @@ class PlaceAccumulator:
         self,
         *,
         scope: str,
-        hgv_id: str,
+        document_tm_id: str,
         element: ElementTree.Element,
     ) -> dict[str, object]:
         attrs = attributes(element)
@@ -267,7 +267,7 @@ class PlaceAccumulator:
         pleiades_ids = authorities["pleiades"]
 
         self.occurrences[scope] += 1
-        self.documents[scope].add(hgv_id)
+        self.documents[scope].add(document_tm_id)
         self.labels[scope][label] += 1
         self.attribute_combinations[scope][tuple(sorted(attrs))] += 1
 
@@ -280,20 +280,20 @@ class PlaceAccumulator:
 
         if ref:
             self.authority_state[scope]["has_ref"] += 1
-            self.documents_with_ref[scope].add(hgv_id)
+            self.documents_with_ref[scope].add(document_tm_id)
         else:
             self.authority_state[scope]["no_ref"] += 1
         if tm_ids:
             self.authority_state[scope]["has_tm"] += 1
-            self.documents_with_tm[scope].add(hgv_id)
+            self.documents_with_tm[scope].add(document_tm_id)
         else:
             self.authority_state[scope]["no_tm"] += 1
         if pleiades_ids:
             self.authority_state[scope]["has_pleiades"] += 1
-            self.documents_with_pleiades[scope].add(hgv_id)
+            self.documents_with_pleiades[scope].add(document_tm_id)
         if attrs.get("key"):
             self.authority_state[scope]["has_key"] += 1
-            self.documents_with_key[scope].add(hgv_id)
+            self.documents_with_key[scope].add(document_tm_id)
 
         for authority, values in authorities.items():
             if values:
@@ -317,7 +317,7 @@ class PlaceAccumulator:
                 )
                 or "(none)"
             ] += 1
-            self.tm_documents[tm_id].add(hgv_id)
+            self.tm_documents[tm_id].add(document_tm_id)
             place = self.places.get(tm_id)
             if place is None:
                 self.unmatched_tm_ids[tm_id] += 1
@@ -585,14 +585,14 @@ def analyze(
         unit="record",
         disable=not progress,
     )
-    for hgv_id, metadata, _, _ in iterator:
+    for document_tm_id, metadata, _, _ in iterator:
         root = ElementTree.parse(metadata).getroot()
 
         current_settlements = root.findall(MS_IDENTIFIER_PATH)
         for settlement in current_settlements:
             accumulator.add(
                 scope="current_settlement",
-                hgv_id=hgv_id,
+                document_tm_id=document_tm_id,
                 element=settlement,
             )
 
@@ -605,10 +605,10 @@ def analyze(
             for name in attributes(orig_place):
                 origin_place_attributes[name] += 1
             for place_name in orig_place.iter(PLACE_NAME):
-                origin_place_name_documents.add(hgv_id)
+                origin_place_name_documents.add(document_tm_id)
                 accumulator.add(
                     scope="origin_place_name",
-                    hgv_id=hgv_id,
+                    document_tm_id=document_tm_id,
                     element=place_name,
                 )
 
@@ -616,7 +616,7 @@ def analyze(
         document_provenance_p_count = 0
         for provenance in root.findall(PROVENANCE_PATH):
             provenance_events += 1
-            provenance_event_documents.add(hgv_id)
+            provenance_event_documents.add(document_tm_id)
             event_attrs = attributes(provenance)
             provenance_event_types[event_attrs.get("type", "(none)")] += 1
             for name in event_attrs:
@@ -626,7 +626,7 @@ def analyze(
             for place_name in direct_place_names:
                 accumulator.add(
                     scope="provenance_place",
-                    hgv_id=hgv_id,
+                    document_tm_id=document_tm_id,
                     element=place_name,
                 )
                 document_provenance_place_count += 1
@@ -655,7 +655,7 @@ def analyze(
                 for place_name in place_names:
                     result = accumulator.add(
                         scope="provenance_place",
-                        hgv_id=hgv_id,
+                        document_tm_id=document_tm_id,
                         element=place_name,
                     )
                     document_provenance_place_count += 1
