@@ -4,7 +4,7 @@
 
 from pathlib import Path
 
-from scrapyrus.hgv import iterate_hgv_triples, transcription_xml_snippet
+from scrapyrus.idpdata import iterate_hgv_triples, transcription_xml_snippet
 
 
 idp_data = Path("idp.data")

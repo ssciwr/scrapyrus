@@ -7,7 +7,7 @@
 The report is intended to inform a smaller, database-oriented schema.  It
 counts XML files, element paths, attributes, controlled values, and per-file
 cardinalities for the metadata documents returned by
-:func:`scrapyrus.hgv.iterate_hgv_triples`. It also counts links to associated
+:func:`scrapyrus.idpdata.iterate_hgv_triples`. It also counts links to associated
 transcription and translation documents without profiling their contents.
 """
 
@@ -21,7 +21,7 @@ import subprocess
 from typing import Iterable
 from xml.etree import ElementTree
 
-from scrapyrus.hgv import iterate_hgv_triples
+from scrapyrus.idpdata import iterate_hgv_triples
 from tqdm import tqdm
 
 

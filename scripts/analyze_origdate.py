@@ -13,7 +13,7 @@ import json
 import re
 from xml.etree import ElementTree
 
-from scrapyrus.hgv import iterate_hgv_triples
+from scrapyrus.idpdata import iterate_hgv_triples
 from tqdm import tqdm
 
 

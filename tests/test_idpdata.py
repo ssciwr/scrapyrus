@@ -1,7 +1,7 @@
 from types import GeneratorType
 from xml.etree import ElementTree
 
-from scrapyrus.hgv import iterate_hgv_triples, transcription_xml_snippet
+from scrapyrus.idpdata import iterate_hgv_triples, transcription_xml_snippet
 
 
 def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
@@ -88,7 +88,7 @@ def test_iterate_hgv_triples_shows_progressbar_by_default(idp_data, monkeypatch)
         progress.update(iterable=iterable, total=total, unit=unit, desc=desc)
         return iterable
 
-    monkeypatch.setattr("scrapyrus.hgv.tqdm", fake_tqdm)
+    monkeypatch.setattr("scrapyrus.idpdata.tqdm", fake_tqdm)
 
     next(iterate_hgv_triples(idp_data))
 
@@ -107,7 +107,7 @@ def test_iterate_hgv_triples_accepts_custom_progressbar_title(
         progress["desc"] = desc
         return iterable
 
-    monkeypatch.setattr("scrapyrus.hgv.tqdm", fake_tqdm)
+    monkeypatch.setattr("scrapyrus.idpdata.tqdm", fake_tqdm)
 
     next(iterate_hgv_triples(idp_data, progressbar_title="Finding records"))
 

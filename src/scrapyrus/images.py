@@ -13,7 +13,7 @@ from xml.etree import ElementTree
 from termgraph import Args, Data, StackedChart
 from tqdm import tqdm
 
-from scrapyrus.hgv import iterate_hgv_triples
+from scrapyrus.idpdata import iterate_hgv_triples
 
 
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
