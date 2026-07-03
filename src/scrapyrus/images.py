@@ -13,6 +13,11 @@ from xml.etree import ElementTree
 from termgraph import Args, Data, StackedChart
 from tqdm import tqdm
 
+from scrapyrus.image_manifest import (
+    file_snapshot,
+    manifest_has_completed_source,
+    record_image_manifest_entry,
+)
 from scrapyrus.idpdata import iterate_idpdata_triples
 
 
@@ -157,6 +162,7 @@ class ImageScraperBase:
 @dataclass(frozen=True)
 class _ImageDownload:
     tm_id: str
+    source_id: str
     url: str
     target: Path
     scraper: ImageScraperBase
@@ -360,9 +366,10 @@ def scrape_images(
     effective URLs are used in the todo, broken, and error file processing. A
     download that returns without writing an image file is also treated as a
     failure. Temporarily unavailable sources are skipped and written in the
-    same form to *unavailable_filename*. Existing TM directories are left
-    untouched. A normalized stacked bar chart of outcomes by responsible
-    scraper class is printed after processing.
+    same form to *unavailable_filename*. Existing TM directories are reused so
+    additional records for the same TM ID can add files there. A normalized
+    stacked bar chart of outcomes by responsible scraper class is printed after
+    processing.
     """
 
     logger.info("Starting image scrape: target=%s idp_data=%s", target, idp_data)
@@ -394,30 +401,24 @@ def scrape_images(
                 namespaces={"tei": TEI_NAMESPACE},
             )
             papyrus_target = target / tm_id
-            if graphics and papyrus_target.exists():
-                for graphic in graphics:
-                    url = graphic.get("url")
-                    if not url:
-                        continue
-                    scraper = _responsible_scraper(url, scrapers)
-                    if scraper is not None:
-                        outcomes_by_scraper.setdefault(
-                            type(scraper),
-                            _ScraperOutcomeCounts(),
-                        ).already_present += 1
-                logger.debug(
-                    "Skipping %d existing image reference(s) for TM %s",
-                    len(graphics),
-                    tm_id,
-                )
-                continue
-
             for graphic in graphics:
                 url = graphic.get("url")
                 if not url:
                     continue
                 source_entry = f"{tm_id}: {url}"
                 scraper = _responsible_scraper(url, scrapers)
+                if manifest_has_completed_source(papyrus_target, url):
+                    if scraper is not None:
+                        outcomes_by_scraper.setdefault(
+                            type(scraper),
+                            _ScraperOutcomeCounts(),
+                        ).already_present += 1
+                    logger.debug(
+                        "Skipping already recorded image source for TM %s: %s",
+                        tm_id,
+                        url,
+                    )
+                    continue
                 if source_entry in known_broken:
                     if scraper is not None:
                         outcomes_by_scraper.setdefault(
@@ -439,6 +440,7 @@ def scrape_images(
                 downloads.append(
                     _ImageDownload(
                         tm_id,
+                        metadata.stem,
                         url,
                         papyrus_target,
                         scraper,
@@ -479,6 +481,22 @@ def scrape_images(
                 continue
 
             error_entry = f"{download.tm_id}: {effective_url}"
+            if manifest_has_completed_source(
+                download.target,
+                download.url,
+                effective_url,
+            ):
+                outcomes_by_scraper.setdefault(
+                    type(scraper or download.scraper),
+                    _ScraperOutcomeCounts(),
+                ).already_present += 1
+                logger.debug(
+                    "Skipping already recorded image source for TM %s: %s",
+                    download.tm_id,
+                    effective_url,
+                )
+                continue
+
             if error_entry in known_broken:
                 if scraper is not None:
                     outcomes_by_scraper.setdefault(
@@ -511,6 +529,7 @@ def scrape_images(
                 )
                 continue
             download.target.mkdir(parents=True, exist_ok=True)
+            before_download = file_snapshot(download.target)
             logger.info(
                 "Downloading TM %s with %s: %s",
                 download.tm_id,
@@ -519,9 +538,10 @@ def scrape_images(
             )
             try:
                 scraper.download(effective_url, download.target)
-                if not any(path.is_file() for path in download.target.iterdir()):
+                after_download = file_snapshot(download.target)
+                if not after_download:
                     raise RuntimeError(
-                        f"{type(scraper).__name__}.download did not write any images"
+                        f"{type(scraper).__name__}.download did not leave any images"
                     )
             except Exception:
                 try:
@@ -540,11 +560,34 @@ def scrape_images(
                     effective_url,
                 )
             else:
-                outcomes_by_scraper.setdefault(
+                changed_files = [
+                    path
+                    for path, file_info in after_download.items()
+                    if before_download.get(path) != file_info
+                ]
+                manifest_files = changed_files or list(after_download)
+                record_image_manifest_entry(
+                    download.target,
+                    source_url=download.url,
+                    effective_url=effective_url,
+                    scraper=type(scraper).__name__,
+                    files=manifest_files,
+                    source_ids=[download.source_id],
+                )
+                outcome = outcomes_by_scraper.setdefault(
                     type(scraper),
                     _ScraperOutcomeCounts(),
-                ).downloaded += 1
-                logger.info("Downloaded TM %s: %s", download.tm_id, effective_url)
+                )
+                if after_download == before_download:
+                    outcome.already_present += 1
+                    logger.info(
+                        "No new image files for TM %s: %s",
+                        download.tm_id,
+                        effective_url,
+                    )
+                else:
+                    outcome.downloaded += 1
+                    logger.info("Downloaded TM %s: %s", download.tm_id, effective_url)
 
     logger.info("Image scrape outcomes by scraper: %s", outcomes_by_scraper)
     _draw_scraper_outcomes(outcomes_by_scraper)

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import filecmp
 import os
 import shutil
 import tempfile
@@ -83,16 +84,17 @@ def _copy_tree(
 ) -> None:
     for entry in sorted(source.iterdir()):
         if entry.is_symlink():
-            target = destination / entry.name
-            _check_available(target, entry)
-            os.symlink(os.readlink(entry), target)
+            _copy_symlink(entry, destination / entry.name, source_root)
             continue
 
         if entry.is_dir():
             target_name = hgv_to_tm.get(entry.name, entry.name)
             target = destination / target_name
-            _check_available(target, entry)
-            target.mkdir()
+            if target.exists() or target.is_symlink():
+                if not target.is_dir() or target.is_symlink():
+                    raise FileExistsError(f"{entry} would overwrite {target}")
+            else:
+                target.mkdir()
             if target_name != entry.name:
                 renamed.append(
                     (
@@ -111,14 +113,66 @@ def _copy_tree(
             shutil.copystat(entry, target, follow_symlinks=False)
             continue
 
-        target = destination / entry.name
-        _check_available(target, entry)
-        shutil.copy2(entry, target, follow_symlinks=False)
+        _copy_file(entry, destination / entry.name, source_root)
 
 
-def _check_available(target: Path, source: Path) -> None:
-    if target.exists() or target.is_symlink():
-        raise FileExistsError(f"{source} would overwrite {target}")
+def _copy_file(source: Path, target: Path, source_root: Path) -> None:
+    if not target.exists() and not target.is_symlink():
+        shutil.copy2(source, target, follow_symlinks=False)
+        return
+
+    if target.is_file() and filecmp.cmp(source, target, shallow=False):
+        return
+
+    alternate_target = _conflict_target(target, source, source_root)
+    if alternate_target.exists() or alternate_target.is_symlink():
+        return
+    shutil.copy2(source, alternate_target, follow_symlinks=False)
+
+
+def _copy_symlink(source: Path, target: Path, source_root: Path) -> None:
+    link_target = os.readlink(source)
+    if not target.exists() and not target.is_symlink():
+        os.symlink(link_target, target)
+        return
+
+    if target.is_symlink() and os.readlink(target) == link_target:
+        return
+
+    alternate_target = _conflict_target(target, source, source_root)
+    if alternate_target.exists() or alternate_target.is_symlink():
+        return
+    os.symlink(link_target, alternate_target)
+
+
+def _conflict_target(target: Path, source: Path, source_root: Path) -> Path:
+    source_parts = source.relative_to(source_root).parts
+    suffix = _safe_suffix(source_parts[0] if source_parts else source.stem)
+    stem = target.stem
+    extension = "".join(target.suffixes)
+    if extension:
+        stem = target.name[: -len(extension)]
+
+    for index in range(1, 10_000):
+        disambiguator = suffix if index == 1 else f"{suffix}-{index}"
+        candidate = target.with_name(f"{stem}.{disambiguator}{extension}")
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+        if source.is_file() and candidate.is_file():
+            if filecmp.cmp(source, candidate, shallow=False):
+                return candidate
+        if source.is_symlink() and candidate.is_symlink():
+            if os.readlink(source) == os.readlink(candidate):
+                return candidate
+
+    raise FileExistsError(f"{source} has too many conflicting targets near {target}")
+
+
+def _safe_suffix(value: str) -> str:
+    return "".join(
+        character if character.isalnum() or character in "._-" else "_"
+        for character in value
+    )
 
 
 def main() -> None:

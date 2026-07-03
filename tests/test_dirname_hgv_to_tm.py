@@ -1,8 +1,6 @@
 import importlib.util
 from pathlib import Path
 
-import pytest
-
 
 def load_script():
     script = Path(__file__).resolve().parents[1] / "scripts" / "dirname_hgv_to_tm.py"
@@ -72,18 +70,46 @@ def test_copy_with_tm_directory_names_copies_and_renames_hgv_directories(tmp_pat
     ) == "unchanged"
 
 
-def test_copy_with_tm_directory_names_refuses_colliding_targets(tmp_path):
+def test_copy_with_tm_directory_names_merges_colliding_directories(tmp_path):
     module = load_script()
     source = tmp_path / "images"
-    (source / "42").mkdir(parents=True)
-    (source / "420000").mkdir()
+    (source / "42a").mkdir(parents=True)
+    (source / "42a" / "same.jpg").write_bytes(b"same")
+    (source / "42a" / "recto.jpg").write_bytes(b"recto")
+    (source / "42b").mkdir()
+    (source / "42b" / "same.jpg").write_bytes(b"same")
+    (source / "42b" / "verso.jpg").write_bytes(b"verso")
     destination = tmp_path / "images_tm"
 
-    with pytest.raises(FileExistsError):
-        module.copy_with_tm_directory_names(
-            source,
-            destination,
-            {"42": "420000"},
-        )
+    renamed = module.copy_with_tm_directory_names(
+        source,
+        destination,
+        {"42a": "420000", "42b": "420000"},
+    )
 
-    assert not destination.exists()
+    assert renamed == [
+        (Path("42a"), Path("420000")),
+        (Path("42b"), Path("420000")),
+    ]
+    assert (destination / "420000" / "same.jpg").read_bytes() == b"same"
+    assert (destination / "420000" / "recto.jpg").read_bytes() == b"recto"
+    assert (destination / "420000" / "verso.jpg").read_bytes() == b"verso"
+
+
+def test_copy_with_tm_directory_names_preserves_same_name_file_conflicts(tmp_path):
+    module = load_script()
+    source = tmp_path / "images"
+    (source / "42a").mkdir(parents=True)
+    (source / "42a" / "image.jpg").write_bytes(b"first")
+    (source / "42b").mkdir()
+    (source / "42b" / "image.jpg").write_bytes(b"second")
+    destination = tmp_path / "images_tm"
+
+    module.copy_with_tm_directory_names(
+        source,
+        destination,
+        {"42a": "420000", "42b": "420000"},
+    )
+
+    assert (destination / "420000" / "image.jpg").read_bytes() == b"first"
+    assert (destination / "420000" / "image.42b.jpg").read_bytes() == b"second"

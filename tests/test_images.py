@@ -1,5 +1,8 @@
+import hashlib
+import json
 from pathlib import Path
 
+from scrapyrus.image_manifest import IMAGE_MANIFEST_FILENAME
 from scrapyrus.images import (
     REPORT_CATEGORIES,
     REPORT_COLORS,
@@ -556,7 +559,7 @@ def test_scrape_images_reuses_each_scraper_instance_for_the_full_run(
     }
 
 
-def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
+def test_scrape_images_adds_to_existing_papyrus_directory(tmp_path, monkeypatch):
     metadata = tmp_path / "42.xml"
     write_metadata(metadata, ["https://images.example/recto"])
     monkeypatch.setattr(
@@ -572,20 +575,177 @@ def test_scrape_images_skips_existing_papyrus_directory(tmp_path, monkeypatch):
             return True
 
         def download(self, url: str, target: Path) -> None:
-            downloads.append(target)
+            downloads.append((url, target))
+            (target / "recto.jpg").write_text(url, encoding="utf-8")
 
     output = tmp_path / "images"
     (output / "42").mkdir(parents=True)
+    (output / "42" / "existing.jpg").write_text("existing", encoding="utf-8")
     todo = tmp_path / "todo.txt"
     error = tmp_path / "error.txt"
     unavailable = tmp_path / "unavailable.txt"
 
     scrape_images(output, todo, error, unavailable)
 
-    assert downloads == []
+    assert downloads == [("https://images.example/recto", output / "42")]
+    assert (output / "42" / "existing.jpg").read_text(encoding="utf-8") == "existing"
+    assert (output / "42" / "recto.jpg").read_text(encoding="utf-8") == (
+        "https://images.example/recto"
+    )
     assert todo.read_text(encoding="utf-8") == ""
     assert error.read_text(encoding="utf-8") == ""
     assert unavailable.read_text(encoding="utf-8") == ""
+
+
+def test_scrape_images_writes_manifest_entries(tmp_path, monkeypatch):
+    metadata = tmp_path / "42.xml"
+    url = "https://images.example/recto"
+    write_metadata(metadata, [url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_idpdata_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    class Scraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return True
+
+        def download(self, url: str, target: Path) -> None:
+            (target / "recto.jpg").write_text(url, encoding="utf-8")
+
+    output = tmp_path / "images"
+    scrape_images(
+        output,
+        tmp_path / "todo.txt",
+        tmp_path / "error.txt",
+        tmp_path / "unavailable.txt",
+    )
+
+    manifest = json.loads(
+        (output / "42" / IMAGE_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert manifest["version"] == 1
+    assert manifest["entries"][0]["source_url"] == url
+    assert manifest["entries"][0]["effective_url"] == url
+    assert manifest["entries"][0]["scraper"] == "Scraper"
+    assert manifest["entries"][0]["source_ids"] == ["42"]
+    assert manifest["entries"][0]["files"][0]["path"] == "recto.jpg"
+    assert manifest["entries"][0]["files"][0]["size"] == len(url)
+    assert len(manifest["entries"][0]["files"][0]["sha256"]) == 64
+
+
+def test_scrape_images_skips_completed_manifest_entry(tmp_path, monkeypatch):
+    metadata = tmp_path / "42.xml"
+    url = "https://images.example/recto"
+    write_metadata(metadata, [url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_idpdata_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    output = tmp_path / "images"
+    image_dir = output / "42"
+    image_dir.mkdir(parents=True)
+    image_file = image_dir / "recto.jpg"
+    image_file.write_text("existing", encoding="utf-8")
+    manifest = {
+        "version": 1,
+        "entries": [
+            {
+                "source_url": url,
+                "effective_url": url,
+                "scraper": "Scraper",
+                "source_ids": ["42"],
+                "scraped_at": "2026-07-03T00:00:00Z",
+                "files": [
+                    {
+                        "path": "recto.jpg",
+                        "size": image_file.stat().st_size,
+                        "sha256": hashlib.sha256(b"existing").hexdigest(),
+                    }
+                ],
+            }
+        ],
+    }
+    (image_dir / IMAGE_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    downloads = []
+
+    class Scraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return True
+
+        def download(self, url: str, target: Path) -> None:
+            downloads.append(url)
+
+    scrape_images(
+        output,
+        tmp_path / "todo.txt",
+        tmp_path / "error.txt",
+        tmp_path / "unavailable.txt",
+    )
+
+    assert downloads == []
+
+
+def test_scrape_images_redownloads_incomplete_manifest_entry(tmp_path, monkeypatch):
+    metadata = tmp_path / "42.xml"
+    url = "https://images.example/recto"
+    write_metadata(metadata, [url])
+    monkeypatch.setattr(
+        "scrapyrus.images.iterate_idpdata_triples",
+        lambda idp_data: iter([("42", metadata, None, None)]),
+    )
+    monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
+
+    image_dir = tmp_path / "images" / "42"
+    image_dir.mkdir(parents=True)
+    (image_dir / IMAGE_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "source_url": url,
+                        "effective_url": url,
+                        "scraper": "Scraper",
+                        "source_ids": ["42"],
+                        "scraped_at": "2026-07-03T00:00:00Z",
+                        "files": [
+                            {
+                                "path": "missing.jpg",
+                                "size": 7,
+                                "sha256": "0" * 64,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    downloads = []
+
+    class Scraper(ImageScraperBase):
+        def responsible(self, url: str) -> bool:
+            return True
+
+        def download(self, url: str, target: Path) -> None:
+            downloads.append(url)
+            (target / "recto.jpg").write_text(url, encoding="utf-8")
+
+    scrape_images(
+        tmp_path / "images",
+        tmp_path / "todo.txt",
+        tmp_path / "error.txt",
+        tmp_path / "unavailable.txt",
+    )
+
+    assert downloads == [url]
 
 
 def test_scrape_images_skips_unavailable_responsible_scraper(tmp_path, monkeypatch):
@@ -744,7 +904,7 @@ def test_scrape_images_reports_downloads_without_images_as_errors(
 
     assert not (output / "42").exists()
     assert error.read_text(encoding="utf-8") == f"42: {url}\n"
-    assert "EmptyScraper.download did not write any images" in log.read_text(
+    assert "EmptyScraper.download did not leave any images" in log.read_text(
         encoding="utf-8"
     )
 
@@ -826,7 +986,7 @@ def test_scrape_images_prints_normalized_stacked_outcome_chart(
         def download(self, url: str, target: Path) -> None:
             if url.endswith("/failure"):
                 raise RuntimeError("download failed")
-            (target / "image").write_text(url, encoding="utf-8")
+            (target / url.rpartition("/")[2]).write_text(url, encoding="utf-8")
 
     output = tmp_path / "images"
     (output / "existing").mkdir(parents=True)
@@ -853,7 +1013,7 @@ def test_scrape_images_prints_normalized_stacked_outcome_chart(
 
     assert scraper_row.count("▇") == REPORT_WIDTH
     assert scraper_row.endswith(" 5")
-    for color, segment_width in zip(REPORT_COLORS, [20, 10, 0, 10, 10]):
+    for color, segment_width in zip(REPORT_COLORS, [0, 29, 0, 11, 10]):
         if segment_width:
             assert f"\033[{color}m{'▇' * segment_width}\033[0m" in scraper_row
 
