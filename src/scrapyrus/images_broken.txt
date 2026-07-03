@@ -14,7 +14,6 @@
 14252: https://digi.ub.uni-heidelberg.de/diglit/p_g_1987
 14253: https://digi.ub.uni-heidelberg.de/diglit/p_g_2091
 14254: https://digi.ub.uni-heidelberg.de/diglit/p_g_1756
-14838: https://digicoll.lib.berkeley.edu/record/232100
 15146: https://digi.ub.uni-heidelberg.de/diglit/p_g_1710
 15148: https://digi.ub.uni-heidelberg.de/diglit/p_g_2077
 15149: https://digi.ub.uni-heidelberg.de/diglit/p_g_1992
