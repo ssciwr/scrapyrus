@@ -28,6 +28,9 @@ classifiers = [
 dependencies = [
     "beautifulsoup4",
     "click",
+    "saxonche",
+    "pydantic >=2",
+    "psycopg[binary] >=3",
     "requests",
     "termgraph >=0.7.6",
     "tqdm",
@@ -55,7 +58,7 @@ scrapyrus = "scrapyrus.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-scrapyrus = ["images_broken.txt"]
+scrapyrus = ["images_broken.txt", "metadata.sql"]
 
 # The following is the configuration for the pytest test suite
 [tool.pytest.ini_options]

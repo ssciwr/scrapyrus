@@ -8,6 +8,9 @@ idp.data
 images
 transcriptions
 
+# Host/container data exchange directory for Docker Compose.
+exchange/
+
 exploration.ipynb
 
 .ruff_cache

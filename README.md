@@ -29,6 +29,37 @@ Having done so, the test suite can be run using `pytest`:
 python -m pytest
 ```
 
+## Docker Compose
+
+The repository includes a Docker Compose setup with PostgreSQL and a long-lived
+`scrapyrus` execution container:
+
+```
+docker compose up --build -d
+```
+
+The `scrapyrus` container mounts this repository at `/workspace` and sets
+`SCRAPYRUS_DATABASE_URL` to the PostgreSQL service. It also mounts the local
+`./exchange` directory at `/exchange` for moving data between the host and the
+container. To ingest metadata, enter the container and run the CLI:
+
+```
+docker compose exec scrapyrus bash
+scrapyrus metadata ingest
+```
+
+If `idp.data` is somewhere else inside the mounted workspace, pass it explicitly:
+
+```
+scrapyrus --idp-data /workspace/idp.data metadata ingest
+```
+
+To export the metadata database tables as CSV files:
+
+```
+scrapyrus metadata dump
+```
+
 ## Acknowledgments
 
 This repository was set up using the [SSC Cookiecutter for Python Packages](https://github.com/ssciwr/cookiecutter-python-package).

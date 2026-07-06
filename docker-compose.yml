@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: scrapyrus
+      POSTGRES_USER: scrapyrus
+      POSTGRES_PASSWORD: scrapyrus
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scrapyrus -d scrapyrus"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  scrapyrus:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SCRAPYRUS_DATABASE_URL: postgresql://scrapyrus:scrapyrus@postgres:5432/scrapyrus
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    command: sleep infinity
+    volumes:
+      - .:/workspace
+      - ./exchange:/exchange
+
+volumes:
+  postgres-data:

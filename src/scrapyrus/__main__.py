@@ -7,6 +7,7 @@ from scrapyrus.images import (
     image_log_file,
     scrape_images,
 )
+from scrapyrus.metadata import dump_metadata_tables, ingest_metadata
 
 
 idp_data = click.option(
@@ -15,6 +16,12 @@ idp_data = click.option(
     default=Path("idp.data"),
     show_default=True,
     help="Path to the idp.data repository clone to work with",
+)
+database_url = click.option(
+    "--database-url",
+    envvar="SCRAPYRUS_DATABASE_URL",
+    required=True,
+    help="PostgreSQL connection URL. Defaults to SCRAPYRUS_DATABASE_URL.",
 )
 
 
@@ -106,6 +113,45 @@ def images(
             broken_filename=broken_filename,
             idp_data=context.obj["idp_data"],
         )
+
+
+@main.group("metadata")
+def metadata() -> None:
+    """Work with papyrus metadata."""
+
+
+@metadata.command("ingest")
+@database_url
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while reading idp.data records.",
+)
+@click.pass_context
+def ingest(context: click.Context, database_url: str, progress: bool) -> None:
+    """Ingest papyrus metadata into PostgreSQL."""
+
+    ingest_metadata(
+        context.obj["idp_data"],
+        database_url,
+        progressbar=progress,
+    )
+
+
+@metadata.command("dump")
+@database_url
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("metadata-csv"),
+    show_default=True,
+    help="Directory to write one CSV file per metadata table.",
+)
+def dump(database_url: str, output_dir: Path) -> None:
+    """Dump metadata database tables as CSV files."""
+
+    dump_metadata_tables(output_dir, database_url)
 
 
 if __name__ == "__main__":

@@ -116,3 +116,125 @@ def test_images_subcommand_uses_defaults(monkeypatch):
             Path("idp.data"),
         )
     ]
+
+
+def test_metadata_ingest_subcommand_triggers_metadata_ingest(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_ingest_metadata(idp_data, database_url, *, progressbar):
+        calls.append((idp_data, database_url, progressbar))
+
+    monkeypatch.setattr("scrapyrus.__main__.ingest_metadata", fake_ingest_metadata)
+    idp_data = tmp_path / "idp.data"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        (
+            "--idp-data",
+            str(idp_data),
+            "metadata",
+            "ingest",
+            "--database-url",
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            idp_data,
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            False,
+        )
+    ]
+    assert result.output == ""
+
+
+def test_metadata_ingest_subcommand_uses_database_url_envvar(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.ingest_metadata",
+        lambda idp_data, database_url, *, progressbar: calls.append(
+            (idp_data, database_url, progressbar)
+        ),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ("metadata", "ingest"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": (
+                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
+            )
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            Path("idp.data"),
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            True,
+        )
+    ]
+
+
+def test_metadata_dump_subcommand_triggers_csv_dump(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_metadata_tables",
+        lambda output_dir, database_url: calls.append((output_dir, database_url)),
+    )
+    output_dir = tmp_path / "metadata-csv"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        (
+            "metadata",
+            "dump",
+            "--database-url",
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "--output-dir",
+            str(output_dir),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            output_dir,
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+        )
+    ]
+    assert result.output == ""
+
+
+def test_metadata_dump_subcommand_uses_database_url_envvar(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_metadata_tables",
+        lambda output_dir, database_url: calls.append((output_dir, database_url)),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ("metadata", "dump"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": (
+                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
+            )
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            Path("metadata-csv"),
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+        )
+    ]
