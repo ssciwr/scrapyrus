@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from saxonche import PySaxonProcessor
 
 from scrapyrus.idpdata import iterate_idpdata_triples
+from scrapyrus.metadata.keywords import KEYWORDS_METADATA_TABLE
 from scrapyrus.metadata.papyri import PAPYRI_METADATA_TABLE
 
 import psycopg
@@ -20,12 +21,15 @@ class MetadataTable(Protocol):
 
     def create_factory(self, proc: Any) -> Any: ...
 
-    def build_row(
+    def build_rows(
         self, factory: Any, idp_data: Path, metadata: Path
-    ) -> dict[str, Any]: ...
+    ) -> tuple[dict[str, Any], ...] | list[dict[str, Any]]: ...
 
 
-METADATA_TABLES: tuple[MetadataTable, ...] = (PAPYRI_METADATA_TABLE,)
+METADATA_TABLES: tuple[MetadataTable, ...] = (
+    PAPYRI_METADATA_TABLE,
+    KEYWORDS_METADATA_TABLE,
+)
 
 
 def _metadata_schema_sql() -> str:
@@ -77,7 +81,7 @@ def ingest_metadata(
                 ):
                     for table in METADATA_TABLES:
                         try:
-                            row = table.build_row(
+                            rows = table.build_rows(
                                 factories[table.name], idp_data, metadata
                             )
                         except Exception:
@@ -86,7 +90,8 @@ def ingest_metadata(
                                 file=sys.stderr,
                             )
                             raise
-                        _insert_metadata_row(cursor, table, row)
+                        for row in rows:
+                            _insert_metadata_row(cursor, table, row)
 
 
 def dump_metadata_tables(

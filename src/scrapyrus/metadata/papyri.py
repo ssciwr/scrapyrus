@@ -203,6 +203,11 @@ class PapyrusMetadataTable:
             **model.model_dump(),
         }
 
+    def build_rows(
+        self, factory: PapyrusModelFactory, idp_data: Path, metadata: Path
+    ) -> tuple[dict[str, Any]]:
+        return (self.build_row(factory, idp_data, metadata),)
+
 
 PAPYRI_METADATA_TABLE = PapyrusMetadataTable()
 PAPYRUS_TABLE_DUMP = (

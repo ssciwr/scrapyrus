@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from saxonche import PySaxonApiError, PySaxonProcessor
 
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.metadata.keywords import KEYWORD_TABLE_COLUMNS, KeywordModelFactory
 from scrapyrus.metadata.papyri import PAPYRUS_TABLE_COLUMNS, PapyrusModelFactory
 
 
@@ -38,9 +39,10 @@ class RecordingConnection:
 
 
 class DumpCursor:
-    def __init__(self, rows):
+    def __init__(self, row_batches):
         self.executions = []
-        self.rows = rows
+        self.row_batches = row_batches
+        self.rows = []
 
     def __enter__(self):
         return self
@@ -50,6 +52,7 @@ class DumpCursor:
 
     def execute(self, query):
         self.executions.append(query)
+        self.rows = self.row_batches[len(self.executions) - 1]
 
     def __iter__(self):
         return iter(self.rows)
@@ -349,6 +352,64 @@ def test_papyrus_model_factory_uses_first_current_location_candidate(tmp_path):
     assert model.current_location == "Cairo"
 
 
+def test_keyword_model_factory_extracts_profile_terms(tmp_path):
+    metadata = tmp_path / "metadata.xml"
+    metadata.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+        <TEI xmlns="http://www.tei-c.org/ns/1.0">
+          <teiHeader>
+            <fileDesc>
+              <publicationStmt>
+                <idno type="TM">46</idno>
+              </publicationStmt>
+            </fileDesc>
+            <profileDesc>
+              <textClass>
+                <keywords scheme="hgv">
+                  <term>prose</term>
+                  <term>bible</term>
+                  <term type="culture">literature</term>
+                  <term type="religion">christian</term>
+                </keywords>
+              </textClass>
+            </profileDesc>
+          </teiHeader>
+        </TEI>
+        """,
+        encoding="utf-8",
+    )
+
+    with PySaxonProcessor(license=False) as proc:
+        models = KeywordModelFactory(proc).parse(str(metadata))
+
+    assert [model.model_dump() for model in models] == [
+        {
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": None,
+            "keyword": "prose",
+        },
+        {
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": None,
+            "keyword": "bible",
+        },
+        {
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": "culture",
+            "keyword": "literature",
+        },
+        {
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": "religion",
+            "keyword": "christian",
+        },
+    ]
+
+
 def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     idp_data = tmp_path / "idp.data"
     metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "46.xml"
@@ -389,6 +450,16 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
                 </msDesc>
               </sourceDesc>
             </fileDesc>
+            <profileDesc>
+              <textClass>
+                <keywords scheme="hgv">
+                  <term>prose</term>
+                  <term>bible</term>
+                  <term type="culture">literature</term>
+                  <term type="religion">christian</term>
+                </keywords>
+              </textClass>
+            </profileDesc>
           </teiHeader>
         </TEI>
         """,
@@ -427,17 +498,21 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert iterator_calls == [(idp_data, False)]
     assert _normalize_sql(cursor.executions[0][0]) == "DROP TABLE IF EXISTS papyri"
     assert cursor.executions[0][1] is None
-    assert cursor.executions[1][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert _normalize_sql(cursor.executions[1][0]) == "DROP TABLE IF EXISTS keywords"
     assert cursor.executions[1][1] is None
-    schema_sql = _normalize_sql(cursor.executions[1][0])
+    assert cursor.executions[2][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert cursor.executions[2][1] is None
+    schema_sql = _normalize_sql(cursor.executions[2][0])
     assert "source_path text NOT NULL PRIMARY KEY" in schema_sql
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
+    assert "keyword_id integer NOT NULL PRIMARY KEY" in schema_sql
     columns = list(PAPYRUS_TABLE_COLUMNS)
-    assert _normalize_sql(cursor.executions[2][0]) == (
+    assert _normalize_sql(cursor.executions[3][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[2][1] == {
+    assert cursor.executions[3][1] == {
         "source_path": "HGV_meta_EpiDoc/HGV1/46.xml",
         "tm_id": 46,
         "dclp_id": 123,
@@ -452,6 +527,41 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "material": "papyrus",
         "current_location": None,
     }
+    columns = list(KEYWORD_TABLE_COLUMNS)
+    assert _normalize_sql(cursor.executions[4][0]) == (
+        f"INSERT INTO keywords ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
+    )
+    assert [execution[1] for execution in cursor.executions[4:]] == [
+        {
+            "keyword_id": 1,
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": None,
+            "keyword": "prose",
+        },
+        {
+            "keyword_id": 2,
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": None,
+            "keyword": "bible",
+        },
+        {
+            "keyword_id": 3,
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": "culture",
+            "keyword": "literature",
+        },
+        {
+            "keyword_id": 4,
+            "tm_id": 46,
+            "scheme": "hgv",
+            "keyword_type": "religion",
+            "keyword": "christian",
+        },
+    ]
 
 
 def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatch):
@@ -485,8 +595,8 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
 
     ingest_metadata(idp_data, progressbar=False)
 
-    first_row = cursor.executions[2][1]
-    second_row = cursor.executions[3][1]
+    first_row = cursor.executions[3][1]
+    second_row = cursor.executions[4][1]
     assert first_row["tm_id"] == second_row["tm_id"] == 13
     assert first_row["source_path"] == "HGV_meta_EpiDoc/HGV1/13a.xml"
     assert first_row["title"] == "Sale of Land"
@@ -495,7 +605,7 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
 
 
 def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
-    rows = [
+    papyri_rows = [
         (
             "HGV_meta_EpiDoc/HGV1/13a.xml",
             13,
@@ -527,7 +637,11 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "Cairo",
         ),
     ]
-    cursor = DumpCursor(rows)
+    keyword_rows = [
+        (1, 13, "hgv", None, "prose"),
+        (2, 13, "hgv", "culture", "literature"),
+    ]
+    cursor = DumpCursor([papyri_rows, keyword_rows])
     connection = RecordingConnection(cursor)
     connect_calls = []
 
@@ -549,13 +663,13 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             {"application_name": "scrapyrus-test"},
         )
     ]
-    assert len(cursor.executions) == 1
+    assert len(cursor.executions) == 2
     with (tmp_path / "metadata-csv" / "papyri.csv").open(
         encoding="utf-8", newline=""
     ) as csv_file:
-        dumped = list(csv.reader(csv_file))
+        dumped_papyri = list(csv.reader(csv_file))
 
-    assert dumped == [
+    assert dumped_papyri == [
         list(PAPYRUS_TABLE_COLUMNS),
         [
             "HGV_meta_EpiDoc/HGV1/13a.xml",
@@ -587,6 +701,16 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "papyrus",
             "Cairo",
         ],
+    ]
+    with (tmp_path / "metadata-csv" / "keywords.csv").open(
+        encoding="utf-8", newline=""
+    ) as csv_file:
+        dumped_keywords = list(csv.reader(csv_file))
+
+    assert dumped_keywords == [
+        list(KEYWORD_TABLE_COLUMNS),
+        ["1", "13", "hgv", "", "prose"],
+        ["2", "13", "hgv", "culture", "literature"],
     ]
 
 
