@@ -1,21 +1,12 @@
 from collections.abc import Callable
-import csv
-from importlib import resources
 from pathlib import Path
-import sys
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
-from saxonche import PySaxonProcessor
-
-from scrapyrus.idpdata import iterate_idpdata_triples
-
-import psycopg
-from psycopg import sql
 
 
 def _create_xpath_expr(
-    proc, xpath, value_processor: Callable[[str], str | None] | None = None
+    proc: Any, xpath: str, value_processor: Callable[[str], str | None] | None = None
 ):
     xpath_proc = proc.new_xpath_processor()
     xpath_proc.declare_namespace("tei", "http://www.tei-c.org/ns/1.0")
@@ -79,7 +70,23 @@ PAPYRUS_TABLE_COLUMNS = (
     "source_path",
     *PAPYRUS_MODEL_COLUMNS,
 )
-METADATA_TABLE_DUMPS = (("papyri", PAPYRUS_TABLE_COLUMNS, ("source_path",)),)
+PAPYRI_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS papyri (
+    source_path text NOT NULL PRIMARY KEY,
+    tm_id integer NOT NULL,
+    dclp_id integer,
+    dclp_hybrid_id text,
+    ddb_perseus_style_id text,
+    ddb_filename text,
+    ddb_hybrid_id text,
+    hgv_id text,
+    ldab_id text,
+    mp3_id text,
+    title text,
+    material text,
+    current_location text
+);
+
+CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);"""
 
 
 class PapyrusModelFactory:
@@ -87,7 +94,6 @@ class PapyrusModelFactory:
         self.proc = proc
         self.doc_builder = proc.new_document_builder()
 
-        # Build XPath processors for all fields
         material_path = (
             ".//tei:physDesc/tei:objectDesc/tei:supportDesc/tei:support/tei:material"
         )
@@ -175,97 +181,32 @@ class PapyrusModelFactory:
         )
 
 
-def _metadata_schema_sql() -> str:
-    return (
-        resources.files("scrapyrus")
-        .joinpath("metadata.sql")
-        .read_text(encoding="utf-8")
-    )
-
-
 def _metadata_source_path(idp_data: Path, metadata: Path) -> str:
     return metadata.relative_to(idp_data).as_posix()
 
 
-def ingest_metadata(
-    idp_data: str | Path,
-    conninfo: str = "",
-    *,
-    progressbar: bool = True,
-    **connect_kwargs: Any,
-):
-    """Ingest idp.data papyrus metadata into a PostgreSQL database.
+class PapyrusMetadataTable:
+    name = "papyri"
+    columns = PAPYRUS_TABLE_COLUMNS
+    order_by = ("source_path",)
+    schema_sql = PAPYRI_SCHEMA_SQL
 
-    The function rebuilds the generated metadata table before parsing records.
-    ``conninfo`` and ``connect_kwargs`` are passed to ``psycopg.connect``.
-    """
+    def create_factory(self, proc):
+        return PapyrusModelFactory(proc)
 
-    with psycopg.connect(conninfo, **connect_kwargs) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("DROP TABLE IF EXISTS papyri")
-            cursor.execute(_metadata_schema_sql())
-            with PySaxonProcessor(license=False) as proc:
-                factory = PapyrusModelFactory(proc)
-                idp_data = Path(idp_data)
-                for _, metadata, _, _ in iterate_idpdata_triples(
-                    idp_data, progressbar=progressbar
-                ):
-                    try:
-                        model = factory.parse(str(metadata))
-                    except Exception:
-                        print(
-                            f"Failed while processing metadata file: {metadata}",
-                            file=sys.stderr,
-                        )
-                        raise
-                    row = {
-                        "source_path": _metadata_source_path(idp_data, metadata),
-                        **model.model_dump(),
-                    }
-                    cursor.execute(
-                        f"""
-INSERT INTO papyri ({", ".join(PAPYRUS_TABLE_COLUMNS)})
-VALUES ({", ".join(f"%({column})s" for column in PAPYRUS_TABLE_COLUMNS)})
-""",
-                        row,
-                    )
+    def build_row(
+        self, factory: PapyrusModelFactory, idp_data: Path, metadata: Path
+    ) -> dict[str, Any]:
+        model = factory.parse(str(metadata))
+        return {
+            "source_path": _metadata_source_path(idp_data, metadata),
+            **model.model_dump(),
+        }
 
 
-def dump_metadata_tables(
-    target: str | Path,
-    conninfo: str = "",
-    **connect_kwargs: Any,
-) -> None:
-    """Dump generated metadata database tables as CSV files.
-
-    ``conninfo`` and ``connect_kwargs`` are passed to ``psycopg.connect``. The
-    target directory receives one ``.csv`` file per table owned by this module.
-    """
-
-    target = Path(target)
-    target.mkdir(parents=True, exist_ok=True)
-
-    with psycopg.connect(conninfo, **connect_kwargs) as connection:
-        for table_name, columns, order_by in METADATA_TABLE_DUMPS:
-            output = target / f"{table_name}.csv"
-            with output.open("w", encoding="utf-8", newline="") as csv_file:
-                writer = csv.writer(csv_file)
-                writer.writerow(columns)
-
-                select_columns = sql.SQL(", ").join(
-                    sql.Identifier(column) for column in columns
-                )
-                ordering = sql.SQL(", ").join(
-                    sql.Identifier(column) for column in order_by
-                )
-                query = sql.SQL(
-                    "SELECT {columns} FROM {table} ORDER BY {ordering}"
-                ).format(
-                    columns=select_columns,
-                    table=sql.Identifier(table_name),
-                    ordering=ordering,
-                )
-
-                with connection.cursor() as cursor:
-                    cursor.execute(query)
-                    writer.writerows(cursor)
+PAPYRI_METADATA_TABLE = PapyrusMetadataTable()
+PAPYRUS_TABLE_DUMP = (
+    PAPYRI_METADATA_TABLE.name,
+    PAPYRI_METADATA_TABLE.columns,
+    PAPYRI_METADATA_TABLE.order_by,
+)

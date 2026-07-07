@@ -7,7 +7,7 @@ from scrapyrus.images import (
     image_log_file,
     scrape_images,
 )
-from scrapyrus.metadata import dump_metadata_tables, ingest_metadata
+from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
 
 
 idp_data = click.option(

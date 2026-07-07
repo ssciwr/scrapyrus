@@ -5,12 +5,8 @@ import psycopg
 from pydantic import ValidationError
 from saxonche import PySaxonApiError, PySaxonProcessor
 
-from scrapyrus.metadata import (
-    PAPYRUS_TABLE_COLUMNS,
-    PapyrusModelFactory,
-    dump_metadata_tables,
-    ingest_metadata,
-)
+from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.metadata.papyri import PAPYRUS_TABLE_COLUMNS, PapyrusModelFactory
 
 
 class RecordingCursor:
@@ -412,7 +408,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         yield "46", metadata, None, None
 
     monkeypatch.setattr(psycopg, "connect", connect)
-    monkeypatch.setattr("scrapyrus.metadata.iterate_idpdata_triples", iterate)
+    monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)
 
     result = ingest_metadata(
         idp_data,
@@ -485,7 +481,7 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
         yield "13", metadata_b, None, None
 
     monkeypatch.setattr(psycopg, "connect", connect)
-    monkeypatch.setattr("scrapyrus.metadata.iterate_idpdata_triples", iterate)
+    monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)
 
     ingest_metadata(idp_data, progressbar=False)
 
@@ -610,7 +606,7 @@ def test_ingest_metadata_prints_processed_file_on_validation_error(
         yield "invalid", metadata, None, None
 
     monkeypatch.setattr(psycopg, "connect", connect)
-    monkeypatch.setattr("scrapyrus.metadata.iterate_idpdata_triples", iterate)
+    monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)
 
     with pytest.raises(ValidationError):
         ingest_metadata(idp_data, progressbar=False)
@@ -636,7 +632,7 @@ def test_ingest_metadata_prints_processed_file_on_saxon_error(
         yield "malformed", metadata, None, None
 
     monkeypatch.setattr(psycopg, "connect", connect)
-    monkeypatch.setattr("scrapyrus.metadata.iterate_idpdata_triples", iterate)
+    monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)
 
     with pytest.raises(PySaxonApiError):
         ingest_metadata(idp_data, progressbar=False)
