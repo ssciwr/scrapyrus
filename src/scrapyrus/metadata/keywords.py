@@ -3,6 +3,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.metadata.papyri import (
     _create_xpath_expr,
     _drop_known_id_placeholders,
@@ -25,14 +26,13 @@ def _optional_string(result):
 
 
 class KeywordModel(BaseModel):
+    keyword_id: int = Field(gt=0)
     tm_id: int = Field(gt=0)
     scheme: Optional[str] = None
     keyword_type: Optional[str] = None
     keyword: Optional[str] = None
 
 
-KEYWORD_MODEL_COLUMNS = tuple(KeywordModel.model_fields)
-KEYWORD_TABLE_COLUMNS = ("keyword_id", *KEYWORD_MODEL_COLUMNS)
 KEYWORDS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS keywords (
     keyword_id integer NOT NULL PRIMARY KEY,
     tm_id integer NOT NULL,
@@ -81,6 +81,7 @@ class KeywordModelFactory:
             return None
 
         return KeywordModel(
+            keyword_id=self.next_keyword_id(),
             tm_id=tm_id,
             scheme=_optional_string(
                 self.term_value_proc.evaluate_single("string((../@scheme)[1])")
@@ -97,11 +98,14 @@ class KeywordModelFactory:
         return keyword_id
 
 
-class KeywordMetadataTable:
+class KeywordMetadataTable(MetadataTable):
     name = "keywords"
-    columns = KEYWORD_TABLE_COLUMNS
     order_by = ("keyword_id",)
     schema_sql = KEYWORDS_SCHEMA_SQL
+
+    @property
+    def model_class(self) -> type[KeywordModel]:
+        return KeywordModel
 
     def create_factory(self, proc):
         return KeywordModelFactory(proc)
@@ -109,15 +113,4 @@ class KeywordMetadataTable:
     def build_rows(
         self, factory: KeywordModelFactory, idp_data: Path, metadata: Path
     ) -> list[dict[str, Any]]:
-        return [
-            {"keyword_id": factory.next_keyword_id(), **model.model_dump()}
-            for model in factory.parse(str(metadata))
-        ]
-
-
-KEYWORDS_METADATA_TABLE = KeywordMetadataTable()
-KEYWORD_TABLE_DUMP = (
-    KEYWORDS_METADATA_TABLE.name,
-    KEYWORDS_METADATA_TABLE.columns,
-    KEYWORDS_METADATA_TABLE.order_by,
-)
+        return [model.model_dump() for model in factory.parse(str(metadata))]

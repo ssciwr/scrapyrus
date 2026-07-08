@@ -1,40 +1,24 @@
 import csv
 from pathlib import Path
 import sys
-from typing import Any, Protocol
+from typing import Any
 
 from saxonche import PySaxonProcessor
 
 from scrapyrus.idpdata import iterate_idpdata_triples
-from scrapyrus.metadata.keywords import KEYWORDS_METADATA_TABLE
-from scrapyrus.metadata.papyri import PAPYRI_METADATA_TABLE
+from scrapyrus.metadata.base import MetadataTable
 
 import psycopg
 from psycopg import sql
 
 
-class MetadataTable(Protocol):
-    name: str
-    columns: tuple[str, ...]
-    order_by: tuple[str, ...]
-    schema_sql: str
-
-    def create_factory(self, proc: Any) -> Any: ...
-
-    def build_rows(
-        self, factory: Any, idp_data: Path, metadata: Path
-    ) -> tuple[dict[str, Any], ...] | list[dict[str, Any]]: ...
+def _metadata_tables() -> tuple[MetadataTable, ...]:
+    return tuple(table_type() for table_type in MetadataTable.registered_tables())
 
 
-METADATA_TABLES: tuple[MetadataTable, ...] = (
-    PAPYRI_METADATA_TABLE,
-    KEYWORDS_METADATA_TABLE,
-)
-
-
-def _metadata_schema_sql() -> str:
+def _metadata_schema_sql(tables: tuple[MetadataTable, ...]) -> str:
     schemas = []
-    for table in METADATA_TABLES:
+    for table in tables:
         if table.schema_sql not in schemas:
             schemas.append(table.schema_sql)
 
@@ -66,20 +50,20 @@ def ingest_metadata(
     ``conninfo`` and ``connect_kwargs`` are passed to ``psycopg.connect``.
     """
 
+    tables = _metadata_tables()
+
     with psycopg.connect(conninfo, **connect_kwargs) as connection:
         with connection.cursor() as cursor:
-            for table in METADATA_TABLES:
+            for table in tables:
                 cursor.execute(f"DROP TABLE IF EXISTS {table.name}")
-            cursor.execute(_metadata_schema_sql())
+            cursor.execute(_metadata_schema_sql(tables))
             with PySaxonProcessor(license=False) as proc:
-                factories = {
-                    table.name: table.create_factory(proc) for table in METADATA_TABLES
-                }
+                factories = {table.name: table.create_factory(proc) for table in tables}
                 idp_data = Path(idp_data)
                 for _, metadata, _, _ in iterate_idpdata_triples(
                     idp_data, progressbar=progressbar
                 ):
-                    for table in METADATA_TABLES:
+                    for table in tables:
                         try:
                             rows = table.build_rows(
                                 factories[table.name], idp_data, metadata
@@ -107,9 +91,10 @@ def dump_metadata_tables(
 
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
+    tables = _metadata_tables()
 
     with psycopg.connect(conninfo, **connect_kwargs) as connection:
-        for table in METADATA_TABLES:
+        for table in tables:
             output = target / f"{table.name}.csv"
             with output.open("w", encoding="utf-8", newline="") as csv_file:
                 writer = csv.writer(csv_file)

@@ -6,8 +6,10 @@ from pydantic import ValidationError
 from saxonche import PySaxonApiError, PySaxonProcessor
 
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
-from scrapyrus.metadata.keywords import KEYWORD_TABLE_COLUMNS, KeywordModelFactory
-from scrapyrus.metadata.papyri import PAPYRUS_TABLE_COLUMNS, PapyrusModelFactory
+from scrapyrus.metadata import KeywordMetadataTable, PapyrusMetadataTable
+from scrapyrus.metadata.base import MetadataTable
+from scrapyrus.metadata.keywords import KeywordModel, KeywordModelFactory
+from scrapyrus.metadata.papyri import PapyrusModel, PapyrusModelFactory
 
 
 class RecordingCursor:
@@ -110,6 +112,39 @@ def _write_minimal_metadata(
     )
 
 
+def test_metadata_table_subclasses_register_in_definition_order(monkeypatch):
+    monkeypatch.setattr(MetadataTable, "_tables", [])
+
+    class FirstTable(MetadataTable):
+        pass
+
+    class SecondTable(MetadataTable):
+        pass
+
+    class UnregisteredTable(MetadataTable, register=False):
+        pass
+
+    assert MetadataTable.registered_tables() == (FirstTable, SecondTable)
+    assert UnregisteredTable not in MetadataTable.registered_tables()
+
+
+def test_metadata_table_registry_contains_builtin_tables():
+    assert MetadataTable.registered_tables() == (
+        PapyrusMetadataTable,
+        KeywordMetadataTable,
+    )
+
+
+def test_metadata_table_columns_match_model_fields():
+    papyri = PapyrusMetadataTable()
+    keywords = KeywordMetadataTable()
+
+    assert papyri.model_class is PapyrusModel
+    assert papyri.columns == tuple(PapyrusModel.model_fields)
+    assert keywords.model_class is KeywordModel
+    assert keywords.columns == tuple(KeywordModel.model_fields)
+
+
 def test_papyrus_model_factory_extracts_all_fields(tmp_path):
     metadata = tmp_path / "metadata.xml"
     metadata.write_text(
@@ -157,8 +192,9 @@ def test_papyrus_model_factory_extracts_all_fields(tmp_path):
     )
 
     with PySaxonProcessor(license=False) as proc:
-        model = PapyrusModelFactory(proc).parse(str(metadata))
+        model = PapyrusModelFactory(proc).parse(str(metadata), "metadata.xml")
 
+    assert model.source_path == "metadata.xml"
     assert model.tm_id == 46
     assert model.dclp_id == 123
     assert model.dclp_hybrid_id == "dclp;;123"
@@ -209,7 +245,7 @@ def test_papyrus_model_factory_uses_first_duplicate_scalar_value(tmp_path):
     )
 
     with PySaxonProcessor(license=False) as proc:
-        model = PapyrusModelFactory(proc).parse(str(metadata))
+        model = PapyrusModelFactory(proc).parse(str(metadata), "metadata.xml")
 
     assert model.ddb_hybrid_id == "o.vleem;;11A"
 
@@ -251,7 +287,7 @@ def test_papyrus_model_factory_drops_keiner_placeholders(tmp_path):
     )
 
     with PySaxonProcessor(license=False) as proc:
-        model = PapyrusModelFactory(proc).parse(str(metadata))
+        model = PapyrusModelFactory(proc).parse(str(metadata), "metadata.xml")
 
     assert model.title is None
     assert model.current_location is None
@@ -300,7 +336,7 @@ def test_papyrus_model_factory_drops_known_dclp_id_placeholders(tmp_path):
     )
 
     with PySaxonProcessor(license=False) as proc:
-        model = PapyrusModelFactory(proc).parse(str(metadata))
+        model = PapyrusModelFactory(proc).parse(str(metadata), "metadata.xml")
 
     assert model.tm_id == 101351
     assert model.dclp_id is None
@@ -347,7 +383,7 @@ def test_papyrus_model_factory_uses_first_current_location_candidate(tmp_path):
     )
 
     with PySaxonProcessor(license=False) as proc:
-        model = PapyrusModelFactory(proc).parse(str(metadata))
+        model = PapyrusModelFactory(proc).parse(str(metadata), "metadata.xml")
 
     assert model.current_location == "Cairo"
 
@@ -384,24 +420,28 @@ def test_keyword_model_factory_extracts_profile_terms(tmp_path):
 
     assert [model.model_dump() for model in models] == [
         {
+            "keyword_id": 1,
             "tm_id": 46,
             "scheme": "hgv",
             "keyword_type": None,
             "keyword": "prose",
         },
         {
+            "keyword_id": 2,
             "tm_id": 46,
             "scheme": "hgv",
             "keyword_type": None,
             "keyword": "bible",
         },
         {
+            "keyword_id": 3,
             "tm_id": 46,
             "scheme": "hgv",
             "keyword_type": "culture",
             "keyword": "literature",
         },
         {
+            "keyword_id": 4,
             "tm_id": 46,
             "scheme": "hgv",
             "keyword_type": "religion",
@@ -507,7 +547,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
     assert "keyword_id integer NOT NULL PRIMARY KEY" in schema_sql
-    columns = list(PAPYRUS_TABLE_COLUMNS)
+    columns = list(PapyrusMetadataTable().columns)
     assert _normalize_sql(cursor.executions[3][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
@@ -527,7 +567,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "material": "papyrus",
         "current_location": None,
     }
-    columns = list(KEYWORD_TABLE_COLUMNS)
+    columns = list(KeywordMetadataTable().columns)
     assert _normalize_sql(cursor.executions[4][0]) == (
         f"INSERT INTO keywords ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
@@ -670,7 +710,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
         dumped_papyri = list(csv.reader(csv_file))
 
     assert dumped_papyri == [
-        list(PAPYRUS_TABLE_COLUMNS),
+        list(PapyrusMetadataTable().columns),
         [
             "HGV_meta_EpiDoc/HGV1/13a.xml",
             "13",
@@ -708,7 +748,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
         dumped_keywords = list(csv.reader(csv_file))
 
     assert dumped_keywords == [
-        list(KEYWORD_TABLE_COLUMNS),
+        list(KeywordMetadataTable().columns),
         ["1", "13", "hgv", "", "prose"],
         ["2", "13", "hgv", "culture", "literature"],
     ]

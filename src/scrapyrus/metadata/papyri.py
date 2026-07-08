@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from scrapyrus.metadata.base import MetadataTable
+
 
 def _create_xpath_expr(
     proc: Any, xpath: str, value_processor: Callable[[str], str | None] | None = None
@@ -50,6 +52,7 @@ def _drop_unknown(val):
 
 
 class PapyrusModel(BaseModel):
+    source_path: str
     tm_id: int = Field(gt=0)
     dclp_id: Optional[int] = Field(gt=0, default=None)
     dclp_hybrid_id: Optional[str] = None
@@ -65,11 +68,6 @@ class PapyrusModel(BaseModel):
     current_location: Optional[str] = None
 
 
-PAPYRUS_MODEL_COLUMNS = tuple(PapyrusModel.model_fields)
-PAPYRUS_TABLE_COLUMNS = (
-    "source_path",
-    *PAPYRUS_MODEL_COLUMNS,
-)
 PAPYRI_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS papyri (
     source_path text NOT NULL PRIMARY KEY,
     tm_id integer NOT NULL,
@@ -162,10 +160,11 @@ class PapyrusModelFactory:
             value_processor=_drop_unknown,
         )
 
-    def parse(self, filename):
+    def parse(self, filename, source_path):
         data = self.doc_builder.parse_xml(xml_file_name=filename)
 
         return PapyrusModel(
+            source_path=source_path,
             tm_id=self.tm_id_proc(data),
             dclp_id=self.dclp_id_proc(data),
             dclp_hybrid_id=self.dclp_hybrid_id_proc(data),
@@ -185,11 +184,14 @@ def _metadata_source_path(idp_data: Path, metadata: Path) -> str:
     return metadata.relative_to(idp_data).as_posix()
 
 
-class PapyrusMetadataTable:
+class PapyrusMetadataTable(MetadataTable):
     name = "papyri"
-    columns = PAPYRUS_TABLE_COLUMNS
     order_by = ("source_path",)
     schema_sql = PAPYRI_SCHEMA_SQL
+
+    @property
+    def model_class(self) -> type[PapyrusModel]:
+        return PapyrusModel
 
     def create_factory(self, proc):
         return PapyrusModelFactory(proc)
@@ -197,21 +199,11 @@ class PapyrusMetadataTable:
     def build_row(
         self, factory: PapyrusModelFactory, idp_data: Path, metadata: Path
     ) -> dict[str, Any]:
-        model = factory.parse(str(metadata))
-        return {
-            "source_path": _metadata_source_path(idp_data, metadata),
-            **model.model_dump(),
-        }
+        source_path = _metadata_source_path(idp_data, metadata)
+        model = factory.parse(str(metadata), source_path)
+        return model.model_dump()
 
     def build_rows(
         self, factory: PapyrusModelFactory, idp_data: Path, metadata: Path
     ) -> tuple[dict[str, Any]]:
         return (self.build_row(factory, idp_data, metadata),)
-
-
-PAPYRI_METADATA_TABLE = PapyrusMetadataTable()
-PAPYRUS_TABLE_DUMP = (
-    PAPYRI_METADATA_TABLE.name,
-    PAPYRI_METADATA_TABLE.columns,
-    PAPYRI_METADATA_TABLE.order_by,
-)
