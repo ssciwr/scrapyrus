@@ -6,9 +6,14 @@ from pydantic import ValidationError
 from saxonche import PySaxonApiError, PySaxonProcessor
 
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
-from scrapyrus.metadata import KeywordMetadataTable, PapyrusMetadataTable
+from scrapyrus.metadata import (
+    KeywordMetadataTable,
+    OrigDateMetadataTable,
+    PapyrusMetadataTable,
+)
 from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.metadata.keywords import KeywordModel, KeywordModelFactory
+from scrapyrus.metadata.origdate import OrigDateModel, OrigDateModelFactory
 from scrapyrus.metadata.papyri import PapyrusModel, PapyrusModelFactory
 
 
@@ -132,17 +137,21 @@ def test_metadata_table_registry_contains_builtin_tables():
     assert MetadataTable.registered_tables() == (
         PapyrusMetadataTable,
         KeywordMetadataTable,
+        OrigDateMetadataTable,
     )
 
 
 def test_metadata_table_columns_match_model_fields():
     papyri = PapyrusMetadataTable()
     keywords = KeywordMetadataTable()
+    orig_dates = OrigDateMetadataTable()
 
     assert papyri.model_class is PapyrusModel
     assert papyri.columns == tuple(PapyrusModel.model_fields)
     assert keywords.model_class is KeywordModel
     assert keywords.columns == tuple(KeywordModel.model_fields)
+    assert orig_dates.model_class is OrigDateModel
+    assert orig_dates.columns == tuple(OrigDateModel.model_fields)
 
 
 def test_papyrus_model_factory_extracts_all_fields(tmp_path):
@@ -454,6 +463,90 @@ def test_keyword_model_factory_extracts_profile_terms(tmp_path):
     ]
 
 
+def test_orig_date_model_factory_extracts_machine_readable_dates(tmp_path):
+    metadata = tmp_path / "metadata.xml"
+    metadata.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+        <TEI xmlns="http://www.tei-c.org/ns/1.0">
+          <teiHeader>
+            <fileDesc>
+              <publicationStmt>
+                <idno type="TM">46</idno>
+              </publicationStmt>
+              <sourceDesc>
+                <msDesc>
+                  <history>
+                    <origin>
+                      <origDate when="0582-01-09" cert="low">9 Jan. 582</origDate>
+                      <origDate xml:id="dateAlternativeX"
+                                notBefore="-0075-06-08"
+                                notAfter="-0075-07-07"
+                                precision="low">
+                        <certainty locus="value" match="../year-from-date(@notBefore)"/>8 June - 7 July 75 BCE
+                      </origDate>
+                      <origDate when-custom="0300-02-29"
+                                datingMethod="#julian">29 Feb. 300</origDate>
+                      <origDate>unbekannt</origDate>
+                    </origin>
+                  </history>
+                </msDesc>
+              </sourceDesc>
+            </fileDesc>
+          </teiHeader>
+        </TEI>
+        """,
+        encoding="utf-8",
+    )
+
+    with PySaxonProcessor(license=False) as proc:
+        models = OrigDateModelFactory(proc).parse(str(metadata))
+
+    assert [model.model_dump() for model in models] == [
+        {
+            "date_id": 1,
+            "tm_id": 46,
+            "date_text": "9 Jan. 582",
+            "certainty": "low",
+            "precision": None,
+            "not_before_year": 582,
+            "not_before_month": 1,
+            "not_before_day": 9,
+            "not_after_year": 582,
+            "not_after_month": 1,
+            "not_after_day": 9,
+            "alternative": False,
+        },
+        {
+            "date_id": 2,
+            "tm_id": 46,
+            "date_text": "8 June - 7 July 75 BCE",
+            "certainty": None,
+            "precision": "low",
+            "not_before_year": -75,
+            "not_before_month": 6,
+            "not_before_day": 8,
+            "not_after_year": -75,
+            "not_after_month": 7,
+            "not_after_day": 7,
+            "alternative": True,
+        },
+        {
+            "date_id": 3,
+            "tm_id": 46,
+            "date_text": "29 Feb. 300",
+            "certainty": None,
+            "precision": None,
+            "not_before_year": 300,
+            "not_before_month": 2,
+            "not_before_day": 29,
+            "not_after_year": 300,
+            "not_after_month": 2,
+            "not_after_day": 29,
+            "alternative": False,
+        },
+    ]
+
+
 def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     idp_data = tmp_path / "idp.data"
     metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "46.xml"
@@ -491,6 +584,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
                       </supportDesc>
                     </objectDesc>
                   </physDesc>
+                  <history>
+                    <origin>
+                      <origDate when="0582-01-09" cert="low">9 Jan. 582</origDate>
+                    </origin>
+                  </history>
                 </msDesc>
               </sourceDesc>
             </fileDesc>
@@ -544,20 +642,25 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert cursor.executions[0][1] is None
     assert _normalize_sql(cursor.executions[1][0]) == "DROP TABLE IF EXISTS keywords"
     assert cursor.executions[1][1] is None
-    assert cursor.executions[2][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert _normalize_sql(cursor.executions[2][0]) == "DROP TABLE IF EXISTS orig_dates"
     assert cursor.executions[2][1] is None
-    schema_sql = _normalize_sql(cursor.executions[2][0])
+    assert cursor.executions[3][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert cursor.executions[3][1] is None
+    schema_sql = _normalize_sql(cursor.executions[3][0])
     assert "source_path text NOT NULL PRIMARY KEY" in schema_sql
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
     assert "keyword_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "uncertain boolean NOT NULL" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS orig_dates" in schema_sql
+    assert "date_id integer NOT NULL PRIMARY KEY" in schema_sql
+    assert "alternative boolean NOT NULL" in schema_sql
     columns = list(PapyrusMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[3][0]) == (
+    assert _normalize_sql(cursor.executions[4][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[3][1] == {
+    assert cursor.executions[4][1] == {
         "source_path": "HGV_meta_EpiDoc/HGV1/46.xml",
         "tm_id": 46,
         "dclp_id": 123,
@@ -573,11 +676,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "current_location": None,
     }
     columns = list(KeywordMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[4][0]) == (
+    assert _normalize_sql(cursor.executions[5][0]) == (
         f"INSERT INTO keywords ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert [execution[1] for execution in cursor.executions[4:]] == [
+    assert [execution[1] for execution in cursor.executions[5:9]] == [
         {
             "keyword_id": 1,
             "tm_id": 46,
@@ -611,6 +714,25 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "uncertain": False,
         },
     ]
+    columns = list(OrigDateMetadataTable().columns)
+    assert _normalize_sql(cursor.executions[9][0]) == (
+        f"INSERT INTO orig_dates ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
+    )
+    assert cursor.executions[9][1] == {
+        "date_id": 1,
+        "tm_id": 46,
+        "date_text": "9 Jan. 582",
+        "certainty": "low",
+        "precision": None,
+        "not_before_year": 582,
+        "not_before_month": 1,
+        "not_before_day": 9,
+        "not_after_year": 582,
+        "not_after_month": 1,
+        "not_after_day": 9,
+        "alternative": False,
+    }
 
 
 def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatch):
@@ -644,8 +766,8 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
 
     ingest_metadata(idp_data, progressbar=False)
 
-    first_row = cursor.executions[3][1]
-    second_row = cursor.executions[4][1]
+    first_row = cursor.executions[4][1]
+    second_row = cursor.executions[5][1]
     assert first_row["tm_id"] == second_row["tm_id"] == 13
     assert first_row["source_path"] == "HGV_meta_EpiDoc/HGV1/13a.xml"
     assert first_row["title"] == "Sale of Land"
@@ -690,7 +812,10 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
         (1, 13, "hgv", None, "prose", True),
         (2, 13, "hgv", "culture", "literature", False),
     ]
-    cursor = DumpCursor([papyri_rows, keyword_rows])
+    orig_date_rows = [
+        (1, 13, "9 Jan. 582", "low", None, 582, 1, 9, 582, 1, 9, False),
+    ]
+    cursor = DumpCursor([papyri_rows, keyword_rows, orig_date_rows])
     connection = RecordingConnection(cursor)
     connect_calls = []
 
@@ -712,7 +837,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             {"application_name": "scrapyrus-test"},
         )
     ]
-    assert len(cursor.executions) == 2
+    assert len(cursor.executions) == 3
     with (tmp_path / "metadata-csv" / "papyri.csv").open(
         encoding="utf-8", newline=""
     ) as csv_file:
@@ -760,6 +885,28 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
         list(KeywordMetadataTable().columns),
         ["1", "13", "hgv", "", "prose", "True"],
         ["2", "13", "hgv", "culture", "literature", "False"],
+    ]
+    with (tmp_path / "metadata-csv" / "orig_dates.csv").open(
+        encoding="utf-8", newline=""
+    ) as csv_file:
+        dumped_orig_dates = list(csv.reader(csv_file))
+
+    assert dumped_orig_dates == [
+        list(OrigDateMetadataTable().columns),
+        [
+            "1",
+            "13",
+            "9 Jan. 582",
+            "low",
+            "",
+            "582",
+            "1",
+            "9",
+            "582",
+            "1",
+            "9",
+            "False",
+        ],
     ]
 
 
