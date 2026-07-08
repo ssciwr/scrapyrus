@@ -402,8 +402,8 @@ def test_keyword_model_factory_extracts_profile_terms(tmp_path):
             <profileDesc>
               <textClass>
                 <keywords scheme="hgv">
-                  <term>prose</term>
-                  <term>bible</term>
+                  <term>prose (?)</term>
+                  <term>bible?</term>
                   <term type="culture">literature</term>
                   <term type="religion">christian</term>
                 </keywords>
@@ -425,6 +425,7 @@ def test_keyword_model_factory_extracts_profile_terms(tmp_path):
             "scheme": "hgv",
             "keyword_type": None,
             "keyword": "prose",
+            "uncertain": True,
         },
         {
             "keyword_id": 2,
@@ -432,6 +433,7 @@ def test_keyword_model_factory_extracts_profile_terms(tmp_path):
             "scheme": "hgv",
             "keyword_type": None,
             "keyword": "bible",
+            "uncertain": True,
         },
         {
             "keyword_id": 3,
@@ -439,6 +441,7 @@ def test_keyword_model_factory_extracts_profile_terms(tmp_path):
             "scheme": "hgv",
             "keyword_type": "culture",
             "keyword": "literature",
+            "uncertain": False,
         },
         {
             "keyword_id": 4,
@@ -446,6 +449,7 @@ def test_keyword_model_factory_extracts_profile_terms(tmp_path):
             "scheme": "hgv",
             "keyword_type": "religion",
             "keyword": "christian",
+            "uncertain": False,
         },
     ]
 
@@ -493,8 +497,8 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             <profileDesc>
               <textClass>
                 <keywords scheme="hgv">
-                  <term>prose</term>
-                  <term>bible</term>
+                  <term>prose (?)</term>
+                  <term>bible?</term>
                   <term type="culture">literature</term>
                   <term type="religion">christian</term>
                 </keywords>
@@ -547,6 +551,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
     assert "keyword_id integer NOT NULL PRIMARY KEY" in schema_sql
+    assert "uncertain boolean NOT NULL" in schema_sql
     columns = list(PapyrusMetadataTable().columns)
     assert _normalize_sql(cursor.executions[3][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
@@ -579,6 +584,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "scheme": "hgv",
             "keyword_type": None,
             "keyword": "prose",
+            "uncertain": True,
         },
         {
             "keyword_id": 2,
@@ -586,6 +592,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "scheme": "hgv",
             "keyword_type": None,
             "keyword": "bible",
+            "uncertain": True,
         },
         {
             "keyword_id": 3,
@@ -593,6 +600,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "scheme": "hgv",
             "keyword_type": "culture",
             "keyword": "literature",
+            "uncertain": False,
         },
         {
             "keyword_id": 4,
@@ -600,6 +608,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "scheme": "hgv",
             "keyword_type": "religion",
             "keyword": "christian",
+            "uncertain": False,
         },
     ]
 
@@ -678,8 +687,8 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
         ),
     ]
     keyword_rows = [
-        (1, 13, "hgv", None, "prose"),
-        (2, 13, "hgv", "culture", "literature"),
+        (1, 13, "hgv", None, "prose", True),
+        (2, 13, "hgv", "culture", "literature", False),
     ]
     cursor = DumpCursor([papyri_rows, keyword_rows])
     connection = RecordingConnection(cursor)
@@ -749,8 +758,8 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
 
     assert dumped_keywords == [
         list(KeywordMetadataTable().columns),
-        ["1", "13", "hgv", "", "prose"],
-        ["2", "13", "hgv", "culture", "literature"],
+        ["1", "13", "hgv", "", "prose", "True"],
+        ["2", "13", "hgv", "culture", "literature", "False"],
     ]
 
 

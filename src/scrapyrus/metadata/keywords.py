@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,6 +13,7 @@ from scrapyrus.metadata.xmlutils import (
 
 
 KEYWORD_TERMS_XPATH = ".//tei:profileDesc/tei:textClass/tei:keywords/tei:term"
+UNCERTAINTY_MARKER_RE = re.compile(r"\(\s*\?\s*\)|\?")
 
 
 def _optional_string(result):
@@ -25,12 +27,23 @@ def _optional_string(result):
     return value
 
 
+def _keyword_value(value: str) -> tuple[Optional[str], bool]:
+    uncertain = "?" in value
+    if uncertain:
+        value = " ".join(UNCERTAINTY_MARKER_RE.sub("", value).split())
+        if value == "":
+            return None, uncertain
+
+    return value, uncertain
+
+
 class KeywordModel(BaseModel):
     keyword_id: int = Field(gt=0)
     tm_id: int = Field(gt=0)
     scheme: Optional[str] = None
     keyword_type: Optional[str] = None
     keyword: Optional[str] = None
+    uncertain: bool
 
 
 KEYWORDS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS keywords (
@@ -38,7 +51,8 @@ KEYWORDS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS keywords (
     tm_id integer NOT NULL,
     scheme text,
     keyword_type text,
-    keyword text
+    keyword text,
+    uncertain boolean NOT NULL
 );"""
 
 
@@ -79,6 +93,9 @@ class KeywordModelFactory:
         )
         if keyword is None:
             return None
+        keyword, uncertain = _keyword_value(keyword)
+        if keyword is None:
+            return None
 
         return KeywordModel(
             keyword_id=self.next_keyword_id(),
@@ -90,6 +107,7 @@ class KeywordModelFactory:
                 self.term_value_proc.evaluate_single("string((@type)[1])")
             ),
             keyword=keyword,
+            uncertain=uncertain,
         )
 
     def next_keyword_id(self):
