@@ -4,10 +4,10 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from scrapyrus.metadata.base import MetadataTable
-from scrapyrus.metadata.papyri import (
-    _create_xpath_expr,
-    _drop_known_id_placeholders,
-    _publication_idno_string,
+from scrapyrus.metadata.xmlutils import (
+    create_xpath_expr,
+    drop_known_id_placeholders,
+    publication_idno_string,
 )
 
 
@@ -48,10 +48,10 @@ class KeywordModelFactory:
         self.doc_builder = proc.new_document_builder()
         self._next_keyword_id = 1
 
-        self.tm_id_proc = _create_xpath_expr(
+        self.tm_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("TM"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("TM"),
+            value_processor=drop_known_id_placeholders,
         )
         self.term_nodes_proc = proc.new_xpath_processor()
         self.term_nodes_proc.declare_namespace("tei", "http://www.tei-c.org/ns/1.0")

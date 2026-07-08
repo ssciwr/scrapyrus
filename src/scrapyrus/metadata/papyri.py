@@ -1,54 +1,16 @@
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
 from scrapyrus.metadata.base import MetadataTable
-
-
-def _create_xpath_expr(
-    proc: Any, xpath: str, value_processor: Callable[[str], str | None] | None = None
-):
-    xpath_proc = proc.new_xpath_processor()
-    xpath_proc.declare_namespace("tei", "http://www.tei-c.org/ns/1.0")
-
-    def eval(root):
-        xpath_proc.set_context(xdm_item=root)
-        result = xpath_proc.evaluate_single(xpath)
-        if result is None:
-            return None
-        result = result.string_value
-        if result == "":
-            return None
-        if value_processor is not None:
-            result = value_processor(result)
-        if result is None or result == "":
-            return None
-
-        return result
-
-    return eval
-
-
-def _drop_known_id_placeholders(val):
-    if val in ("hgvTEMP",):
-        return None
-    return val
-
-
-def _first_string(path):
-    return f"string(({path})[1])"
-
-
-def _publication_idno_string(identifier_type):
-    return _first_string(f".//tei:publicationStmt/tei:idno[@type='{identifier_type}']")
-
-
-def _drop_unknown(val):
-    if val in ("unbekannt", "keiner"):
-        return None
-    return val
+from scrapyrus.metadata.xmlutils import (
+    create_xpath_expr,
+    drop_known_id_placeholders,
+    drop_unknown,
+    first_string,
+    publication_idno_string,
+)
 
 
 class PapyrusModel(BaseModel):
@@ -95,69 +57,69 @@ class PapyrusModelFactory:
         material_path = (
             ".//tei:physDesc/tei:objectDesc/tei:supportDesc/tei:support/tei:material"
         )
-        self.tm_id_proc = _create_xpath_expr(
+        self.tm_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("TM"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("TM"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.dclp_id_proc = _create_xpath_expr(
+        self.dclp_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("dclp"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("dclp"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.dclp_hybrid_id_proc = _create_xpath_expr(
+        self.dclp_hybrid_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("dclp-hybrid"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("dclp-hybrid"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.ddb_perseus_style_id_proc = _create_xpath_expr(
+        self.ddb_perseus_style_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("ddb-perseus-style"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("ddb-perseus-style"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.ddb_filename_proc = _create_xpath_expr(
+        self.ddb_filename_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("ddb-filename"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("ddb-filename"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.ddb_hybrid_id_proc = _create_xpath_expr(
+        self.ddb_hybrid_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("ddb-hybrid"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("ddb-hybrid"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.hgv_id_proc = _create_xpath_expr(
+        self.hgv_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("HGV"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("HGV"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.ldab_id_proc = _create_xpath_expr(
+        self.ldab_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("LDAB"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("LDAB"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.mp3_id_proc = _create_xpath_expr(
+        self.mp3_id_proc = create_xpath_expr(
             proc,
-            _publication_idno_string("MP3"),
-            value_processor=_drop_known_id_placeholders,
+            publication_idno_string("MP3"),
+            value_processor=drop_known_id_placeholders,
         )
-        self.title_proc = _create_xpath_expr(
+        self.title_proc = create_xpath_expr(
             proc,
-            _first_string(".//tei:titleStmt/tei:title"),
-            value_processor=_drop_unknown,
+            first_string(".//tei:titleStmt/tei:title"),
+            value_processor=drop_unknown,
         )
-        self.material_proc = _create_xpath_expr(
+        self.material_proc = create_xpath_expr(
             proc,
-            f"lower-case({_first_string(material_path)})",
+            f"lower-case({first_string(material_path)})",
         )
-        self.current_location_proc = _create_xpath_expr(
+        self.current_location_proc = create_xpath_expr(
             proc,
-            _first_string(
+            first_string(
                 ".//tei:msDesc/tei:msIdentifier/tei:idno"
                 "|.//tei:msDesc/tei:msIdentifier/tei:placeName/tei:settlement"
                 "|.//tei:msDesc/tei:msIdentifier/tei:collection"
                 "|.//tei:msDesc/tei:msIdentifier/tei:institution"
             ),
-            value_processor=_drop_unknown,
+            value_processor=drop_unknown,
         )
 
     def parse(self, filename, source_path):
