@@ -10,6 +10,7 @@ from scrapyrus.metadata import (
     KeywordMetadataTable,
     OrigDateMetadataTable,
     PapyrusMetadataTable,
+    PrincipalEditionMetadataTable,
 )
 
 
@@ -169,6 +170,22 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
               </textClass>
             </profileDesc>
           </teiHeader>
+          <text>
+            <body>
+              <div type="bibliography" subtype="principalEdition">
+                <listBibl>
+                  <bibl>
+                    <ptr target="http://papyri.info/biblio/95120"/>
+                    <title type="abbreviated">P.Oxy. 7</title>
+                    <author>Jane Smith</author>
+                    <biblScope unit="volume">7</biblScope>
+                    <biblScope unit="number">12</biblScope>
+                    <biblScope unit="page">34-36</biblScope>
+                  </bibl>
+                </listBibl>
+              </div>
+            </body>
+          </text>
         </TEI>
         """,
         encoding="utf-8",
@@ -206,15 +223,22 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert iterator_calls == [(idp_data, False)]
     assert _normalize_sql(cursor.executions[0][0]) == "DROP TABLE IF EXISTS papyri"
     assert cursor.executions[0][1] is None
-    assert _normalize_sql(cursor.executions[1][0]) == "DROP TABLE IF EXISTS keywords"
+    assert (
+        _normalize_sql(cursor.executions[1][0])
+        == "DROP TABLE IF EXISTS principal_editions"
+    )
     assert cursor.executions[1][1] is None
-    assert _normalize_sql(cursor.executions[2][0]) == "DROP TABLE IF EXISTS orig_dates"
+    assert _normalize_sql(cursor.executions[2][0]) == "DROP TABLE IF EXISTS keywords"
     assert cursor.executions[2][1] is None
-    assert cursor.executions[3][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert _normalize_sql(cursor.executions[3][0]) == "DROP TABLE IF EXISTS orig_dates"
     assert cursor.executions[3][1] is None
-    schema_sql = _normalize_sql(cursor.executions[3][0])
+    assert cursor.executions[4][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert cursor.executions[4][1] is None
+    schema_sql = _normalize_sql(cursor.executions[4][0])
     assert "source_path text NOT NULL PRIMARY KEY" in schema_sql
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS principal_editions" in schema_sql
+    assert "principal_edition_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
     assert "keyword_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "uncertain boolean NOT NULL" in schema_sql
@@ -222,11 +246,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "date_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "alternative boolean NOT NULL" in schema_sql
     columns = list(PapyrusMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[4][0]) == (
+    assert _normalize_sql(cursor.executions[5][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[4][1] == {
+    assert cursor.executions[5][1] == {
         "source_path": "HGV_meta_EpiDoc/HGV1/46.xml",
         "tm_id": 46,
         "dclp_id": 123,
@@ -241,12 +265,27 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "material": "papyrus",
         "current_location": None,
     }
+    columns = list(PrincipalEditionMetadataTable().columns)
+    assert _normalize_sql(cursor.executions[6][0]) == (
+        f"INSERT INTO principal_editions ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
+    )
+    assert cursor.executions[6][1] == {
+        "principal_edition_id": 1,
+        "tm_id": 46,
+        "biblio_id": 95120,
+        "title": "P.Oxy. 7",
+        "author": "Jane Smith",
+        "volume": "7",
+        "number": "12",
+        "page": "34-36",
+    }
     columns = list(KeywordMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[5][0]) == (
+    assert _normalize_sql(cursor.executions[7][0]) == (
         f"INSERT INTO keywords ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert [execution[1] for execution in cursor.executions[5:9]] == [
+    assert [execution[1] for execution in cursor.executions[7:11]] == [
         {
             "keyword_id": 1,
             "tm_id": 46,
@@ -281,11 +320,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         },
     ]
     columns = list(OrigDateMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[9][0]) == (
+    assert _normalize_sql(cursor.executions[11][0]) == (
         f"INSERT INTO orig_dates ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[9][1] == {
+    assert cursor.executions[11][1] == {
         "date_id": 1,
         "tm_id": 46,
         "date_text": "9 Jan. 582",
@@ -332,8 +371,8 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
 
     ingest_metadata(idp_data, progressbar=False)
 
-    first_row = cursor.executions[4][1]
-    second_row = cursor.executions[5][1]
+    first_row = cursor.executions[5][1]
+    second_row = cursor.executions[6][1]
     assert first_row["tm_id"] == second_row["tm_id"] == 13
     assert first_row["source_path"] == "HGV_meta_EpiDoc/HGV1/13a.xml"
     assert first_row["title"] == "Sale of Land"
@@ -378,10 +417,15 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
         (1, 13, "hgv", None, "prose", True),
         (2, 13, "hgv", "culture", "literature", False),
     ]
+    principal_edition_rows = [
+        (1, 13, 95120, "P.Oxy. 7", "Jane Smith", "7", "12", "34-36"),
+    ]
     orig_date_rows = [
         (1, 13, "9 Jan. 582", "low", None, 582, 1, 9, 582, 1, 9, False),
     ]
-    cursor = DumpCursor([papyri_rows, keyword_rows, orig_date_rows])
+    cursor = DumpCursor(
+        [papyri_rows, principal_edition_rows, keyword_rows, orig_date_rows]
+    )
     connection = RecordingConnection(cursor)
     connect_calls = []
 
@@ -403,7 +447,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             {"application_name": "scrapyrus-test"},
         )
     ]
-    assert len(cursor.executions) == 3
+    assert len(cursor.executions) == 4
     with (tmp_path / "metadata-csv" / "papyri.csv").open(
         encoding="utf-8", newline=""
     ) as csv_file:
@@ -441,6 +485,15 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "papyrus",
             "Cairo",
         ],
+    ]
+    with (tmp_path / "metadata-csv" / "principal_editions.csv").open(
+        encoding="utf-8", newline=""
+    ) as csv_file:
+        dumped_principal_editions = list(csv.reader(csv_file))
+
+    assert dumped_principal_editions == [
+        list(PrincipalEditionMetadataTable().columns),
+        ["1", "13", "95120", "P.Oxy. 7", "Jane Smith", "7", "12", "34-36"],
     ]
     with (tmp_path / "metadata-csv" / "keywords.csv").open(
         encoding="utf-8", newline=""
