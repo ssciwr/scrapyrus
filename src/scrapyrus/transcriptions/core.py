@@ -6,12 +6,14 @@ from scrapyrus.saxon_xml import (
     parse_xml_document,
     parse_xml_text,
     select_first,
+    select_nodes,
     serialize_node,
 )
 
 
 _XSLT_DIR = Path(__file__).with_name("xslt")
 _EPIDOC_TO_TEXT_STYLESHEET = _XSLT_DIR / "epidoc-to-text.xsl"
+_TRANSLATION_EPIDOC_TO_TEXT_STYLESHEET = _XSLT_DIR / "translation-epidoc-to-text.xsl"
 
 
 def transcription_xml_snippet(
@@ -74,6 +76,54 @@ def epidoc_xml_to_text(
         }.items():
             stylesheet.set_parameter(name, proc.make_boolean_value(value))
         return stylesheet.transform_to_string(xdm_node=document)
+
+
+def translation_epidoc_xml_to_text(
+    epidoc_xml: str | bytes | Path,
+    *,
+    language: str | None = None,
+) -> str:
+    """Return plain text from an EpiDoc XML translation.
+
+    When ``language`` is set, only translation divisions with a matching
+    ``xml:lang`` value are included.
+    """
+
+    with PySaxonProcessor(license=False) as proc:
+        document = _parse_epidoc_xml(proc, epidoc_xml)
+        xslt_processor = proc.new_xslt30_processor()
+        stylesheet = xslt_processor.compile_stylesheet(
+            stylesheet_file=str(_TRANSLATION_EPIDOC_TO_TEXT_STYLESHEET)
+        )
+        if language is not None:
+            stylesheet.set_parameter("language", proc.make_string_value(language))
+        return stylesheet.transform_to_string(xdm_node=document)
+
+
+def available_translation_languages(epidoc_xml: str | bytes | Path) -> list[str]:
+    """Return unique translation ``xml:lang`` values in document order."""
+
+    with PySaxonProcessor(license=False) as proc:
+        document = _parse_epidoc_xml(proc, epidoc_xml)
+        language_values = [
+            node.string_value
+            for node in select_nodes(
+                proc,
+                document,
+                ".//*[local-name() = 'div'][@type = 'translation']"
+                "[not(ancestor::*[local-name() = 'div'][@type = 'translation'])]"
+                " /@*[local-name() = 'lang' and "
+                "namespace-uri() = 'http://www.w3.org/XML/1998/namespace']",
+            )
+        ]
+
+    seen = set()
+    unique_languages = []
+    for language in language_values:
+        if language and language not in seen:
+            seen.add(language)
+            unique_languages.append(language)
+    return unique_languages
 
 
 def _parse_epidoc_xml(proc: PySaxonProcessor, epidoc_xml: str | bytes | Path):

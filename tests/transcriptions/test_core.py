@@ -8,7 +8,12 @@ from scrapyrus.saxon_xml import (
     normalized_text,
     parse_xml_text,
 )
-from scrapyrus.transcriptions import epidoc_xml_to_text, transcription_xml_snippet
+from scrapyrus.transcriptions import (
+    available_translation_languages,
+    epidoc_xml_to_text,
+    transcription_xml_snippet,
+    translation_epidoc_xml_to_text,
+)
 
 
 def _parse_snippet(proc: PySaxonProcessor, snippet: str):
@@ -140,3 +145,105 @@ def test_epidoc_xml_to_text_accepts_paths_and_namespace_stripped_snippets(tmp_pa
 
     assert epidoc_xml_to_text(transcription, abbrev=True) == "αβγ"
     assert epidoc_xml_to_text(snippet, abbrev=True) == "αβγ"
+
+
+def test_translation_epidoc_xml_to_text_extracts_translation():
+    xml = """<TEI xmlns="http://www.tei-c.org/ns/1.0" xml:lang="en">
+    <teiHeader><fileDesc><titleStmt><title>Header</title></titleStmt></fileDesc></teiHeader>
+    <text><body>
+        <div xml:lang="en" type="translation" xml:space="preserve">
+            <p>
+                <milestone unit="line" n="1"/> First sentence.
+                <milestone unit="line" n="2" rend="break"/> Second sentence.
+                <note>Translation credit.</note>
+            </p>
+        </div>
+    </body></text>
+    </TEI>"""
+
+    assert translation_epidoc_xml_to_text(xml) == "First sentence.\nSecond sentence."
+
+
+def test_translation_epidoc_xml_to_text_separates_textparts_and_paragraphs():
+    xml = """<div type="translation" xml:space="preserve">
+        <div n="r" type="textpart">
+            <p><milestone unit="line" n="1"/> Recto.</p>
+        </div>
+        <div n="v" type="textpart">
+            <p><milestone unit="line" n="12"/> Verso.</p>
+            <p>Endorsement.</p>
+        </div>
+    </div>"""
+
+    assert translation_epidoc_xml_to_text(xml) == "Recto.\nVerso.\nEndorsement."
+
+
+def test_translation_epidoc_xml_to_text_joins_multiple_translation_divs():
+    xml = """<TEI xmlns="http://www.tei-c.org/ns/1.0">
+    <text><body>
+        <div xml:lang="de" type="translation"><p>Deutsch.</p></div>
+        <div xml:lang="en" type="translation"><p>English.</p></div>
+    </body></text>
+    </TEI>"""
+
+    assert translation_epidoc_xml_to_text(xml) == "Deutsch.\n\nEnglish."
+
+
+def test_translation_epidoc_xml_to_text_can_filter_by_language():
+    xml = """<TEI xmlns="http://www.tei-c.org/ns/1.0">
+    <text><body>
+        <div xml:lang="de" type="translation"><p>Deutsch.</p></div>
+        <div xml:lang="en" type="translation"><p>English one.</p></div>
+        <div xml:lang="en" type="translation"><p>English two.</p></div>
+    </body></text>
+    </TEI>"""
+
+    assert (
+        translation_epidoc_xml_to_text(xml, language="en")
+        == "English one.\n\nEnglish two."
+    )
+    assert translation_epidoc_xml_to_text(xml, language="fr") == ""
+
+
+def test_translation_epidoc_xml_to_text_accepts_paths_and_snippets(tmp_path):
+    translation = tmp_path / "translation.xml"
+    translation.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
+        '<div type="translation"><p><milestone unit="line" n="1"/>Text.</p></div>'
+        "</body></text></TEI>",
+        encoding="utf-8",
+    )
+    snippet = (
+        '<div type="translation"><p><milestone unit="line" n="1"/>Snippet.</p></div>'
+    )
+
+    assert translation_epidoc_xml_to_text(translation) == "Text."
+    assert translation_epidoc_xml_to_text(snippet) == "Snippet."
+
+
+def test_available_translation_languages_returns_unique_languages_in_order():
+    xml = """<TEI xmlns="http://www.tei-c.org/ns/1.0">
+    <text><body>
+        <div xml:lang="de" type="translation"><p>Deutsch.</p></div>
+        <div xml:lang="en" type="translation"><p>English one.</p></div>
+        <div xml:lang="en" type="translation"><p>English two.</p></div>
+        <div type="translation"><p>No language.</p></div>
+        <div xml:lang="fr" type="translation">
+            <div xml:lang="it" type="textpart"><p>Nested textpart.</p></div>
+        </div>
+    </body></text>
+    </TEI>"""
+
+    assert available_translation_languages(xml) == ["de", "en", "fr"]
+
+
+def test_available_translation_languages_accepts_paths(tmp_path):
+    translation = tmp_path / "translation.xml"
+    translation.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
+        '<div xml:lang="en" type="translation"><p>Text.</p></div>'
+        "</body></text></TEI>",
+        encoding="utf-8",
+    )
+
+    assert available_translation_languages(translation) == ["en"]
