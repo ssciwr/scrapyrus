@@ -8,7 +8,7 @@ from scrapyrus.metadata import (
     PapyrusMetadataTable,
     PrincipalEditionMetadataTable,
 )
-from scrapyrus.metadata.base import MetadataTable
+from scrapyrus.metadata.base import MetadataTable, catalog, table_summary
 from scrapyrus.metadata.ancient_edition import AncientEditionModel
 from scrapyrus.metadata.keywords import KeywordModel
 from scrapyrus.metadata.origdate import OrigDateModel
@@ -51,6 +51,55 @@ def test_base_metadata_table_requires_llm_catalog_methods():
         table.description()
     with pytest.raises(NotImplementedError):
         table.semantic_catalog()
+
+
+def test_table_summary_concatenates_registered_table_descriptions(monkeypatch):
+    class FirstTable(MetadataTable, register=False):
+        def description(self) -> str:
+            return "first table description"
+
+    class SecondTable(MetadataTable, register=False):
+        def description(self) -> str:
+            return "second table description"
+
+    monkeypatch.setattr(MetadataTable, "_tables", [FirstTable, SecondTable])
+
+    assert table_summary() == "first table description\n\nsecond table description"
+
+
+def test_catalog_returns_semantic_catalog_for_table_name(monkeypatch):
+    class FirstTable(MetadataTable, register=False):
+        name = "first"
+
+        def semantic_catalog(self) -> str:
+            return "first semantic catalog"
+
+    class SecondTable(MetadataTable, register=False):
+        name = "second"
+
+        def semantic_catalog(self) -> str:
+            return "second semantic catalog"
+
+    monkeypatch.setattr(MetadataTable, "_tables", [FirstTable, SecondTable])
+
+    assert catalog("second") == "second semantic catalog"
+
+
+def test_catalog_rejects_unknown_table_name(monkeypatch):
+    class FirstTable(MetadataTable, register=False):
+        name = "first"
+
+    class SecondTable(MetadataTable, register=False):
+        name = "second"
+
+    monkeypatch.setattr(MetadataTable, "_tables", [FirstTable, SecondTable])
+
+    with pytest.raises(ValueError) as error:
+        catalog("missing")
+
+    assert str(error.value) == (
+        "Unknown metadata table 'missing'. Available tables: first, second"
+    )
 
 
 def test_metadata_table_columns_match_model_fields():

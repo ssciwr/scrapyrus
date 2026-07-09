@@ -6,6 +6,30 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 
+def _metadata_tables() -> tuple["MetadataTable", ...]:
+    return tuple(table_type() for table_type in MetadataTable.registered_tables())
+
+
+def table_summary() -> str:
+    """Return the descriptions of all registered metadata tables."""
+
+    return "\n\n".join(table.description() for table in _metadata_tables())
+
+
+def catalog(table_name: str) -> str:
+    """Return the semantic catalog for a registered metadata table."""
+
+    tables = _metadata_tables()
+    for table in tables:
+        if table.name == table_name:
+            return table.semantic_catalog()
+
+    table_names = ", ".join(table.name for table in tables)
+    raise ValueError(
+        f"Unknown metadata table {table_name!r}. Available tables: {table_names}"
+    )
+
+
 class MetadataTable:
     """Base class for generated metadata database tables.
 
