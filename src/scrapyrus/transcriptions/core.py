@@ -47,15 +47,16 @@ def epidoc_xml_to_text(
     epidoc_xml: str | bytes | Path,
     *,
     abbrev: bool = False,
+    break_on_gap: bool = False,
     lost: bool = False,
     unclear: bool = False,
     regularize: bool = False,
 ) -> str:
     """Return plain text from an EpiDoc XML transcription.
 
-    By default, editorial restorations, expansion text, unclear readings, and
-    regularizations are omitted. Set the corresponding flags to include those
-    layers in the output.
+    By default, editorial restorations, expansion text, unclear readings,
+    gap line breaks, and regularizations are omitted. Set the corresponding
+    flags to include those layers in the output.
     """
 
     with PySaxonProcessor(license=False) as proc:
@@ -66,6 +67,7 @@ def epidoc_xml_to_text(
         )
         for name, value in {
             "abbrev": abbrev,
+            "break_on_gap": break_on_gap,
             "lost": lost,
             "unclear": unclear,
             "regularize": regularize,

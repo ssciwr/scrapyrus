@@ -27,7 +27,13 @@
   </xsl:template>
 
   <xsl:template match="*:teiHeader | *:head | *:note | *:certainty" mode="plain-text"/>
-  <xsl:template match="*:gap | *:milestone | *:fw" mode="plain-text"/>
+  <xsl:template match="*:gap" mode="plain-text">
+    <xsl:if test="$break_on_gap">
+      <xsl:text>&#xA;</xsl:text>
+    </xsl:if>
+  </xsl:template>
+
+  <xsl:template match="*:milestone | *:fw" mode="plain-text"/>
 
   <xsl:template match="*:space" mode="plain-text">
     <xsl:text> </xsl:text>

@@ -14,6 +14,7 @@
   <xsl:output method="text" encoding="UTF-8"/>
 
   <xsl:param name="abbrev" as="xs:boolean" select="false()"/>
+  <xsl:param name="break_on_gap" as="xs:boolean" select="false()"/>
   <xsl:param name="lost" as="xs:boolean" select="false()"/>
   <xsl:param name="unclear" as="xs:boolean" select="false()"/>
   <xsl:param name="regularize" as="xs:boolean" select="false()"/>
