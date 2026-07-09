@@ -1,3 +1,5 @@
+worktrees
+
 images_*.txt
 !src/scrapyrus/images_broken.txt
 
