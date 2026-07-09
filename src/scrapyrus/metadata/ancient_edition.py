@@ -99,7 +99,13 @@ class AncientEditionModelFactory:
         if bibl_nodes is None:
             return []
 
-        return [self._parse_bibl(tm_id, bibl_node) for bibl_node in bibl_nodes]
+        models = []
+        for bibl_node in bibl_nodes:
+            model = self._parse_bibl(tm_id, bibl_node)
+            if model is not None:
+                models.append(model)
+
+        return models
 
     def _parse_bibl(self, tm_id, bibl_node):
         self.bibl_value_proc.set_context(xdm_item=bibl_node)
@@ -112,16 +118,24 @@ class AncientEditionModelFactory:
             "string(((tei:title[@type='main'], "
             "tei:title[@type='abbreviated'], tei:title)[1]/@ref)[1])"
         )
+        tm_title_id = _first_tm_authorwork_id(title_ref)
+        author = self._author()
+        perseus_author_urn = _perseus_author_urn(
+            self._node_string("string((tei:author[1]/@ref)[1])")
+        )
+
+        if all(
+            value is None for value in (title, tm_title_id, author, perseus_author_urn)
+        ):
+            return None
 
         return AncientEditionModel(
             ancient_edition_id=self.next_ancient_edition_id(),
             tm_id=tm_id,
             title=title,
-            tm_title_id=_first_tm_authorwork_id(title_ref),
-            author=self._author(),
-            perseus_author_urn=_perseus_author_urn(
-                self._node_string("string((tei:author[1]/@ref)[1])")
-            ),
+            tm_title_id=tm_title_id,
+            author=author,
+            perseus_author_urn=perseus_author_urn,
         )
 
     def _author(self):

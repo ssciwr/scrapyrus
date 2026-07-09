@@ -105,7 +105,7 @@ def test_ancient_edition_model_factory_extracts_bibliography_rows(tmp_path, caps
     assert captured.out == ""
 
 
-def test_ancient_edition_model_factory_allows_missing_title_and_author(tmp_path):
+def test_ancient_edition_model_factory_skips_empty_bibliography_rows(tmp_path):
     metadata = tmp_path / "metadata.xml"
     metadata.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
@@ -134,13 +134,4 @@ def test_ancient_edition_model_factory_allows_missing_title_and_author(tmp_path)
     with PySaxonProcessor(license=False) as proc:
         models = AncientEditionModelFactory(proc).parse(str(metadata))
 
-    assert [model.model_dump() for model in models] == [
-        {
-            "ancient_edition_id": 1,
-            "tm_id": 47,
-            "title": None,
-            "tm_title_id": None,
-            "author": None,
-            "perseus_author_urn": None,
-        },
-    ]
+    assert [model.model_dump() for model in models] == []
