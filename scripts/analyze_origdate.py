@@ -11,15 +11,24 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import re
-from xml.etree import ElementTree
 
+from saxonche import PySaxonProcessor
 from scrapyrus.idpdata import iterate_hgv_triples
+from scrapyrus.saxon_xml import (
+    attributes as xml_attributes,
+    direct_children as xml_direct_children,
+    display_name as local_name,
+    document_element,
+    normalized_text,
+    parse_xml_document,
+    select_nodes,
+)
 from tqdm import tqdm
 
 
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
-XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
-ORIG_DATE_PATH = f".//{{{TEI_NAMESPACE}}}origin/{{{TEI_NAMESPACE}}}origDate"
+TEI_NAMESPACES = {"tei": TEI_NAMESPACE}
+ORIG_DATE_PATH = ".//tei:origin/tei:origDate"
 DATE_PATTERN = re.compile(
     r"^(?P<year>-?\d{4,})(?:-(?P<month>\d{2})(?:-(?P<day>\d{2}))?)?$"
 )
@@ -34,16 +43,6 @@ class ParsedDate:
     day: int | None
     granularity: str
     status: str
-
-
-def local_name(name: str) -> str:
-    if name.startswith(f"{{{XML_NAMESPACE}}}"):
-        return f"xml:{name.rpartition('}')[2]}"
-    return name.rpartition("}")[2]
-
-
-def normalized_text(element: ElementTree.Element) -> str:
-    return " ".join("".join(element.itertext()).split())
 
 
 def gregorian_month_length(historical_year: int, month: int) -> int:
@@ -199,9 +198,19 @@ def analyze(idp_data: Path, *, progress: bool) -> dict[str, object]:
     all_intervals: list[tuple[int | None, int | None]] = []
     document_intervals: dict[str, list[tuple[int | None, int | None]]] = {}
 
-    for tm_id, metadata, _, _ in iterator:
-        root = ElementTree.parse(metadata).getroot()
-        elements = root.findall(ORIG_DATE_PATH)
+    def parsed_metadata():
+        with PySaxonProcessor(license=False) as proc:
+            for tm_id, metadata, _, _ in iterator:
+                root = document_element(parse_xml_document(proc, metadata))
+                elements = select_nodes(
+                    proc,
+                    root,
+                    ORIG_DATE_PATH,
+                    namespaces=TEI_NAMESPACES,
+                )
+                yield tm_id, elements
+
+    for tm_id, elements in parsed_metadata():
         document_cardinality[len(elements)] += 1
         intervals: list[tuple[int | None, int | None]] = []
         raw_date_keys: list[tuple[str | None, ...]] = []
@@ -211,9 +220,7 @@ def analyze(idp_data: Path, *, progress: bool) -> dict[str, object]:
         has_low_precision = False
 
         for element in elements:
-            attributes = {
-                local_name(name): value for name, value in element.attrib.items()
-            }
+            attributes = xml_attributes(element)
             combination = tuple(sorted(attributes))
             attribute_combinations[combination] += 1
             for name, value in attributes.items():
@@ -284,18 +291,18 @@ def analyze(idp_data: Path, *, progress: bool) -> dict[str, object]:
             has_low_certainty |= attributes.get("cert") == "low"
             has_low_precision |= attributes.get("precision") in {"low", "medium"}
 
-            direct_children = [local_name(child.tag) for child in element]
-            child_combinations[tuple(sorted(direct_children))] += 1
-            for child in element:
-                child_tag = local_name(child.tag)
+            child_names = [
+                local_name(child.name) for child in xml_direct_children(element)
+            ]
+            child_combinations[tuple(sorted(child_names))] += 1
+            for child in xml_direct_children(element):
+                child_tag = local_name(child.name)
                 child_tags[child_tag] += 1
                 document_child_tags.add(child_tag)
                 child_value = normalized_text(child)
                 child_text[child_tag][child_value or "(empty)"] += 1
-                for raw_name, value in child.attrib.items():
-                    child_attribute_values[f"{child_tag}/@{local_name(raw_name)}"][
-                        value
-                    ] += 1
+                for name, value in xml_attributes(child).items():
+                    child_attribute_values[f"{child_tag}/@{name}"][value] += 1
 
         for child_tag in document_child_tags:
             child_documents[child_tag] += 1

@@ -19,13 +19,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import subprocess
 from typing import Iterable
-from xml.etree import ElementTree
 
+from saxonche import PySaxonApiError, PySaxonProcessor, PyXdmNode
 from scrapyrus.idpdata import iterate_hgv_triples
+from scrapyrus.saxon_xml import (
+    attributes as xml_attributes,
+    direct_children,
+    display_name as local_name,
+    document_element,
+    normalized_text,
+    parse_xml_document,
+)
 from tqdm import tqdm
 
 
-XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 VALUE_LIMIT = 10_000
 PROFILE_ATTRIBUTE_TAGS = {
     "bibl",
@@ -38,20 +45,6 @@ PROFILE_ATTRIBUTE_TAGS = {
     "provenance",
 }
 PROFILE_TEXT_TAGS = {"material", "origPlace", "settlement", "term"}
-
-
-def local_name(name: str) -> str:
-    """Return a readable local name for an element or attribute QName."""
-
-    if name.startswith(f"{{{XML_NAMESPACE}}}"):
-        return f"xml:{name.rpartition('}')[2]}"
-    return name.rpartition("}")[2]
-
-
-def normalized_text(element: ElementTree.Element) -> str:
-    """Return normalized text from a leaf element."""
-
-    return " ".join((element.text or "").split())
 
 
 def markdown_code(value: str, limit: int = 90) -> str:
@@ -134,10 +127,10 @@ class XmlInventory:
         default_factory=lambda: defaultdict(Counter)
     )
 
-    def add(self, path: Path) -> None:
+    def add(self, proc: PySaxonProcessor, path: Path) -> None:
         try:
-            root = ElementTree.parse(path).getroot()
-        except (ElementTree.ParseError, OSError) as error:
+            root = document_element(parse_xml_document(proc, path))
+        except (PySaxonApiError, OSError) as error:
             self.parse_errors.append((path, str(error)))
             return
 
@@ -153,8 +146,8 @@ class XmlInventory:
         tag_text_values: defaultdict[str, Counter[str]] = defaultdict(Counter)
         attribute_sets: Counter[tuple[str, ...]] = Counter()
 
-        def visit(element: ElementTree.Element, ancestors: tuple[str, ...]) -> None:
-            tag = local_name(element.tag)
+        def visit(element: PyXdmNode, ancestors: tuple[str, ...]) -> None:
+            tag = local_name(element.name)
             element_path = (*ancestors, tag)
             rendered_path = "/" + "/".join(element_path)
 
@@ -162,20 +155,23 @@ class XmlInventory:
             tag_counts[tag] += 1
 
             if tag == "origDate":
-                attributes = tuple(sorted(local_name(name) for name in element.attrib))
-                attribute_sets[attributes] += 1
-            for raw_name, value in element.attrib.items():
-                name = local_name(raw_name)
+                names = tuple(
+                    sorted(
+                        local_name(attribute.name) for attribute in element.attributes
+                    )
+                )
+                attribute_sets[names] += 1
+            for name, value in xml_attributes(element).items():
                 path_attribute_values[(rendered_path, name)][value] += 1
                 if tag in PROFILE_ATTRIBUTE_TAGS:
                     tag_attribute_values[(tag, name)][value] += 1
 
-            if tag in PROFILE_TEXT_TAGS and not list(element):
+            if tag in PROFILE_TEXT_TAGS and not direct_children(element):
                 text = normalized_text(element)
                 if text:
                     tag_text_values[tag][text] += 1
 
-            for child in element:
+            for child in direct_children(element):
                 visit(child, element_path)
 
         visit(root, ())
@@ -549,8 +545,9 @@ def main() -> None:
         unit="metadata file",
         disable=arguments.no_progress,
     )
-    for path in metadata_iterator:
-        metadata_inventory.add(path)
+    with PySaxonProcessor(license=False) as proc:
+        for path in metadata_iterator:
+            metadata_inventory.add(proc, path)
 
     report = render_report(
         arguments.idp_data,

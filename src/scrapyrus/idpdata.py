@@ -1,12 +1,22 @@
 from collections.abc import Iterator
 from itertools import chain
 from pathlib import Path
-from xml.etree import ElementTree
 
+from saxonche import PySaxonProcessor
 from tqdm import tqdm
 
+from scrapyrus.saxon_xml import (
+    first_string,
+    parse_xml_document,
+    select_first,
+    serialize_node,
+    xpath_boolean,
+    xpath_literal,
+)
 
-TEI_IDNO = "{http://www.tei-c.org/ns/1.0}idno"
+
+TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
+TEI_NAMESPACES = {"tei": TEI_NAMESPACE}
 
 
 def transcription_xml_snippet(
@@ -22,24 +32,43 @@ def transcription_xml_snippet(
     element tags in the returned snippet.
     """
 
-    for element in ElementTree.parse(transcription).iter():
-        local_name = element.tag.rpartition("}")[2]
-        if local_name == "div" and element.get("type") == "edition":
-            element.tail = None
-            if remove_namespaces:
-                for descendant in element.iter():
-                    descendant.tag = descendant.tag.rpartition("}")[2]
-            return ElementTree.tostring(element, encoding="unicode")
+    with PySaxonProcessor(license=False) as proc:
+        document = parse_xml_document(proc, transcription)
+        edition = select_first(
+            proc,
+            document,
+            "(.//*[local-name() = 'div'][@type = 'edition'])[1]",
+        )
+        if edition is not None:
+            return serialize_node(
+                proc,
+                edition,
+                remove_namespaces=remove_namespaces,
+            )
     return None
 
 
 def _identifier_text(metadata: Path, identifier_type: str) -> str | None:
     """Return a metadata ``idno`` value by type."""
 
-    for identifier in ElementTree.parse(metadata).iter(TEI_IDNO):
-        if identifier.get("type") == identifier_type and identifier.text:
-            return identifier.text.strip()
-    return None
+    with PySaxonProcessor(license=False) as proc:
+        document = parse_xml_document(proc, metadata)
+        return _identifier_text_from_document(proc, document, identifier_type)
+
+
+def _identifier_text_from_document(
+    proc: PySaxonProcessor,
+    document,
+    identifier_type: str,
+) -> str | None:
+    """Return a metadata ``idno`` value by type from a parsed XML document."""
+
+    return first_string(
+        proc,
+        document,
+        f"normalize-space((.//tei:idno[@type = {xpath_literal(identifier_type)}])[1])",
+        namespaces=TEI_NAMESPACES,
+    )
 
 
 def _ddb_filename(metadata: Path) -> str | None:
@@ -51,15 +80,20 @@ def _ddb_filename(metadata: Path) -> str | None:
 def _has_nonempty_edition(metadata: Path) -> bool:
     """Return whether an XML file contains a non-empty edition division."""
 
-    for element in ElementTree.parse(metadata).iter():
-        local_name = element.tag.rpartition("}")[2]
-        if (
-            local_name == "div"
-            and element.get("type") == "edition"
-            and ((element.text and element.text.strip()) or len(element))
-        ):
-            return True
-    return False
+    with PySaxonProcessor(license=False) as proc:
+        document = parse_xml_document(proc, metadata)
+        return _has_nonempty_edition_document(proc, document)
+
+
+def _has_nonempty_edition_document(proc: PySaxonProcessor, document) -> bool:
+    """Return whether a parsed XML document contains a non-empty edition division."""
+
+    return xpath_boolean(
+        proc,
+        document,
+        "exists(.//*[local-name() = 'div'][@type = 'edition']"
+        "[normalize-space(.) or *])",
+    )
 
 
 def trismegistos_id(metadata: Path) -> str:
@@ -109,18 +143,27 @@ def iterate_hgv_triples(
         if progressbar
         else metadata_files
     )
-    for metadata in metadata_iterator:
-        tm_id = trismegistos_id(metadata)
-        hgv_id = metadata.stem
-        transcription = transcriptions.get(_ddb_filename(metadata))
-        translation = translation_root / f"{hgv_id}.xml"
+    with PySaxonProcessor(license=False) as proc:
+        for metadata in metadata_iterator:
+            document = parse_xml_document(proc, metadata)
+            tm_id = _identifier_text_from_document(proc, document, "TM")
+            if tm_id is None:
+                raise ValueError(f"{metadata} does not contain an idno with type='TM'")
+            hgv_id = metadata.stem
+            ddb_filename = _identifier_text_from_document(
+                proc,
+                document,
+                "ddb-filename",
+            )
+            transcription = transcriptions.get(ddb_filename)
+            translation = translation_root / f"{hgv_id}.xml"
 
-        yield (
-            tm_id,
-            metadata,
-            transcription,
-            translation if translation.is_file() else None,
-        )
+            yield (
+                tm_id,
+                metadata,
+                transcription,
+                translation if translation.is_file() else None,
+            )
 
 
 def iterate_dclp_triples(
@@ -152,9 +195,16 @@ def iterate_dclp_triples(
         if progressbar
         else dclp_files
     )
-    for metadata in dclp_iterator:
-        transcription = metadata if _has_nonempty_edition(metadata) else None
-        yield (trismegistos_id(metadata), metadata, transcription, None)
+    with PySaxonProcessor(license=False) as proc:
+        for metadata in dclp_iterator:
+            document = parse_xml_document(proc, metadata)
+            tm_id = _identifier_text_from_document(proc, document, "TM")
+            if tm_id is None:
+                raise ValueError(f"{metadata} does not contain an idno with type='TM'")
+            transcription = (
+                metadata if _has_nonempty_edition_document(proc, document) else None
+            )
+            yield (tm_id, metadata, transcription, None)
 
 
 def iterate_idpdata_triples(

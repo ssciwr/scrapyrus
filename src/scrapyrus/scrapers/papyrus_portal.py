@@ -3,12 +3,20 @@ import logging
 import re
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
-from xml.etree import ElementTree
 
 import requests
 from bs4 import BeautifulSoup
+from saxonche import PySaxonProcessor
 
 from scrapyrus.images import ImageScraperBase
+from scrapyrus.saxon_xml import (
+    attribute_value,
+    direct_children,
+    document_element,
+    first_child,
+    iter_elements,
+    parse_xml_text,
+)
 
 
 logger = logging.getLogger("scrapyrus.images.scrapers.papyrus_portal")
@@ -107,31 +115,40 @@ class PapyrusPortalScraper(ImageScraperBase):
 
     @classmethod
     def _mets_image_paths(cls, mets: bytes | str) -> list[str]:
-        root = ElementTree.fromstring(mets)
+        with PySaxonProcessor(license=False) as proc:
+            root = document_element(parse_xml_text(proc, mets))
+            return cls._mets_image_paths_from_root(root)
+
+    @classmethod
+    def _mets_image_paths_from_root(cls, root) -> list[str]:
         files_by_use: dict[str, list[tuple[str | None, str]]] = {
             use: [] for use in cls.IMAGE_USES
         }
 
-        for file_group in root.findall(f".//{{{METS_NAMESPACE}}}fileGrp"):
-            use = (file_group.get("USE") or "").upper()
+        for file_group in iter_elements(root, f"{{{METS_NAMESPACE}}}fileGrp"):
+            use = (attribute_value(file_group, "USE", "") or "").upper()
             if use not in files_by_use:
                 continue
-            for file_element in file_group.findall(f"{{{METS_NAMESPACE}}}file"):
-                location = file_element.find(f"{{{METS_NAMESPACE}}}FLocat")
+            file_elements = direct_children(file_group, f"{{{METS_NAMESPACE}}}file")
+            for file_element in file_elements:
+                location = first_child(file_element, f"{{{METS_NAMESPACE}}}FLocat")
                 if location is None:
                     continue
-                href = location.get(f"{{{XLINK_NAMESPACE}}}href") or location.get(
-                    "href"
-                )
+                href = attribute_value(
+                    location,
+                    f"{{{XLINK_NAMESPACE}}}href",
+                ) or attribute_value(location, "href")
                 if not href:
                     continue
-                mime_type = (file_element.get("MIMETYPE") or "").lower()
+                mime_type = (
+                    attribute_value(file_element, "MIMETYPE", "") or ""
+                ).lower()
                 suffix = Path(unquote(urlparse(href).path)).suffix.lower()
                 if mime_type and not mime_type.startswith("image/"):
                     continue
                 if not mime_type and suffix not in cls.IMAGE_SUFFIXES:
                     continue
-                files_by_use[use].append((file_element.get("ID"), href))
+                files_by_use[use].append((attribute_value(file_element, "ID"), href))
 
         selected_files: list[tuple[str | None, str]] = []
         for use in cls.IMAGE_USES:
@@ -149,16 +166,19 @@ class PapyrusPortalScraper(ImageScraperBase):
         physical_map = next(
             (
                 struct_map
-                for struct_map in root.findall(f".//{{{METS_NAMESPACE}}}structMap")
-                if (struct_map.get("TYPE") or "").upper() == "PHYSICAL"
+                for struct_map in iter_elements(
+                    root,
+                    f"{{{METS_NAMESPACE}}}structMap",
+                )
+                if (attribute_value(struct_map, "TYPE", "") or "").upper() == "PHYSICAL"
             ),
             None,
         )
         if physical_map is not None:
-            for element in physical_map.iter():
-                if element.tag.rpartition("}")[2] not in {"fptr", "area"}:
+            for element in iter_elements(physical_map):
+                if element.local_name not in {"fptr", "area"}:
                     continue
-                for file_id in (element.get("FILEID") or "").split():
+                for file_id in (attribute_value(element, "FILEID", "") or "").split():
                     href = paths_by_id.get(file_id)
                     if href and href not in seen_paths:
                         seen_paths.add(href)

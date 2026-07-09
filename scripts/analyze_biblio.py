@@ -11,43 +11,41 @@ from pathlib import Path
 import json
 import re
 from typing import Any
-from xml.etree import ElementTree
 
+from saxonche import PySaxonApiError, PySaxonProcessor, PyXdmNode
+from scrapyrus.saxon_xml import (
+    attribute_value,
+    attributes as xml_attributes,
+    direct_children as xml_direct_children,
+    display_name as local_name,
+    document_element,
+    iter_elements,
+    normalized_text,
+    parse_xml_document,
+)
 from tqdm import tqdm
 
 
-TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
-XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 BIBLIO_TARGET_PATTERN = re.compile(r"https?://papyri\.info/biblio/(?P<id>\d+)\b")
 YEAR_PATTERN = re.compile(r"\b(?P<year>[12]\d{3})\b")
 
 
-def local_name(name: str) -> str:
-    if name.startswith(f"{{{XML_NAMESPACE}}}"):
-        return f"xml:{name.rpartition('}')[2]}"
-    return name.rpartition("}")[2]
-
-
-def normalized_text(element: ElementTree.Element) -> str:
-    return " ".join("".join(element.itertext()).split())
-
-
-def attributes(element: ElementTree.Element) -> dict[str, str]:
-    return {local_name(name): value for name, value in element.attrib.items()}
+def attributes(element: PyXdmNode) -> dict[str, str]:
+    return xml_attributes(element)
 
 
 def direct_children(
-    element: ElementTree.Element,
+    element: PyXdmNode,
     local_tag: str,
-) -> list[ElementTree.Element]:
-    return [child for child in element if local_name(child.tag) == local_tag]
+) -> list[PyXdmNode]:
+    return xml_direct_children(element, local_tag)
 
 
 def iter_descendants(
-    element: ElementTree.Element,
+    element: PyXdmNode,
     local_tag: str,
-) -> list[ElementTree.Element]:
-    return [child for child in element.iter() if local_name(child.tag) == local_tag]
+) -> list[PyXdmNode]:
+    return list(iter_elements(element, local_name=local_tag))
 
 
 def sorted_counter(counter: Counter[Any]) -> dict[str, int]:
@@ -67,28 +65,18 @@ def percentage(count: int, total: int) -> float:
     return round(100 * count / total, 2) if total else 0.0
 
 
-def element_path(root: ElementTree.Element, element: ElementTree.Element) -> str:
+def element_path(root: PyXdmNode, element: PyXdmNode) -> str:
     parts: list[str] = []
-    found = False
-
-    def walk(current: ElementTree.Element, current_parts: list[str]) -> None:
-        nonlocal found, parts
-        if found:
-            return
-        current_name = local_name(current.tag)
-        next_parts = [*current_parts, current_name]
-        if current is element:
-            parts = next_parts
-            found = True
-            return
-        for child in current:
-            walk(child, next_parts)
-
-    walk(root, [])
-    return "/" + "/".join(parts)
+    current: PyXdmNode | None = element
+    while current is not None and current.node_kind_str == "element":
+        parts.append(local_name(current.name))
+        if current.equals(root):
+            break
+        current = current.get_parent()
+    return "/" + "/".join(reversed(parts))
 
 
-def title_signature(element: ElementTree.Element) -> str:
+def title_signature(element: PyXdmNode) -> str:
     attrs = attributes(element)
     parts = []
     if "level" in attrs:
@@ -98,8 +86,10 @@ def title_signature(element: ElementTree.Element) -> str:
     return ", ".join(parts) or "(no level/type)"
 
 
-def contributor_shape(element: ElementTree.Element) -> str:
-    child_names = tuple(local_name(child.tag) for child in element)
+def contributor_shape(element: PyXdmNode) -> str:
+    child_names = tuple(
+        local_name(child.name) for child in xml_direct_children(element)
+    )
     if child_names:
         return " + ".join(child_names)
     if normalized_text(element):
@@ -158,36 +148,33 @@ def analyze_hgv_references(
     missing_ids: Counter[str] = Counter()
     nearest_bibl_type: Counter[str] = Counter()
 
-    for metadata in iterator:
-        hgv_id = metadata.stem
-        root = ElementTree.parse(metadata).getroot()
-        parent: dict[int, ElementTree.Element] = {}
-        for element in root.iter():
-            for child in element:
-                parent[id(child)] = element
+    with PySaxonProcessor(license=False) as proc:
+        for metadata in iterator:
+            hgv_id = metadata.stem
+            root = document_element(parse_xml_document(proc, metadata))
 
-        for ptr in iter_descendants(root, "ptr"):
-            target = ptr.get("target", "")
-            match = BIBLIO_TARGET_PATTERN.search(target)
-            if match is None:
-                continue
-            biblio_id = match.group("id")
-            pointer_occurrences += 1
-            pointer_documents.add(hgv_id)
-            referenced_ids[biblio_id] += 1
-            documents_by_biblio_id[biblio_id].add(hgv_id)
-            if biblio_id not in biblio_ids:
-                missing_ids[biblio_id] += 1
+            for ptr in iter_descendants(root, "ptr"):
+                target = attribute_value(ptr, "target", "") or ""
+                match = BIBLIO_TARGET_PATTERN.search(target)
+                if match is None:
+                    continue
+                biblio_id = match.group("id")
+                pointer_occurrences += 1
+                pointer_documents.add(hgv_id)
+                referenced_ids[biblio_id] += 1
+                documents_by_biblio_id[biblio_id].add(hgv_id)
+                if biblio_id not in biblio_ids:
+                    missing_ids[biblio_id] += 1
 
-            ancestor = parent.get(id(ptr))
-            context = "(none)"
-            while ancestor is not None:
-                if local_name(ancestor.tag) == "bibl":
-                    context = ancestor.get("type", "(no type)")
-                    break
-                ancestor = parent.get(id(ancestor))
-            nearest_bibl_type[context] += 1
-            context_by_biblio_id[biblio_id][context] += 1
+                ancestor = ptr.get_parent()
+                context = "(none)"
+                while ancestor is not None and ancestor.node_kind_str == "element":
+                    if local_name(ancestor.name) == "bibl":
+                        context = attribute_value(ancestor, "type", "(no type)")
+                        break
+                    ancestor = ancestor.get_parent()
+                nearest_bibl_type[context] += 1
+                context_by_biblio_id[biblio_id][context] += 1
 
     top_referenced = {}
     for biblio_id, count in referenced_ids.most_common(30):
@@ -292,13 +279,15 @@ def analyze(
     seg_resp: Counter[str] = Counter()
     seg_text_length_buckets: Counter[str] = Counter()
 
-    for file in iterator:
-        try:
-            root = ElementTree.parse(file).getroot()
-        except ElementTree.ParseError as error:
-            parse_errors.append({"path": str(file), "error": str(error)})
-            continue
+    def parsed_roots():
+        with PySaxonProcessor(license=False) as proc:
+            for file in iterator:
+                try:
+                    yield file, document_element(parse_xml_document(proc, file))
+                except PySaxonApiError as error:
+                    parse_errors.append({"path": str(file), "error": str(error)})
 
+    for file, root in parsed_roots():
         root_attrs = attributes(root)
         biblio_id = parse_biblio_id(file, root_attrs) or file.stem
         if biblio_id in ids:
@@ -308,7 +297,7 @@ def analyze(
         pi_values = [
             normalized_text(idno)
             for idno in direct_children(root, "idno")
-            if idno.get("type") == "pi"
+            if attribute_value(idno, "type") == "pi"
         ]
         root_xml_id = root_attrs.get("xml:id", "")
         expected_xml_id = f"b{file.stem}"
@@ -328,7 +317,9 @@ def analyze(
         for name, value in root_attrs.items():
             root_attribute_presence[name] += 1
 
-        direct_counts = Counter(local_name(child.tag) for child in root)
+        direct_counts = Counter(
+            local_name(child.name) for child in xml_direct_children(root)
+        )
         for name, count in direct_counts.items():
             root_child_presence[name] += 1
             root_child_occurrences[name] += count
@@ -348,7 +339,7 @@ def analyze(
         for extra_name in sorted(set(direct_counts) - set(expected_root_children)):
             root_child_cardinality[extra_name][direct_counts[extra_name]] += 1
 
-        for element in root.iter():
+        for element in iter_elements(root):
             path = element_path(root, element)
             element_paths[path] += 1
             element_presence[path].add(biblio_id)
@@ -364,7 +355,7 @@ def analyze(
             signature = title_signature(title)
             title_signatures[signature] += 1
             title_text_by_signature[signature][normalized_text(title) or "(empty)"] += 1
-            has_main_title |= title.get("type") == "main"
+            has_main_title |= attribute_value(title, "type") == "main"
         records_with_main_title += has_main_title
 
         for contributor_tag in ("author", "editor"):
@@ -393,11 +384,11 @@ def analyze(
         bibl_scopes = direct_children(root, "biblScope")
         bibl_scope_cardinality[len(bibl_scopes)] += 1
         for scope in bibl_scopes:
-            scope_type = scope.get("type", "(none)")
+            scope_type = attribute_value(scope, "type", "(none)") or "(none)"
             bibl_scope_types[scope_type] += 1
             value = normalized_text(scope) or "(empty)"
             bibl_scope_values_by_type[scope_type][value] += 1
-            if scope.get("from") or scope.get("to"):
+            if attribute_value(scope, "from") or attribute_value(scope, "to"):
                 bibl_scope_with_from_to[scope_type] += 1
             for name in attributes(scope):
                 bibl_scope_attribute_presence[name] += 1
@@ -415,7 +406,7 @@ def analyze(
             if not nested_ptrs:
                 related_item_target_state["no_ptr"] += 1
             for ptr in nested_ptrs:
-                target = ptr.get("target", "")
+                target = attribute_value(ptr, "target", "") or ""
                 kind = target_kind(target)
                 ptr_targets[target] += 1
                 ptr_target_kinds[kind] += 1
@@ -430,7 +421,7 @@ def analyze(
 
             for nested_bibl in iter_descendants(related_item, "bibl"):
                 nested_direct_counts = Counter(
-                    local_name(child.tag) for child in nested_bibl
+                    local_name(child.name) for child in xml_direct_children(nested_bibl)
                 )
                 for child_name in nested_direct_counts:
                     related_item_nested_child_presence[relation_type][child_name] += 1
@@ -440,7 +431,7 @@ def analyze(
                     ] += 1
 
         for idno in direct_children(root, "idno"):
-            idno_type = idno.get("type", "(none)")
+            idno_type = attribute_value(idno, "type", "(none)") or "(none)"
             value = normalized_text(idno) or "(empty)"
             idno_types[idno_type] += 1
             idno_values_by_type[idno_type][value] += 1
@@ -448,7 +439,7 @@ def analyze(
         notes = direct_children(root, "note")
         note_cardinality[len(notes)] += 1
         for note in notes:
-            note_type = note.get("type", "(none)")
+            note_type = attribute_value(note, "type", "(none)") or "(none)"
             note_types[note_type] += 1
             note_values_by_type[note_type][normalized_text(note) or "(empty)"] += 1
 

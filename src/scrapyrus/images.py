@@ -8,8 +8,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
-from xml.etree import ElementTree
 
+from saxonche import PySaxonProcessor
 from termgraph import Args, Data, StackedChart
 from tqdm import tqdm
 
@@ -19,6 +19,7 @@ from scrapyrus.image_manifest import (
     record_image_manifest_entry,
 )
 from scrapyrus.idpdata import iterate_idpdata_triples
+from scrapyrus.saxon_xml import attribute_value, parse_xml_document, select_nodes
 
 
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
@@ -390,19 +391,22 @@ def scrape_images(
     )
 
     with (
+        PySaxonProcessor(license=False) as proc,
         todo_path.open("w", encoding="utf-8") as todo_file,
         error_path.open("w", encoding="utf-8") as error_file,
         unavailable_path.open("w", encoding="utf-8") as unavailable_file,
     ):
         for tm_id, metadata, _, _ in iterate_idpdata_triples(idp_data):
-            root = ElementTree.parse(metadata).getroot()
-            graphics = root.findall(
+            document = parse_xml_document(proc, metadata)
+            graphics = select_nodes(
+                proc,
+                document,
                 GRAPHIC_PATH,
                 namespaces={"tei": TEI_NAMESPACE},
             )
             papyrus_target = target / tm_id
             for graphic in graphics:
-                url = graphic.get("url")
+                url = attribute_value(graphic, "url")
                 if not url:
                     continue
                 source_entry = f"{tm_id}: {url}"

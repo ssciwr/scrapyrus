@@ -14,32 +14,27 @@ import json
 from pathlib import Path
 import re
 import unicodedata
-from xml.etree import ElementTree
 
+from saxonche import PySaxonProcessor, PyXdmNode
 from scrapyrus.idpdata import iterate_hgv_triples
+from scrapyrus.saxon_xml import (
+    attributes as xml_attributes,
+    direct_children as xml_direct_children,
+    document_element,
+    iter_elements,
+    normalized_text,
+    parse_xml_document,
+    select_nodes,
+)
 from tqdm import tqdm
 
 
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
-XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
+TEI_NAMESPACES = {"tei": TEI_NAMESPACE}
 
-MS_IDENTIFIER_PATH = (
-    f".//{{{TEI_NAMESPACE}}}msDesc/"
-    f"{{{TEI_NAMESPACE}}}msIdentifier/"
-    f"{{{TEI_NAMESPACE}}}placeName/"
-    f"{{{TEI_NAMESPACE}}}settlement"
-)
-ORIG_PLACE_PATH = (
-    f".//{{{TEI_NAMESPACE}}}msDesc/"
-    f"{{{TEI_NAMESPACE}}}history/"
-    f"{{{TEI_NAMESPACE}}}origin/"
-    f"{{{TEI_NAMESPACE}}}origPlace"
-)
-PROVENANCE_PATH = (
-    f".//{{{TEI_NAMESPACE}}}msDesc/"
-    f"{{{TEI_NAMESPACE}}}history/"
-    f"{{{TEI_NAMESPACE}}}provenance"
-)
+MS_IDENTIFIER_PATH = ".//tei:msDesc/tei:msIdentifier/tei:placeName/tei:settlement"
+ORIG_PLACE_PATH = ".//tei:msDesc/tei:history/tei:origin/tei:origPlace"
+PROVENANCE_PATH = ".//tei:msDesc/tei:history/tei:provenance"
 PLACE_NAME = f"{{{TEI_NAMESPACE}}}placeName"
 P = f"{{{TEI_NAMESPACE}}}p"
 
@@ -76,16 +71,6 @@ class GeoPlace:
     @property
     def has_coordinates(self) -> bool:
         return bool(self.coordinates.strip())
-
-
-def local_name(name: str) -> str:
-    if name.startswith(f"{{{XML_NAMESPACE}}}"):
-        return f"xml:{name.rpartition('}')[2]}"
-    return name.rpartition("}")[2]
-
-
-def normalized_text(element: ElementTree.Element) -> str:
-    return " ".join("".join(element.itertext()).split())
 
 
 def normalize_lookup(value: str) -> str:
@@ -168,8 +153,8 @@ def geo_name_index(places: dict[int, GeoPlace]) -> dict[str, set[int]]:
     return dict(index)
 
 
-def attributes(element: ElementTree.Element) -> dict[str, str]:
-    return {local_name(name): value for name, value in element.attrib.items()}
+def attributes(element: PyXdmNode) -> dict[str, str]:
+    return xml_attributes(element)
 
 
 def extract_authorities(ref: str) -> dict[str, tuple[str, ...]]:
@@ -257,7 +242,7 @@ class PlaceAccumulator:
         *,
         scope: str,
         document_tm_id: str,
-        element: ElementTree.Element,
+        element: PyXdmNode,
     ) -> dict[str, object]:
         attrs = attributes(element)
         label = normalized_text(element) or "(empty)"
@@ -531,13 +516,11 @@ class PlaceAccumulator:
         }
 
 
-def direct_children(
-    element: ElementTree.Element, tag: str
-) -> list[ElementTree.Element]:
-    return [child for child in element if child.tag == tag]
+def direct_children(element: PyXdmNode, tag: str) -> list[PyXdmNode]:
+    return xml_direct_children(element, tag)
 
 
-def place_signature(element: ElementTree.Element) -> str:
+def place_signature(element: PyXdmNode) -> str:
     attrs = attributes(element)
     parts = [attrs.get("type", "(no type)")]
     if attrs.get("subtype"):
@@ -585,10 +568,20 @@ def analyze(
         unit="record",
         disable=not progress,
     )
-    for document_tm_id, metadata, _, _ in iterator:
-        root = ElementTree.parse(metadata).getroot()
 
-        current_settlements = root.findall(MS_IDENTIFIER_PATH)
+    def parsed_metadata():
+        with PySaxonProcessor(license=False) as proc:
+            for document_tm_id, metadata, _, _ in iterator:
+                root = document_element(parse_xml_document(proc, metadata))
+                yield proc, document_tm_id, root
+
+    for proc, document_tm_id, root in parsed_metadata():
+        current_settlements = select_nodes(
+            proc,
+            root,
+            MS_IDENTIFIER_PATH,
+            namespaces=TEI_NAMESPACES,
+        )
         for settlement in current_settlements:
             accumulator.add(
                 scope="current_settlement",
@@ -596,7 +589,12 @@ def analyze(
                 element=settlement,
             )
 
-        orig_places = root.findall(ORIG_PLACE_PATH)
+        orig_places = select_nodes(
+            proc,
+            root,
+            ORIG_PLACE_PATH,
+            namespaces=TEI_NAMESPACES,
+        )
         if orig_places:
             origin_place_documents += 1
         for orig_place in orig_places:
@@ -604,7 +602,7 @@ def analyze(
             origin_place_texts[label] += 1
             for name in attributes(orig_place):
                 origin_place_attributes[name] += 1
-            for place_name in orig_place.iter(PLACE_NAME):
+            for place_name in iter_elements(orig_place, PLACE_NAME):
                 origin_place_name_documents.add(document_tm_id)
                 accumulator.add(
                     scope="origin_place_name",
@@ -614,7 +612,12 @@ def analyze(
 
         document_provenance_place_count = 0
         document_provenance_p_count = 0
-        for provenance in root.findall(PROVENANCE_PATH):
+        for provenance in select_nodes(
+            proc,
+            root,
+            PROVENANCE_PATH,
+            namespaces=TEI_NAMESPACES,
+        ):
             provenance_events += 1
             provenance_event_documents.add(document_tm_id)
             event_attrs = attributes(provenance)

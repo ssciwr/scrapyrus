@@ -1,5 +1,6 @@
 from types import GeneratorType
-from xml.etree import ElementTree
+
+from saxonche import PySaxonProcessor
 
 from scrapyrus.idpdata import (
     iterate_dclp_triples,
@@ -8,6 +9,18 @@ from scrapyrus.idpdata import (
     transcription_xml_snippet,
     trismegistos_id,
 )
+from scrapyrus.saxon_xml import (
+    attribute_value,
+    direct_children,
+    document_element,
+    expanded_name,
+    normalized_text,
+    parse_xml_text,
+)
+
+
+def _parse_snippet(proc: PySaxonProcessor, snippet: str):
+    return document_element(parse_xml_text(proc, snippet))
 
 
 def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
@@ -24,10 +37,11 @@ def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
     snippet = transcription_xml_snippet(transcription)
 
     assert isinstance(snippet, str)
-    edition = ElementTree.fromstring(snippet)
-    assert edition.tag == "div"
-    assert edition.get("type") == "edition"
-    assert edition.find("ab").text == "Text"
+    with PySaxonProcessor(license=False) as proc:
+        edition = _parse_snippet(proc, snippet)
+        assert expanded_name(edition) == "div"
+        assert attribute_value(edition, "type") == "edition"
+        assert normalized_text(direct_children(edition, "ab")[0]) == "Text"
 
 
 def test_transcription_xml_snippet_can_retain_namespaces(tmp_path):
@@ -39,9 +53,15 @@ def test_transcription_xml_snippet_can_retain_namespaces(tmp_path):
 
     snippet = transcription_xml_snippet(transcription, remove_namespaces=False)
 
-    edition = ElementTree.fromstring(snippet)
-    assert edition.tag == "{http://www.tei-c.org/ns/1.0}div"
-    assert edition.find("{http://www.tei-c.org/ns/1.0}ab").text == "Text"
+    with PySaxonProcessor(license=False) as proc:
+        edition = _parse_snippet(proc, snippet)
+        assert expanded_name(edition) == "{http://www.tei-c.org/ns/1.0}div"
+        assert (
+            normalized_text(
+                direct_children(edition, "{http://www.tei-c.org/ns/1.0}ab")[0]
+            )
+            == "Text"
+        )
 
 
 def test_transcription_xml_snippet_returns_none_without_edition(tmp_path):
