@@ -1,74 +1,11 @@
 from types import GeneratorType
 
-from saxonche import PySaxonProcessor
-
 from scrapyrus.idpdata import (
     iterate_dclp_triples,
     iterate_hgv_triples,
     iterate_idpdata_triples,
-    transcription_xml_snippet,
     trismegistos_id,
 )
-from scrapyrus.saxon_xml import (
-    attribute_value,
-    direct_children,
-    document_element,
-    expanded_name,
-    normalized_text,
-    parse_xml_text,
-)
-
-
-def _parse_snippet(proc: PySaxonProcessor, snippet: str):
-    return document_element(parse_xml_text(proc, snippet))
-
-
-def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
-    transcription = tmp_path / "transcription.xml"
-    transcription.write_text(
-        """<TEI xmlns="http://www.tei-c.org/ns/1.0">
-        <text><body>
-            <div type="commentary"><p>Commentary</p></div>
-            <div xml:lang="grc" type="edition"><ab>Text</ab></div>
-        </body></text>
-        </TEI>"""
-    )
-
-    snippet = transcription_xml_snippet(transcription)
-
-    assert isinstance(snippet, str)
-    with PySaxonProcessor(license=False) as proc:
-        edition = _parse_snippet(proc, snippet)
-        assert expanded_name(edition) == "div"
-        assert attribute_value(edition, "type") == "edition"
-        assert normalized_text(direct_children(edition, "ab")[0]) == "Text"
-
-
-def test_transcription_xml_snippet_can_retain_namespaces(tmp_path):
-    transcription = tmp_path / "transcription.xml"
-    transcription.write_text(
-        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
-        '<div type="edition"><ab>Text</ab></div></TEI>'
-    )
-
-    snippet = transcription_xml_snippet(transcription, remove_namespaces=False)
-
-    with PySaxonProcessor(license=False) as proc:
-        edition = _parse_snippet(proc, snippet)
-        assert expanded_name(edition) == "{http://www.tei-c.org/ns/1.0}div"
-        assert (
-            normalized_text(
-                direct_children(edition, "{http://www.tei-c.org/ns/1.0}ab")[0]
-            )
-            == "Text"
-        )
-
-
-def test_transcription_xml_snippet_returns_none_without_edition(tmp_path):
-    transcription = tmp_path / "transcription.xml"
-    transcription.write_text('<TEI><div type="commentary" /></TEI>')
-
-    assert transcription_xml_snippet(transcription) is None
 
 
 def _write_tei_metadata(

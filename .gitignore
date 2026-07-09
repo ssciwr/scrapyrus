@@ -9,7 +9,6 @@ sosol
 
 # Ignore default output directories that we have used for some scrapers
 images
-transcriptions
 
 # Host/container data exchange directory for Docker Compose.
 exchange/

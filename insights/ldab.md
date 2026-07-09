@@ -1,8 +1,7 @@
 # Non-numeric LDAB identifiers in DCLP
 
 Checked the DCLP XML corpus with a script that parsed every `DCLP/**/*.xml`
-file using Python's `xml.etree.ElementTree` and inspected `idno` elements with
-`type="LDAB"`.
+file using SaxonC and inspected `idno` elements with `type="LDAB"`.
 
 ## Summary
 

@@ -8,8 +8,6 @@ from tqdm import tqdm
 from scrapyrus.saxon_xml import (
     first_string,
     parse_xml_document,
-    select_first,
-    serialize_node,
     xpath_boolean,
     xpath_literal,
 )
@@ -17,35 +15,6 @@ from scrapyrus.saxon_xml import (
 
 TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
 TEI_NAMESPACES = {"tei": TEI_NAMESPACE}
-
-
-def transcription_xml_snippet(
-    transcription: Path,
-    *,
-    remove_namespaces: bool = True,
-) -> str | None:
-    """Return the edition division from a transcription XML file.
-
-    The first ``div`` element with a ``type`` attribute of ``edition`` is
-    returned as a serialized XML string. If the file has no such element,
-    return ``None``. By default, namespace qualifiers are removed from TEI
-    element tags in the returned snippet.
-    """
-
-    with PySaxonProcessor(license=False) as proc:
-        document = parse_xml_document(proc, transcription)
-        edition = select_first(
-            proc,
-            document,
-            "(.//*[local-name() = 'div'][@type = 'edition'])[1]",
-        )
-        if edition is not None:
-            return serialize_node(
-                proc,
-                edition,
-                remove_namespaces=remove_namespaces,
-            )
-    return None
 
 
 def _identifier_text(metadata: Path, identifier_type: str) -> str | None:

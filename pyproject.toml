@@ -58,7 +58,7 @@ scrapyrus = "scrapyrus.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-scrapyrus = ["images_broken.txt"]
+scrapyrus = ["images_broken.txt", "transcriptions/xslt/*.xsl"]
 
 # The following is the configuration for the pytest test suite
 [tool.pytest.ini_options]
