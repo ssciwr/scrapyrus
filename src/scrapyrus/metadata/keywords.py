@@ -55,6 +55,20 @@ KEYWORDS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS keywords (
     uncertain boolean NOT NULL
 );"""
 
+KEYWORDS_DESCRIPTION = """The keywords table contains one row for each normalized keyword term assigned
+to a papyrus record. It records the keyword vocabulary scheme, term type,
+cleaned keyword text, and whether the assignment was marked uncertain in the
+source metadata."""
+
+KEYWORDS_SEMANTIC_CATALOG = """Table: keywords
+Use this table for topical, genre, subject, language, and classification queries. Join to papyri on tm_id.
+keyword_id: Synthetic row identifier for an extracted keyword; not a stable external term ID.
+tm_id: Trismegistos document ID for the papyrus record that has this keyword.
+scheme: Source keyword vocabulary or classification scheme from the TEI keywords element.
+keyword_type: Category or type of the keyword term from the source metadata.
+keyword: Normalized keyword text after removing uncertainty markers; search this field for subjects, genres, and classifications.
+uncertain: True when the original keyword was marked with a question mark, meaning the assignment is uncertain."""
+
 
 class KeywordModelFactory:
     def __init__(self, proc):
@@ -120,6 +134,12 @@ class KeywordMetadataTable(MetadataTable):
     name = "keywords"
     order_by = ("keyword_id",)
     schema_sql = KEYWORDS_SCHEMA_SQL
+
+    def description(self) -> str:
+        return KEYWORDS_DESCRIPTION
+
+    def semantic_catalog(self) -> str:
+        return KEYWORDS_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[KeywordModel]:

@@ -50,6 +50,16 @@ class MetadataTable:
     def create_factory(self, proc: Any) -> Any:
         raise NotImplementedError
 
+    def description(self) -> str:
+        """Return a short description of the table contents."""
+
+        raise NotImplementedError
+
+    def semantic_catalog(self) -> str:
+        """Return field-level semantic guidance for natural-language SQL mapping."""
+
+        raise NotImplementedError
+
     def build_rows(
         self, factory: Any, idp_data: Path, metadata: Path
     ) -> tuple[dict[str, Any], ...] | list[dict[str, Any]]:

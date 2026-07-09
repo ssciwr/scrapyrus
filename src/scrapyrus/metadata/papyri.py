@@ -48,6 +48,27 @@ PAPYRI_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS papyri (
 
 CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);"""
 
+PAPYRI_DESCRIPTION = """The papyri table contains one row for each idp.data metadata XML record.
+It is the central table for papyrus records, with source provenance, the
+Trismegistos document identifier, related external identifiers, title, support
+material, and current holding location."""
+
+PAPYRI_SEMANTIC_CATALOG = """Table: papyri
+Use this as the central document table. Join auxiliary metadata tables on tm_id.
+source_path: Relative path to the idp.data metadata XML file; the table primary key and provenance for the source record.
+tm_id: Trismegistos document ID for the papyrus or text record; use this as the logical document key across metadata tables.
+dclp_id: Numeric DCLP identifier when the record belongs to the Digital Corpus of Literary Papyri.
+dclp_hybrid_id: DCLP hybrid identifier string from the source metadata.
+ddb_perseus_style_id: DDbDP identifier in Perseus-style form from the source metadata.
+ddb_filename: DDbDP filename for the associated documentary transcription when present.
+ddb_hybrid_id: DDbDP hybrid identifier string from the source metadata.
+hgv_id: HGV metadata identifier.
+ldab_id: LDAB identifier when the record is linked to the Leuven Database of Ancient Books.
+mp3_id: MP3 identifier when the source metadata provides one.
+title: Human-readable record title or publication title from the metadata.
+material: Lowercase support material, such as papyrus, ostracon, parchment, or other physical carrier.
+current_location: Current holding location, inventory context, collection, or institution text from the manuscript identifier."""
+
 
 class PapyrusModelFactory:
     def __init__(self, proc):
@@ -150,6 +171,12 @@ class PapyrusMetadataTable(MetadataTable):
     name = "papyri"
     order_by = ("source_path",)
     schema_sql = PAPYRI_SCHEMA_SQL
+
+    def description(self) -> str:
+        return PAPYRI_DESCRIPTION
+
+    def semantic_catalog(self) -> str:
+        return PAPYRI_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[PapyrusModel]:

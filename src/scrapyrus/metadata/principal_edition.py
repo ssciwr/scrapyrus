@@ -63,6 +63,22 @@ PRINCIPAL_EDITIONS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS principal_editions
     page text
 );"""
 
+PRINCIPAL_EDITIONS_DESCRIPTION = """The principal_editions table contains one row for each principal modern
+bibliographic edition cited for a papyrus record. It links editions to
+documents by tm_id and stores papyri.info bibliography IDs plus citation parts
+such as title, author, volume, number, and page."""
+
+PRINCIPAL_EDITIONS_SEMANTIC_CATALOG = """Table: principal_editions
+Use this table for questions about principal editions, publications, bibliography, and citation details. Join to papyri on tm_id.
+principal_edition_id: Synthetic row identifier for an extracted principal-edition citation; not an external bibliography ID.
+tm_id: Trismegistos document ID for the papyrus record that the edition describes.
+biblio_id: papyri.info bibliography record ID extracted from a biblio URL, when present.
+title: Publication or series title for the principal edition, preferring main titles over abbreviated titles.
+author: First listed author or editor text for the citation when available.
+volume: Volume component of the bibliographic citation.
+number: Number, item, or publication number component of the citation.
+page: Page or page-range component of the citation."""
+
 
 class PrincipalEditionModelFactory:
     def __init__(self, proc):
@@ -168,6 +184,12 @@ class PrincipalEditionMetadataTable(MetadataTable):
     name = "principal_editions"
     order_by = ("principal_edition_id",)
     schema_sql = PRINCIPAL_EDITIONS_SCHEMA_SQL
+
+    def description(self) -> str:
+        return PRINCIPAL_EDITIONS_DESCRIPTION
+
+    def semantic_catalog(self) -> str:
+        return PRINCIPAL_EDITIONS_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[PrincipalEditionModel]:

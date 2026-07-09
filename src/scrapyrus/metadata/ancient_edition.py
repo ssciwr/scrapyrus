@@ -73,6 +73,20 @@ ANCIENT_EDITIONS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS ancient_editions (
     perseus_author_urn text
 );"""
 
+ANCIENT_EDITIONS_DESCRIPTION = """The ancient_editions table contains one row for each ancient work or
+author-work attribution cited in an ancient-edition bibliography entry. It
+links papyrus records to ancient titles, authors, Trismegistos author-work IDs,
+and Perseus author URNs."""
+
+ANCIENT_EDITIONS_SEMANTIC_CATALOG = """Table: ancient_editions
+Use this table for queries about ancient authors, literary works, attributed texts, and author-work identifiers. Join to papyri on tm_id.
+ancient_edition_id: Synthetic row identifier for an extracted ancient-edition entry; not an external work ID.
+tm_id: Trismegistos document ID for the papyrus record associated with this ancient work or author.
+title: Ancient work title from the bibliography entry, preferring main or abbreviated titles when present.
+tm_title_id: Trismegistos AuthorWork or title identifier extracted from the title reference.
+author: Ancient author name associated with the title or work.
+perseus_author_urn: Perseus CTS URN identifying the ancient author when available."""
+
 
 class AncientEditionModelFactory:
     def __init__(self, proc):
@@ -159,6 +173,12 @@ class AncientEditionMetadataTable(MetadataTable):
     name = "ancient_editions"
     order_by = ("ancient_edition_id",)
     schema_sql = ANCIENT_EDITIONS_SCHEMA_SQL
+
+    def description(self) -> str:
+        return ANCIENT_EDITIONS_DESCRIPTION
+
+    def semantic_catalog(self) -> str:
+        return ANCIENT_EDITIONS_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[AncientEditionModel]:

@@ -75,6 +75,26 @@ ORIG_DATES_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS orig_dates (
     alternative boolean NOT NULL
 );"""
 
+ORIG_DATES_DESCRIPTION = """The orig_dates table contains one row for each original-date element with a
+machine-readable date or date range. It stores the source date text, parsed
+not-before and not-after bounds, certainty and precision markers, and whether
+the row represents an alternative dating."""
+
+ORIG_DATES_SEMANTIC_CATALOG = """Table: orig_dates
+Use this table for chronological queries about when a papyrus was written, composed, or dated. Join to papyri on tm_id.
+date_id: Synthetic row identifier for an extracted date statement; not an external date ID.
+tm_id: Trismegistos document ID for the papyrus record with this date.
+date_text: Human-readable date expression from the source metadata, such as a century, reign, or exact date label.
+certainty: Source confidence marker for the date assignment; low or medium values mean the date is less certain.
+precision: Source precision marker for how exact the date assignment is; low or medium values mean broader or less precise dating.
+not_before_year: Earliest possible year for the date range; negative values encode BCE years from TEI date attributes.
+not_before_month: Earliest possible month when the lower bound includes month precision.
+not_before_day: Earliest possible day when the lower bound includes day precision.
+not_after_year: Latest possible year for the date range; use together with not_before_year for interval queries.
+not_after_month: Latest possible month when the upper bound includes month precision.
+not_after_day: Latest possible day when the upper bound includes day precision.
+alternative: True when the source marks this as an alternative date; prefer alternative = false for primary dating unless alternatives are requested."""
+
 
 class OrigDateModelFactory:
     def __init__(self, proc):
@@ -164,6 +184,12 @@ class OrigDateMetadataTable(MetadataTable):
     name = "orig_dates"
     order_by = ("date_id",)
     schema_sql = ORIG_DATES_SCHEMA_SQL
+
+    def description(self) -> str:
+        return ORIG_DATES_DESCRIPTION
+
+    def semantic_catalog(self) -> str:
+        return ORIG_DATES_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[OrigDateModel]:

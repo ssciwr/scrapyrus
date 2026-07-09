@@ -79,6 +79,22 @@ ORIG_PLACES_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS orig_places (
     granularity text NOT NULL
 );"""
 
+ORIG_PLACES_DESCRIPTION = """The orig_places table contains one row for each extracted ancient place
+associated with a papyrus record's origin or provenance. It stores the full
+source place expression, normalized place name, Trismegistos and Pleiades place
+identifiers, relationship type, and geographic granularity."""
+
+ORIG_PLACES_SEMANTIC_CATALOG = """Table: orig_places
+Use this table for ancient geography, provenance, findspot, composition place, and origin-place queries. Join to papyri on tm_id.
+place_id: Synthetic row identifier for an extracted place statement; not an external place ID.
+tm_id: Trismegistos document ID for the papyrus record associated with this place.
+full_place_name: Complete source origin-place expression, useful when the query asks for the full recorded provenance wording.
+place_name: Normalized ancient place name extracted from the provenance text.
+tm_place_id: Trismegistos place ID for the ancient place, when available.
+pleiades_place_id: Pleiades place ID for the ancient place, when available.
+place_type: Relationship between the record and place, such as located, found, composed, sent, acquired, or received.
+granularity: Geographic specificity of place_name: settlement is most specific, while nome and region are broader areas."""
+
 
 class OrigPlaceModelFactory:
     def __init__(self, proc):
@@ -162,6 +178,12 @@ class OrigPlaceMetadataTable(MetadataTable):
     name = "orig_places"
     order_by = ("place_id",)
     schema_sql = ORIG_PLACES_SCHEMA_SQL
+
+    def description(self) -> str:
+        return ORIG_PLACES_DESCRIPTION
+
+    def semantic_catalog(self) -> str:
+        return ORIG_PLACES_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[OrigPlaceModel]:
