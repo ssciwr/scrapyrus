@@ -1,4 +1,5 @@
 from scrapyrus.metadata import (
+    AncientEditionMetadataTable,
     KeywordMetadataTable,
     OrigDateMetadataTable,
     OrigPlaceMetadataTable,
@@ -6,6 +7,7 @@ from scrapyrus.metadata import (
     PrincipalEditionMetadataTable,
 )
 from scrapyrus.metadata.base import MetadataTable
+from scrapyrus.metadata.ancient_edition import AncientEditionModel
 from scrapyrus.metadata.keywords import KeywordModel
 from scrapyrus.metadata.origdate import OrigDateModel
 from scrapyrus.metadata.origplace import OrigPlaceModel
@@ -36,6 +38,7 @@ def test_metadata_table_registry_contains_builtin_tables():
         KeywordMetadataTable,
         OrigDateMetadataTable,
         OrigPlaceMetadataTable,
+        AncientEditionMetadataTable,
     )
 
 
@@ -45,6 +48,7 @@ def test_metadata_table_columns_match_model_fields():
     keywords = KeywordMetadataTable()
     orig_dates = OrigDateMetadataTable()
     orig_places = OrigPlaceMetadataTable()
+    ancient_editions = AncientEditionMetadataTable()
 
     assert papyri.model_class is PapyrusModel
     assert papyri.columns == tuple(PapyrusModel.model_fields)
@@ -56,3 +60,5 @@ def test_metadata_table_columns_match_model_fields():
     assert orig_dates.columns == tuple(OrigDateModel.model_fields)
     assert orig_places.model_class is OrigPlaceModel
     assert orig_places.columns == tuple(OrigPlaceModel.model_fields)
+    assert ancient_editions.model_class is AncientEditionModel
+    assert ancient_editions.columns == tuple(AncientEditionModel.model_fields)
