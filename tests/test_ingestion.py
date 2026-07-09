@@ -7,6 +7,7 @@ from saxonche import PySaxonApiError
 
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
 from scrapyrus.metadata import (
+    AncientEditionMetadataTable,
     KeywordMetadataTable,
     OrigDateMetadataTable,
     OrigPlaceMetadataTable,
@@ -180,6 +181,20 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
               </textClass>
             </profileDesc>
           </teiHeader>
+          <text>
+            <body>
+              <div type="bibliography" subtype="ancientEdition">
+                <listBibl>
+                  <bibl type="publication" subtype="ancient">
+                    <author ref="http://data.perseus.org/catalog/urn:cts:greekLit:tlg0012">Homerus</author>
+                    <title type="main"
+                           level="m"
+                           ref="http://www.trismegistos.org/authorwork/511">Ilias</title>
+                  </bibl>
+                </listBibl>
+              </div>
+            </body>
+          </text>
         </TEI>
         """,
         encoding="utf-8",
@@ -223,9 +238,14 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert cursor.executions[2][1] is None
     assert _normalize_sql(cursor.executions[3][0]) == "DROP TABLE IF EXISTS orig_places"
     assert cursor.executions[3][1] is None
-    assert cursor.executions[4][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert (
+        _normalize_sql(cursor.executions[4][0])
+        == "DROP TABLE IF EXISTS ancient_editions"
+    )
     assert cursor.executions[4][1] is None
-    schema_sql = _normalize_sql(cursor.executions[4][0])
+    assert cursor.executions[5][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert cursor.executions[5][1] is None
+    schema_sql = _normalize_sql(cursor.executions[5][0])
     assert "source_path text NOT NULL PRIMARY KEY" in schema_sql
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
@@ -237,12 +257,15 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "CREATE TABLE IF NOT EXISTS orig_places" in schema_sql
     assert "place_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "granularity text NOT NULL" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS ancient_editions" in schema_sql
+    assert "ancient_edition_id integer NOT NULL PRIMARY KEY" in schema_sql
+    assert "perseus_author_urn text" in schema_sql
     columns = list(PapyrusMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[5][0]) == (
+    assert _normalize_sql(cursor.executions[6][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[5][1] == {
+    assert cursor.executions[6][1] == {
         "source_path": "HGV_meta_EpiDoc/HGV1/46.xml",
         "tm_id": 46,
         "dclp_id": 123,
@@ -258,11 +281,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "current_location": None,
     }
     columns = list(KeywordMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[6][0]) == (
+    assert _normalize_sql(cursor.executions[7][0]) == (
         f"INSERT INTO keywords ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert [execution[1] for execution in cursor.executions[6:10]] == [
+    assert [execution[1] for execution in cursor.executions[7:11]] == [
         {
             "keyword_id": 1,
             "tm_id": 46,
@@ -297,11 +320,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         },
     ]
     columns = list(OrigDateMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[10][0]) == (
+    assert _normalize_sql(cursor.executions[11][0]) == (
         f"INSERT INTO orig_dates ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[10][1] == {
+    assert cursor.executions[11][1] == {
         "date_id": 1,
         "tm_id": 46,
         "date_text": "9 Jan. 582",
@@ -316,11 +339,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "alternative": False,
     }
     columns = list(OrigPlaceMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[11][0]) == (
+    assert _normalize_sql(cursor.executions[12][0]) == (
         f"INSERT INTO orig_places ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert [execution[1] for execution in cursor.executions[11:13]] == [
+    assert [execution[1] for execution in cursor.executions[12:14]] == [
         {
             "place_id": 1,
             "tm_id": 46,
@@ -342,6 +365,19 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "granularity": "region",
         },
     ]
+    columns = list(AncientEditionMetadataTable().columns)
+    assert _normalize_sql(cursor.executions[14][0]) == (
+        f"INSERT INTO ancient_editions ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
+    )
+    assert cursor.executions[14][1] == {
+        "ancient_edition_id": 1,
+        "tm_id": 46,
+        "title": "Ilias",
+        "tm_title_id": 511,
+        "author": "Homerus",
+        "perseus_author_urn": "urn:cts:greekLit:tlg0012",
+    }
 
 
 def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatch):
@@ -375,8 +411,8 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
 
     ingest_metadata(idp_data, progressbar=False)
 
-    first_row = cursor.executions[5][1]
-    second_row = cursor.executions[6][1]
+    first_row = cursor.executions[6][1]
+    second_row = cursor.executions[7][1]
     assert first_row["tm_id"] == second_row["tm_id"] == 13
     assert first_row["source_path"] == "HGV_meta_EpiDoc/HGV1/13a.xml"
     assert first_row["title"] == "Sale of Land"
@@ -446,7 +482,19 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "region",
         ),
     ]
-    cursor = DumpCursor([papyri_rows, keyword_rows, orig_date_rows, orig_place_rows])
+    ancient_edition_rows = [
+        (1, 13, "Ilias", 511, "Homerus", "urn:cts:greekLit:tlg0012"),
+        (2, 13, "Short Title", None, "Jane Doe", None),
+    ]
+    cursor = DumpCursor(
+        [
+            papyri_rows,
+            keyword_rows,
+            orig_date_rows,
+            orig_place_rows,
+            ancient_edition_rows,
+        ]
+    )
     connection = RecordingConnection(cursor)
     connect_calls = []
 
@@ -468,7 +516,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             {"application_name": "scrapyrus-test"},
         )
     ]
-    assert len(cursor.executions) == 4
+    assert len(cursor.executions) == 5
     with (tmp_path / "metadata-csv" / "papyri.csv").open(
         encoding="utf-8", newline=""
     ) as csv_file:
@@ -566,6 +614,16 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "found",
             "region",
         ],
+    ]
+    with (tmp_path / "metadata-csv" / "ancient_editions.csv").open(
+        encoding="utf-8", newline=""
+    ) as csv_file:
+        dumped_ancient_editions = list(csv.reader(csv_file))
+
+    assert dumped_ancient_editions == [
+        list(AncientEditionMetadataTable().columns),
+        ["1", "13", "Ilias", "511", "Homerus", "urn:cts:greekLit:tlg0012"],
+        ["2", "13", "Short Title", "", "Jane Doe", ""],
     ]
 
 
