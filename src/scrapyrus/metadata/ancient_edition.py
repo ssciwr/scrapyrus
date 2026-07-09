@@ -44,17 +44,6 @@ def _first_tm_authorwork_id(ref: str | None) -> int | None:
     return None
 
 
-def _non_tm_title_refs(ref: str | None) -> tuple[str, ...]:
-    if ref is None:
-        return ()
-
-    return tuple(
-        title_ref
-        for title_ref in ref.split()
-        if TM_AUTHORWORK_RE.match(title_ref) is None
-    )
-
-
 def _perseus_author_urn(ref: str | None) -> str | None:
     if ref is None:
         return None
@@ -90,7 +79,6 @@ class AncientEditionModelFactory:
         self.proc = proc
         self.doc_builder = proc.new_document_builder()
         self._next_ancient_edition_id = 1
-        self._reported_non_tm_title_refs: set[str] = set()
 
         self.tm_id_proc = create_xpath_expr(
             proc,
@@ -124,7 +112,6 @@ class AncientEditionModelFactory:
             "string(((tei:title[@type='main'], "
             "tei:title[@type='abbreviated'], tei:title)[1]/@ref)[1])"
         )
-        self._report_non_tm_title_refs(_non_tm_title_refs(title_ref))
 
         return AncientEditionModel(
             ancient_edition_id=self.next_ancient_edition_id(),
@@ -147,20 +134,6 @@ class AncientEditionModelFactory:
 
     def _node_string(self, expression):
         return _optional_string(self.bibl_value_proc.evaluate_single(expression))
-
-    def _report_non_tm_title_refs(self, title_refs):
-        new_title_refs = sorted(
-            title_ref
-            for title_ref in title_refs
-            if title_ref not in self._reported_non_tm_title_refs
-        )
-        if not new_title_refs:
-            return
-
-        print("Ancient edition title refs which were not TM authorwork ids:")
-        for title_ref in new_title_refs:
-            print(f"- {title_ref}")
-        self._reported_non_tm_title_refs.update(new_title_refs)
 
     def next_ancient_edition_id(self):
         ancient_edition_id = self._next_ancient_edition_id

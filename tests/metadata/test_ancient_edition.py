@@ -102,14 +102,7 @@ def test_ancient_edition_model_factory_extracts_bibliography_rows(tmp_path, caps
         },
     ]
     captured = capsys.readouterr()
-    assert (
-        "Ancient edition title refs which were not TM authorwork ids:" in captured.out
-    )
-    assert "- http://catalog.perseus.org/catalog/urn:cts:greekLit:tlg0012.tlg001" in (
-        captured.out
-    )
-    assert "- http://example.test/non-tm-title" in captured.out
-    assert "http://example.test/abbreviated-title" not in captured.out
+    assert captured.out == ""
 
 
 def test_ancient_edition_model_factory_allows_missing_title_and_author(tmp_path):
