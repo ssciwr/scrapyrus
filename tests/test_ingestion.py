@@ -9,6 +9,7 @@ from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
 from scrapyrus.metadata import (
     KeywordMetadataTable,
     OrigDateMetadataTable,
+    OrigPlaceMetadataTable,
     PapyrusMetadataTable,
 )
 
@@ -152,8 +153,18 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
                   </physDesc>
                   <history>
                     <origin>
+                      <origPlace>Philadelphia? (Arsinoites)</origPlace>
                       <origDate when="0582-01-09" cert="low">9 Jan. 582</origDate>
                     </origin>
+                    <provenance type="located">
+                      <p>
+                        <placeName type="ancient"
+                                   ref="https://pleiades.stoa.org/places/737008 https://www.trismegistos.org/place/1760">Philadelphia</placeName>
+                        <placeName type="ancient"
+                                   subtype="region">Ägypten</placeName>
+                        <placeName type="modern">Philadelphia</placeName>
+                      </p>
+                    </provenance>
                   </history>
                 </msDesc>
               </sourceDesc>
@@ -210,9 +221,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert cursor.executions[1][1] is None
     assert _normalize_sql(cursor.executions[2][0]) == "DROP TABLE IF EXISTS orig_dates"
     assert cursor.executions[2][1] is None
-    assert cursor.executions[3][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert _normalize_sql(cursor.executions[3][0]) == "DROP TABLE IF EXISTS orig_places"
     assert cursor.executions[3][1] is None
-    schema_sql = _normalize_sql(cursor.executions[3][0])
+    assert cursor.executions[4][0].startswith("CREATE TABLE IF NOT EXISTS papyri")
+    assert cursor.executions[4][1] is None
+    schema_sql = _normalize_sql(cursor.executions[4][0])
     assert "source_path text NOT NULL PRIMARY KEY" in schema_sql
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
@@ -221,12 +234,15 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "CREATE TABLE IF NOT EXISTS orig_dates" in schema_sql
     assert "date_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "alternative boolean NOT NULL" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS orig_places" in schema_sql
+    assert "place_id integer NOT NULL PRIMARY KEY" in schema_sql
+    assert "granularity text NOT NULL" in schema_sql
     columns = list(PapyrusMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[4][0]) == (
+    assert _normalize_sql(cursor.executions[5][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[4][1] == {
+    assert cursor.executions[5][1] == {
         "source_path": "HGV_meta_EpiDoc/HGV1/46.xml",
         "tm_id": 46,
         "dclp_id": 123,
@@ -242,11 +258,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "current_location": None,
     }
     columns = list(KeywordMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[5][0]) == (
+    assert _normalize_sql(cursor.executions[6][0]) == (
         f"INSERT INTO keywords ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert [execution[1] for execution in cursor.executions[5:9]] == [
+    assert [execution[1] for execution in cursor.executions[6:10]] == [
         {
             "keyword_id": 1,
             "tm_id": 46,
@@ -281,11 +297,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         },
     ]
     columns = list(OrigDateMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[9][0]) == (
+    assert _normalize_sql(cursor.executions[10][0]) == (
         f"INSERT INTO orig_dates ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[9][1] == {
+    assert cursor.executions[10][1] == {
         "date_id": 1,
         "tm_id": 46,
         "date_text": "9 Jan. 582",
@@ -299,6 +315,33 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "not_after_day": 9,
         "alternative": False,
     }
+    columns = list(OrigPlaceMetadataTable().columns)
+    assert _normalize_sql(cursor.executions[11][0]) == (
+        f"INSERT INTO orig_places ({', '.join(columns)}) "
+        f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
+    )
+    assert [execution[1] for execution in cursor.executions[11:13]] == [
+        {
+            "place_id": 1,
+            "tm_id": 46,
+            "full_place_name": "Philadelphia? (Arsinoites)",
+            "place_name": "Philadelphia",
+            "tm_place_id": 1760,
+            "pleiades_place_id": 737008,
+            "place_type": "located",
+            "granularity": "settlement",
+        },
+        {
+            "place_id": 2,
+            "tm_id": 46,
+            "full_place_name": "Philadelphia? (Arsinoites)",
+            "place_name": "Ägypten",
+            "tm_place_id": None,
+            "pleiades_place_id": None,
+            "place_type": "located",
+            "granularity": "region",
+        },
+    ]
 
 
 def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatch):
@@ -332,8 +375,8 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
 
     ingest_metadata(idp_data, progressbar=False)
 
-    first_row = cursor.executions[4][1]
-    second_row = cursor.executions[5][1]
+    first_row = cursor.executions[5][1]
+    second_row = cursor.executions[6][1]
     assert first_row["tm_id"] == second_row["tm_id"] == 13
     assert first_row["source_path"] == "HGV_meta_EpiDoc/HGV1/13a.xml"
     assert first_row["title"] == "Sale of Land"
@@ -381,7 +424,29 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
     orig_date_rows = [
         (1, 13, "9 Jan. 582", "low", None, 582, 1, 9, 582, 1, 9, False),
     ]
-    cursor = DumpCursor([papyri_rows, keyword_rows, orig_date_rows])
+    orig_place_rows = [
+        (
+            1,
+            13,
+            "Found: Pathyris (Pathyrites, Egypt)",
+            "Pathyris",
+            1628,
+            756888,
+            "found",
+            "settlement",
+        ),
+        (
+            2,
+            13,
+            "Found: Pathyris (Pathyrites, Egypt)",
+            "Egypt",
+            None,
+            None,
+            "found",
+            "region",
+        ),
+    ]
+    cursor = DumpCursor([papyri_rows, keyword_rows, orig_date_rows, orig_place_rows])
     connection = RecordingConnection(cursor)
     connect_calls = []
 
@@ -403,7 +468,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             {"application_name": "scrapyrus-test"},
         )
     ]
-    assert len(cursor.executions) == 3
+    assert len(cursor.executions) == 4
     with (tmp_path / "metadata-csv" / "papyri.csv").open(
         encoding="utf-8", newline=""
     ) as csv_file:
@@ -472,6 +537,34 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "1",
             "9",
             "False",
+        ],
+    ]
+    with (tmp_path / "metadata-csv" / "orig_places.csv").open(
+        encoding="utf-8", newline=""
+    ) as csv_file:
+        dumped_orig_places = list(csv.reader(csv_file))
+
+    assert dumped_orig_places == [
+        list(OrigPlaceMetadataTable().columns),
+        [
+            "1",
+            "13",
+            "Found: Pathyris (Pathyrites, Egypt)",
+            "Pathyris",
+            "1628",
+            "756888",
+            "found",
+            "settlement",
+        ],
+        [
+            "2",
+            "13",
+            "Found: Pathyris (Pathyrites, Egypt)",
+            "Egypt",
+            "",
+            "",
+            "found",
+            "region",
         ],
     ]
 
