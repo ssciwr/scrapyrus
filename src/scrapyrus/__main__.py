@@ -8,6 +8,11 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.transcriptions.embeddings import (
+    EmbeddingStore,
+    delete_embeddings,
+    update_embeddings,
+)
 
 
 idp_data = click.option(
@@ -23,6 +28,78 @@ database_url = click.option(
     required=True,
     help="PostgreSQL connection URL. Defaults to SCRAPYRUS_DATABASE_URL.",
 )
+
+
+def _apply_options(function, options):
+    for option in reversed(options):
+        function = option(function)
+    return function
+
+
+def embedding_client_options(function):
+    return _apply_options(
+        function,
+        [
+            click.option(
+                "--inference-server-url",
+                envvar="SCRAPYRUS_EMBEDDINGS_URL",
+                required=True,
+                help="OpenAI-compatible inference server URL.",
+            ),
+            click.option(
+                "--api-key",
+                envvar="SCRAPYRUS_EMBEDDINGS_API_KEY",
+                required=True,
+                help="API key for the OpenAI-compatible inference server.",
+            ),
+        ],
+    )
+
+
+def embedding_configuration_options(function):
+    return _apply_options(
+        function,
+        [
+            click.option(
+                "--model-name",
+                "--modelname",
+                envvar="SCRAPYRUS_EMBEDDINGS_MODEL",
+                required=True,
+                help="Embedding model name.",
+            ),
+            click.option(
+                "--translation/--transcription",
+                default=False,
+                show_default=True,
+                help="Select translation embeddings instead of transcription embeddings.",
+            ),
+            click.option(
+                "--abbrev",
+                is_flag=True,
+                help="Include expansion text when selecting transcription embeddings.",
+            ),
+            click.option(
+                "--break-on-gap",
+                is_flag=True,
+                help="Insert line breaks at gaps when selecting transcription embeddings.",
+            ),
+            click.option(
+                "--lost",
+                is_flag=True,
+                help="Include supplied lost text when selecting transcription embeddings.",
+            ),
+            click.option(
+                "--unclear",
+                is_flag=True,
+                help="Include unclear readings when selecting transcription embeddings.",
+            ),
+            click.option(
+                "--regularize",
+                is_flag=True,
+                help="Use regularized readings when selecting transcription embeddings.",
+            ),
+        ],
+    )
 
 
 @click.group()
@@ -152,6 +229,107 @@ def dump(database_url: str, output_dir: Path) -> None:
     """Dump metadata database tables as CSV files."""
 
     dump_metadata_tables(output_dir, database_url)
+
+
+@main.group("embeddings")
+def embeddings() -> None:
+    """Work with transcription and translation embeddings."""
+
+
+@embeddings.command("ingest")
+@database_url
+@embedding_client_options
+@embedding_configuration_options
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while reading idp.data records.",
+)
+@click.pass_context
+def ingest_embeddings(
+    context: click.Context,
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    translation: bool,
+    abbrev: bool,
+    break_on_gap: bool,
+    lost: bool,
+    unclear: bool,
+    regularize: bool,
+    progress: bool,
+) -> None:
+    """Ingest transcription or translation embeddings into PostgreSQL."""
+
+    store = EmbeddingStore(inference_server_url, model_name, api_key)
+    store.setup_store(
+        context.obj["idp_data"],
+        database_url,
+        progress,
+        abbrev=abbrev,
+        break_on_gap=break_on_gap,
+        lost=lost,
+        unclear=unclear,
+        regularize=regularize,
+        translation=translation,
+    )
+
+
+@embeddings.command("delete")
+@database_url
+@embedding_configuration_options
+def delete_embedding_configuration(
+    database_url: str,
+    model_name: str,
+    translation: bool,
+    abbrev: bool,
+    break_on_gap: bool,
+    lost: bool,
+    unclear: bool,
+    regularize: bool,
+) -> None:
+    """Delete one selected embedding configuration from PostgreSQL."""
+
+    delete_embeddings(
+        database_url,
+        modelname=model_name,
+        abbrev=abbrev,
+        break_on_gap=break_on_gap,
+        lost=lost,
+        unclear=unclear,
+        regularize=regularize,
+        translation=translation,
+    )
+
+
+@embeddings.command("update")
+@database_url
+@embedding_client_options
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while reading idp.data records.",
+)
+@click.pass_context
+def update_embedding_configurations(
+    context: click.Context,
+    database_url: str,
+    inference_server_url: str,
+    api_key: str,
+    progress: bool,
+) -> None:
+    """Compute missing or stale embeddings for all stored configurations."""
+
+    update_embeddings(
+        context.obj["idp_data"],
+        database_url,
+        progress,
+        inference_server_url=inference_server_url,
+        api_key=api_key,
+    )
 
 
 if __name__ == "__main__":
