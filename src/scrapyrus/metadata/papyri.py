@@ -44,9 +44,9 @@ PAPYRI_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS papyri (
     title text,
     material text,
     current_location text
-);
+);"""
 
-CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);"""
+PAPYRI_INDEX_SQL = "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);"
 
 PAPYRI_DESCRIPTION = """The papyri table contains one row for each idp.data metadata XML record.
 It is the central table for papyrus records, with source provenance, the
@@ -171,6 +171,9 @@ class PapyrusMetadataTable(MetadataTable):
     name = "papyri"
     order_by = ("source_path",)
     schema_sql = PAPYRI_SCHEMA_SQL
+
+    def index_sql(self) -> str:
+        return PAPYRI_INDEX_SQL
 
     def description(self) -> str:
         return PAPYRI_DESCRIPTION

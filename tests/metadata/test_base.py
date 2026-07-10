@@ -53,6 +53,10 @@ def test_base_metadata_table_requires_llm_catalog_methods():
         table.semantic_catalog()
 
 
+def test_base_metadata_table_defaults_to_no_index_sql():
+    assert MetadataTable().index_sql() == ""
+
+
 def test_table_summary_concatenates_registered_table_descriptions(monkeypatch):
     class FirstTable(MetadataTable, register=False):
         def description(self) -> str:

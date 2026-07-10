@@ -265,7 +265,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert cursor.executions[6][1] is None
     schema_sql = _normalize_sql(cursor.executions[6][0])
     assert "source_path text NOT NULL PRIMARY KEY" in schema_sql
-    assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id)" in schema_sql
+    assert "CREATE INDEX" not in schema_sql
     assert "CREATE TABLE IF NOT EXISTS principal_editions" in schema_sql
     assert "principal_edition_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
@@ -413,6 +413,10 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "author": "Homerus",
         "perseus_author_urn": "urn:cts:greekLit:tlg0012",
     }
+    assert _normalize_sql(cursor.executions[17][0]) == (
+        "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);"
+    )
+    assert cursor.executions[17][1] is None
 
 
 def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatch):

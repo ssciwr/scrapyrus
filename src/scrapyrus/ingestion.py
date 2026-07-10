@@ -25,6 +25,16 @@ def _metadata_schema_sql(tables: tuple[MetadataTable, ...]) -> str:
     return "\n".join(schemas)
 
 
+def _metadata_index_sql(tables: tuple[MetadataTable, ...]) -> str:
+    indexes = []
+    for table in tables:
+        index_sql = table.index_sql()
+        if index_sql and index_sql not in indexes:
+            indexes.append(index_sql)
+
+    return "\n".join(indexes)
+
+
 def _insert_metadata_row(
     cursor: Any, table: MetadataTable, row: dict[str, Any]
 ) -> None:
@@ -76,6 +86,9 @@ def ingest_metadata(
                             raise
                         for row in rows:
                             _insert_metadata_row(cursor, table, row)
+            index_sql = _metadata_index_sql(tables)
+            if index_sql:
+                cursor.execute(index_sql)
 
 
 def dump_metadata_tables(

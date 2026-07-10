@@ -84,6 +84,11 @@ class MetadataTable:
 
         raise NotImplementedError
 
+    def index_sql(self) -> str:
+        """Return SQL for indexes that should be created after ingestion."""
+
+        return ""
+
     def build_rows(
         self, factory: Any, idp_data: Path, metadata: Path
     ) -> tuple[dict[str, Any], ...] | list[dict[str, Any]]:
