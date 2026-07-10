@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
-import json
+from dataclasses import dataclass
 import math
 from pathlib import Path
-import re
 from typing import Any
 
 import psycopg
@@ -17,52 +15,23 @@ from scrapyrus.transcriptions.core import (
 )
 
 
-_MAX_POSTGRES_IDENTIFIER_LENGTH = 63
-_IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+@dataclass(frozen=True)
+class EmbeddingConfiguration:
+    """Settings that define a reusable embedding collection."""
 
+    modelname: str
+    abbrev: bool = False
+    break_on_gap: bool = False
+    lost: bool = False
+    unclear: bool = False
+    regularize: bool = False
+    translation: bool = False
 
-def embedding_table_name(
-    modelname: str,
-    *,
-    abbrev: bool = False,
-    break_on_gap: bool = False,
-    lost: bool = False,
-    unclear: bool = False,
-    regularize: bool = False,
-    translation: bool = False,
-) -> str:
-    """Return the deterministic pgvector table name for embedding settings."""
-
-    payload = {
-        "abbrev": abbrev,
-        "break_on_gap": break_on_gap,
-        "lost": lost,
-        "modelname": modelname,
-        "regularize": regularize,
-        "translation": translation,
-        "unclear": unclear,
-    }
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:12]
-    model_slug = _identifier_fragment(modelname) or "model"
-    mode = f"t{int(translation)}"
-    flag_slug = (
-        f"a{int(abbrev)}"
-        f"_g{int(break_on_gap)}"
-        f"_l{int(lost)}"
-        f"_u{int(unclear)}"
-        f"_r{int(regularize)}"
-    )
-    suffix = f"_{mode}_{flag_slug}_{digest}"
-    prefix = "documents_"
-    max_model_length = _MAX_POSTGRES_IDENTIFIER_LENGTH - len(prefix) - len(suffix)
-    model_fragment = model_slug[:max_model_length].rstrip("_") or "model"
-    table_name = f"{prefix}{model_fragment}{suffix}"
-
-    if not _IDENTIFIER_RE.fullmatch(table_name):
-        raise ValueError(f"Could not mangle embedding table name: {table_name!r}")
-    return table_name
+    @property
+    def document_kind(self) -> str:
+        if self.translation:
+            return "translation"
+        return "transcription"
 
 
 class EmbeddingStore:
@@ -98,11 +67,11 @@ class EmbeddingStore:
         unclear: bool = False,
         regularize: bool = False,
         translation: bool = False,
-    ) -> str:
-        """Create and populate the pgvector table for these embedding settings."""
+    ) -> int | None:
+        """Create and populate the pgvector store for these embedding settings."""
 
         idp_data = Path(idp_data)
-        table_name = embedding_table_name(
+        configuration = EmbeddingConfiguration(
             self.modelname,
             abbrev=abbrev,
             break_on_gap=break_on_gap,
@@ -111,13 +80,13 @@ class EmbeddingStore:
             regularize=regularize,
             translation=translation,
         )
-        document_kind = "translation" if translation else "transcription"
-        store_created = False
+        config_id = None
+        document_count = 0
+        embedding_dimensions = None
 
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
-                cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+                _ensure_embedding_schema(cursor)
 
                 for (
                     tm_id,
@@ -142,27 +111,39 @@ class EmbeddingStore:
                         continue
 
                     embedding = self._embed(document_text)
-                    if not store_created:
-                        _create_documents_table(cursor, table_name, len(embedding))
-                        store_created = True
+                    if config_id is None:
+                        embedding_dimensions = len(embedding)
+                        config_id = _upsert_embedding_configuration(
+                            cursor,
+                            configuration,
+                            embedding_dimensions,
+                        )
+                        _delete_configuration_embeddings(cursor, config_id)
 
                     _insert_document(
                         cursor,
-                        table_name,
+                        config_id,
                         {
                             "tm_id": tm_id,
                             "metadata_path": _relative_path(idp_data, metadata),
                             "document_path": _relative_path(idp_data, document),
-                            "document_kind": document_kind,
                             "document_text": document_text,
                             "embedding": _vector_literal(embedding),
                         },
                     )
+                    document_count += 1
 
-                if store_created:
-                    _create_embedding_index(cursor, table_name)
+                if config_id is not None:
+                    if embedding_dimensions is None:
+                        raise RuntimeError("Embedding dimensions were not recorded")
+                    _recreate_embedding_index(cursor, config_id, embedding_dimensions)
+                    _update_configuration_document_count(
+                        cursor,
+                        config_id,
+                        document_count,
+                    )
 
-        return table_name
+        return config_id
 
     def _document_text(
         self,
@@ -211,9 +192,59 @@ class EmbeddingStore:
         return vector
 
 
-def _identifier_fragment(value: str) -> str:
-    fragment = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-    return re.sub(r"_+", "_", fragment)
+def retrieve_embedding(
+    conninfo: str = "",
+    /,
+    *,
+    modelname: str,
+    document_path: str | Path,
+    abbrev: bool = False,
+    break_on_gap: bool = False,
+    lost: bool = False,
+    unclear: bool = False,
+    regularize: bool = False,
+    translation: bool = False,
+) -> tuple[float, ...] | None:
+    """Return a stored embedding for a document and embedding configuration."""
+
+    configuration = EmbeddingConfiguration(
+        modelname,
+        abbrev=abbrev,
+        break_on_gap=break_on_gap,
+        lost=lost,
+        unclear=unclear,
+        regularize=regularize,
+        translation=translation,
+    )
+    params = {
+        **_configuration_params(configuration),
+        "document_path": _document_path(document_path),
+    }
+
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+SELECT document_embeddings.embedding::text
+FROM embedding_configurations
+JOIN document_embeddings
+    ON document_embeddings.config_id = embedding_configurations.id
+WHERE embedding_configurations.model_name = %(model_name)s
+    AND embedding_configurations.document_kind = %(document_kind)s
+    AND embedding_configurations.abbrev = %(abbrev)s
+    AND embedding_configurations.break_on_gap = %(break_on_gap)s
+    AND embedding_configurations.lost = %(lost)s
+    AND embedding_configurations.unclear = %(unclear)s
+    AND embedding_configurations.regularize = %(regularize)s
+    AND document_embeddings.document_path = %(document_path)s
+""",
+                params,
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+    return _parse_vector(_first_column(row))
 
 
 def _embeddings_url(inference_server_url: str) -> str:
@@ -223,75 +254,234 @@ def _embeddings_url(inference_server_url: str) -> str:
     return f"{base_url}/v1/embeddings"
 
 
-def _create_documents_table(
-    cursor: Any,
-    table_name: str,
-    embedding_dimensions: int,
-) -> None:
+def _ensure_embedding_schema(cursor: Any) -> None:
+    cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    _create_embedding_configurations_table(cursor)
+    _create_document_embeddings_table(cursor)
+
+
+def _create_embedding_configurations_table(cursor: Any) -> None:
     cursor.execute(
-        f"""
-CREATE TABLE {table_name} (
-    document_path text NOT NULL PRIMARY KEY,
-    tm_id text NOT NULL,
-    metadata_path text NOT NULL,
-    document_kind text NOT NULL,
-    document_text text NOT NULL,
-    embedding vector({embedding_dimensions}) NOT NULL
+        """
+CREATE TABLE IF NOT EXISTS embedding_configurations (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    model_name text NOT NULL,
+    document_kind text NOT NULL CHECK (
+        document_kind IN ('transcription', 'translation')
+    ),
+    abbrev boolean NOT NULL,
+    break_on_gap boolean NOT NULL,
+    lost boolean NOT NULL,
+    unclear boolean NOT NULL,
+    regularize boolean NOT NULL,
+    embedding_dimensions integer NOT NULL CHECK (embedding_dimensions > 0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    refreshed_at timestamptz NOT NULL DEFAULT now(),
+    document_count integer NOT NULL DEFAULT 0 CHECK (document_count >= 0),
+    UNIQUE (
+        model_name,
+        document_kind,
+        abbrev,
+        break_on_gap,
+        lost,
+        unclear,
+        regularize
+    )
 )
 """
     )
 
 
-def _insert_document(cursor: Any, table_name: str, row: dict[str, str]) -> None:
+def _create_document_embeddings_table(cursor: Any) -> None:
     cursor.execute(
-        f"""
-INSERT INTO {table_name} (
+        """
+CREATE TABLE IF NOT EXISTS document_embeddings (
+    config_id bigint NOT NULL REFERENCES embedding_configurations(id) ON DELETE CASCADE,
+    document_path text NOT NULL,
+    tm_id text NOT NULL,
+    metadata_path text NOT NULL,
+    document_text text NOT NULL,
+    embedding vector NOT NULL,
+    PRIMARY KEY (config_id, document_path)
+)
+"""
+    )
+
+
+def _upsert_embedding_configuration(
+    cursor: Any,
+    configuration: EmbeddingConfiguration,
+    embedding_dimensions: int,
+) -> int:
+    cursor.execute(
+        """
+INSERT INTO embedding_configurations (
+    model_name,
+    document_kind,
+    abbrev,
+    break_on_gap,
+    lost,
+    unclear,
+    regularize,
+    embedding_dimensions,
+    refreshed_at,
+    document_count
+)
+VALUES (
+    %(model_name)s,
+    %(document_kind)s,
+    %(abbrev)s,
+    %(break_on_gap)s,
+    %(lost)s,
+    %(unclear)s,
+    %(regularize)s,
+    %(embedding_dimensions)s,
+    now(),
+    0
+)
+ON CONFLICT (
+    model_name,
+    document_kind,
+    abbrev,
+    break_on_gap,
+    lost,
+    unclear,
+    regularize
+)
+DO UPDATE SET
+    embedding_dimensions = EXCLUDED.embedding_dimensions,
+    refreshed_at = now(),
+    document_count = 0
+RETURNING id
+""",
+        {
+            **_configuration_params(configuration),
+            "embedding_dimensions": embedding_dimensions,
+        },
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("Embedding configuration upsert did not return an id")
+    return int(_first_column(row))
+
+
+def _delete_configuration_embeddings(cursor: Any, config_id: int) -> None:
+    cursor.execute(
+        """
+DELETE FROM document_embeddings
+WHERE config_id = %(config_id)s
+""",
+        {"config_id": config_id},
+    )
+
+
+def _insert_document(cursor: Any, config_id: int, row: dict[str, str]) -> None:
+    cursor.execute(
+        """
+INSERT INTO document_embeddings (
+    config_id,
     document_path,
     tm_id,
     metadata_path,
-    document_kind,
     document_text,
     embedding
 )
 VALUES (
+    %(config_id)s,
     %(document_path)s,
     %(tm_id)s,
     %(metadata_path)s,
-    %(document_kind)s,
     %(document_text)s,
     %(embedding)s::vector
 )
 """,
-        row,
+        {"config_id": config_id, **row},
     )
 
 
-def _create_embedding_index(cursor: Any, table_name: str) -> None:
+def _recreate_embedding_index(
+    cursor: Any,
+    config_id: int,
+    embedding_dimensions: int,
+) -> None:
+    index_name = _embedding_index_name(config_id)
     cursor.execute(
         f"""
-CREATE INDEX IF NOT EXISTS {_embedding_index_name(table_name)}
-ON {table_name}
-USING hnsw (embedding vector_cosine_ops)
+DROP INDEX IF EXISTS {index_name}
+"""
+    )
+    cursor.execute(
+        f"""
+CREATE INDEX {index_name}
+ON document_embeddings
+USING hnsw ((embedding::vector({embedding_dimensions})) vector_cosine_ops)
+WHERE config_id = {config_id}
 """
     )
 
 
-def _embedding_index_name(table_name: str) -> str:
-    suffix = "_embedding_hnsw_idx"
-    index_name = f"{table_name}{suffix}"
-    if len(index_name) <= _MAX_POSTGRES_IDENTIFIER_LENGTH:
-        return index_name
-
-    digest = hashlib.sha256(table_name.encode("utf-8")).hexdigest()[:8]
-    max_table_prefix_length = (
-        _MAX_POSTGRES_IDENTIFIER_LENGTH - len(suffix) - len(digest) - 1
+def _update_configuration_document_count(
+    cursor: Any,
+    config_id: int,
+    document_count: int,
+) -> None:
+    cursor.execute(
+        """
+UPDATE embedding_configurations
+SET document_count = %(document_count)s
+WHERE id = %(config_id)s
+""",
+        {"config_id": config_id, "document_count": document_count},
     )
-    return f"{table_name[:max_table_prefix_length]}_{digest}{suffix}"
+
+
+def _embedding_index_name(config_id: int) -> str:
+    if config_id < 1:
+        raise ValueError(f"Invalid embedding configuration id: {config_id!r}")
+    return f"doc_embed_cfg_{config_id}_hnsw_idx"
+
+
+def _configuration_params(configuration: EmbeddingConfiguration) -> dict[str, Any]:
+    return {
+        "model_name": configuration.modelname,
+        "document_kind": configuration.document_kind,
+        "abbrev": configuration.abbrev,
+        "break_on_gap": configuration.break_on_gap,
+        "lost": configuration.lost,
+        "unclear": configuration.unclear,
+        "regularize": configuration.regularize,
+    }
 
 
 def _relative_path(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _document_path(path: str | Path) -> str:
+    return Path(path).as_posix()
+
+
 def _vector_literal(embedding: tuple[float, ...]) -> str:
     return "[" + ",".join(format(value, ".17g") for value in embedding) + "]"
+
+
+def _parse_vector(value: Any) -> tuple[float, ...]:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.startswith("[") or not text.endswith("]"):
+            raise ValueError(f"Could not parse vector value: {value!r}")
+        values = text[1:-1].strip()
+        if values == "":
+            return ()
+        return tuple(float(item) for item in values.split(","))
+
+    if isinstance(value, (list, tuple)):
+        return tuple(float(item) for item in value)
+
+    raise TypeError(f"Unsupported vector value: {value!r}")
+
+
+def _first_column(row: Any) -> Any:
+    if isinstance(row, dict):
+        return next(iter(row.values()))
+    return row[0]

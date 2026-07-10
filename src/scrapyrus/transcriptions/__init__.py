@@ -4,13 +4,18 @@ from scrapyrus.transcriptions.core import (
     translation_epidoc_xml_to_text,
     transcription_xml_snippet,
 )
-from scrapyrus.transcriptions.embeddings import EmbeddingStore, embedding_table_name
+from scrapyrus.transcriptions.embeddings import (
+    EmbeddingConfiguration,
+    EmbeddingStore,
+    retrieve_embedding,
+)
 
 __all__ = [
     "available_translation_languages",
+    "EmbeddingConfiguration",
     "EmbeddingStore",
     "epidoc_xml_to_text",
-    "embedding_table_name",
+    "retrieve_embedding",
     "translation_epidoc_xml_to_text",
     "transcription_xml_snippet",
 ]
