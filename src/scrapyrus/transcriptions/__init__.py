@@ -9,6 +9,7 @@ from scrapyrus.transcriptions.embeddings import (
     EmbeddingStore,
     delete_embeddings,
     retrieve_embedding,
+    update_embeddings,
 )
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "delete_embeddings",
     "epidoc_xml_to_text",
     "retrieve_embedding",
+    "update_embeddings",
     "translation_epidoc_xml_to_text",
     "transcription_xml_snippet",
 ]

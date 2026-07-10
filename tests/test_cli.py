@@ -450,3 +450,99 @@ def test_embeddings_delete_subcommand_uses_envvars(monkeypatch):
             },
         )
     ]
+
+
+def test_embeddings_update_subcommand_updates_all_embedding_configurations(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+
+    def fake_update_embeddings(
+        idp_data,
+        database_url,
+        progress,
+        *,
+        inference_server_url,
+        api_key,
+    ):
+        calls.append((idp_data, database_url, progress, inference_server_url, api_key))
+
+    monkeypatch.setattr(
+        "scrapyrus.__main__.update_embeddings",
+        fake_update_embeddings,
+    )
+    idp_data = tmp_path / "idp.data"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        (
+            "--idp-data",
+            str(idp_data),
+            "embeddings",
+            "update",
+            "--database-url",
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "--inference-server-url",
+            "https://inference.example/v1",
+            "--api-key",
+            "api-secret",
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            idp_data,
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            False,
+            "https://inference.example/v1",
+            "api-secret",
+        )
+    ]
+    assert result.output == ""
+
+
+def test_embeddings_update_subcommand_uses_envvars(monkeypatch):
+    calls = []
+
+    def fake_update_embeddings(
+        idp_data,
+        database_url,
+        progress,
+        *,
+        inference_server_url,
+        api_key,
+    ):
+        calls.append((idp_data, database_url, progress, inference_server_url, api_key))
+
+    monkeypatch.setattr(
+        "scrapyrus.__main__.update_embeddings",
+        fake_update_embeddings,
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ("embeddings", "update"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": (
+                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
+            ),
+            "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example",
+            "SCRAPYRUS_EMBEDDINGS_API_KEY": "api-secret",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            Path("idp.data"),
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            True,
+            "https://inference.example",
+            "api-secret",
+        )
+    ]

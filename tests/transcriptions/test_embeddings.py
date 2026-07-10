@@ -1,4 +1,5 @@
 from inspect import signature
+import hashlib
 
 import psycopg
 
@@ -8,13 +9,15 @@ from scrapyrus.transcriptions.embeddings import (
     EmbeddingStore,
     delete_embeddings,
     retrieve_embedding,
+    update_embeddings,
 )
 
 
 class RecordingCursor:
-    def __init__(self, results=()):
+    def __init__(self, results=(), all_results=()):
         self.executions = []
         self._results = list(results)
+        self._all_results = list(all_results)
 
     def __enter__(self):
         return self
@@ -29,6 +32,11 @@ class RecordingCursor:
         if not self._results:
             return None
         return self._results.pop(0)
+
+    def fetchall(self):
+        if not self._all_results:
+            return []
+        return self._all_results.pop(0)
 
 
 class RecordingConnection:
@@ -184,6 +192,7 @@ def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch)
     assert "CREATE TABLE IF NOT EXISTS document_embeddings" in _normalize_sql(
         cursor.executions[2][0]
     )
+    assert "input_hash text NOT NULL" in _normalize_sql(cursor.executions[2][0])
 
     _, config_params = _execution_matching(
         cursor,
@@ -208,13 +217,16 @@ def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch)
     insert_sql, insert_params = _execution_matching(
         cursor, "INSERT INTO document_embeddings"
     )
-    assert "ON CONFLICT (config_id, document_path)" in _normalize_sql(insert_sql)
+    normalized_insert_sql = _normalize_sql(insert_sql)
+    assert "ON CONFLICT (config_id, document_path)" in normalized_insert_sql
+    assert "input_hash = EXCLUDED.input_hash" in normalized_insert_sql
     assert insert_params == {
         "config_id": 42,
         "tm_id": "46",
         "metadata_path": "HGV_meta_EpiDoc/HGV1/46.xml",
         "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
         "document_text": "Alpha beta.",
+        "input_hash": hashlib.sha256(b"Alpha beta.").hexdigest(),
         "embedding": "[0.25,0.5,0.75]",
     }
 
@@ -293,6 +305,147 @@ def test_embedding_store_ingests_translation_embeddings(tmp_path, monkeypatch):
     _, insert_params = _execution_matching(cursor, "INSERT INTO document_embeddings")
     assert insert_params["document_path"] == "HGV_trans_EpiDoc/53.xml"
     assert fake_client.posts[0][0] == "https://inference.example/v1/embeddings"
+
+
+def test_update_embeddings_computes_only_stale_or_missing_embeddings(
+    tmp_path,
+    monkeypatch,
+):
+    idp_data = tmp_path / "idp.data"
+    metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "46.xml"
+    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.46.xml"
+    translation = idp_data / "HGV_trans_EpiDoc" / "46.xml"
+    for path in (metadata, transcription, translation):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("<TEI />", encoding="utf-8")
+
+    translated_hash = hashlib.sha256(b"Translated text.").hexdigest()
+    cursor = RecordingCursor(
+        results=[("old-transcription-hash",), (translated_hash,)],
+        all_results=[
+            [
+                (
+                    42,
+                    "embed/model",
+                    "transcription",
+                    True,
+                    False,
+                    True,
+                    False,
+                    False,
+                    3,
+                ),
+                (7, "embed/model", "translation", False, False, False, False, False, 2),
+            ]
+        ],
+    )
+    connection = RecordingConnection(cursor)
+
+    def connect(conninfo):
+        assert conninfo == "postgresql://metadata.example/scrapyrus"
+        return connection
+
+    def iterate(idp_data_arg, *, progressbar):
+        assert idp_data_arg == idp_data
+        assert progressbar is False
+        yield "46", metadata, transcription, translation
+
+    transcription_calls = []
+    translation_calls = []
+
+    def transcription_converter(path, **kwargs):
+        transcription_calls.append((path, kwargs))
+        return "Alpha beta."
+
+    def translation_converter(path):
+        translation_calls.append(path)
+        return "Translated text."
+
+    fake_client = FakeEmbeddingClient([[0.25, 0.5, 0.75]])
+    monkeypatch.setattr(psycopg, "connect", connect)
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.iterate_idpdata_triples",
+        iterate,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
+        transcription_converter,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.translation_epidoc_xml_to_text",
+        translation_converter,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.requests.Session",
+        lambda: fake_client,
+    )
+
+    updated_count = update_embeddings(
+        idp_data,
+        "postgresql://metadata.example/scrapyrus",
+        False,
+        inference_server_url="https://inference.example/v1",
+        api_key="secret",
+    )
+
+    assert updated_count == 1
+    assert transcription_calls == [
+        (
+            transcription,
+            {
+                "abbrev": True,
+                "break_on_gap": False,
+                "lost": True,
+                "unclear": False,
+                "regularize": False,
+            },
+        )
+    ]
+    assert translation_calls == [translation]
+    assert fake_client.posts == [
+        (
+            "https://inference.example/v1/embeddings",
+            {"model": "embed/model", "input": "Alpha beta."},
+            60,
+        )
+    ]
+
+    hash_selects = [
+        params
+        for query, params in cursor.executions
+        if "SELECT input_hash" in _normalize_sql(query)
+    ]
+    assert hash_selects == [
+        {
+            "config_id": 42,
+            "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
+        },
+        {"config_id": 7, "document_path": "HGV_trans_EpiDoc/46.xml"},
+    ]
+
+    insert_sql, insert_params = _execution_matching(
+        cursor, "INSERT INTO document_embeddings"
+    )
+    assert insert_params == {
+        "config_id": 42,
+        "tm_id": "46",
+        "metadata_path": "HGV_meta_EpiDoc/HGV1/46.xml",
+        "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
+        "document_text": "Alpha beta.",
+        "input_hash": hashlib.sha256(b"Alpha beta.").hexdigest(),
+        "embedding": "[0.25,0.5,0.75]",
+    }
+    assert "input_hash = EXCLUDED.input_hash" in _normalize_sql(insert_sql)
+
+    create_index_sql, _ = _execution_matching(
+        cursor, "CREATE INDEX IF NOT EXISTS doc_embed_cfg_42_hnsw_idx"
+    )
+    assert "WHERE config_id = 42" in _normalize_sql(create_index_sql)
+    _, update_params = _execution_matching(cursor, "UPDATE embedding_configurations")
+    assert update_params == {"config_id": 42}
+    assert all(
+        "DELETE FROM" not in _normalize_sql(query) for query, _ in cursor.executions
+    )
 
 
 def test_retrieve_embedding_selects_configuration_and_document(monkeypatch):

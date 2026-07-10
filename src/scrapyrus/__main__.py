@@ -8,7 +8,11 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
-from scrapyrus.transcriptions.embeddings import EmbeddingStore, delete_embeddings
+from scrapyrus.transcriptions.embeddings import (
+    EmbeddingStore,
+    delete_embeddings,
+    update_embeddings,
+)
 
 
 idp_data = click.option(
@@ -297,6 +301,34 @@ def delete_embedding_configuration(
         unclear=unclear,
         regularize=regularize,
         translation=translation,
+    )
+
+
+@embeddings.command("update")
+@database_url
+@embedding_client_options
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while reading idp.data records.",
+)
+@click.pass_context
+def update_embedding_configurations(
+    context: click.Context,
+    database_url: str,
+    inference_server_url: str,
+    api_key: str,
+    progress: bool,
+) -> None:
+    """Compute missing or stale embeddings for all stored configurations."""
+
+    update_embeddings(
+        context.obj["idp_data"],
+        database_url,
+        progress,
+        inference_server_url=inference_server_url,
+        api_key=api_key,
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import math
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,15 @@ class EmbeddingConfiguration:
         if self.translation:
             return "translation"
         return "transcription"
+
+
+@dataclass(frozen=True)
+class StoredEmbeddingConfiguration:
+    """A persisted embedding configuration selected from PostgreSQL."""
+
+    id: int
+    configuration: EmbeddingConfiguration
+    embedding_dimensions: int
 
 
 class EmbeddingStore:
@@ -109,6 +119,7 @@ class EmbeddingStore:
                     if document_text.strip() == "":
                         continue
 
+                    input_hash = _input_hash(document_text)
                     embedding = self._embed(document_text)
                     if config_id is None:
                         embedding_dimensions = len(embedding)
@@ -126,6 +137,7 @@ class EmbeddingStore:
                             "metadata_path": _relative_path(idp_data, metadata),
                             "document_path": _relative_path(idp_data, document),
                             "document_text": document_text,
+                            "input_hash": input_hash,
                             "embedding": _vector_literal(embedding),
                         },
                     )
@@ -183,6 +195,105 @@ class EmbeddingStore:
         if not all(math.isfinite(value) for value in vector):
             raise ValueError("Embedding response contained non-finite vector values")
         return vector
+
+
+def update_embeddings(
+    idp_data: str | Path,
+    conninfo: str = "",
+    progressbar: bool = True,
+    /,
+    *,
+    inference_server_url: str,
+    api_key: str,
+) -> int:
+    """Compute missing or stale embeddings for every stored configuration."""
+
+    idp_data = Path(idp_data)
+    stores: dict[str, EmbeddingStore] = {}
+    updated_config_ids: set[int] = set()
+    updated_count = 0
+
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            _ensure_embedding_schema(cursor)
+            stored_configurations = _list_embedding_configurations(cursor)
+            if not stored_configurations:
+                return 0
+
+            for (
+                tm_id,
+                metadata,
+                transcription,
+                translation_path,
+            ) in iterate_idpdata_triples(idp_data, progressbar=progressbar):
+                for stored in stored_configurations:
+                    configuration = stored.configuration
+                    document = (
+                        translation_path if configuration.translation else transcription
+                    )
+                    if document is None:
+                        continue
+
+                    document_text = _configuration_document_text(
+                        document,
+                        configuration,
+                    )
+                    if document_text.strip() == "":
+                        continue
+
+                    input_hash = _input_hash(document_text)
+                    document_path = _relative_path(idp_data, document)
+                    stored_hash = _select_document_input_hash(
+                        cursor,
+                        stored.id,
+                        document_path,
+                    )
+                    if stored_hash == input_hash:
+                        continue
+
+                    store = stores.get(configuration.modelname)
+                    if store is None:
+                        store = EmbeddingStore(
+                            inference_server_url,
+                            configuration.modelname,
+                            api_key,
+                        )
+                        stores[configuration.modelname] = store
+
+                    embedding = store._embed(document_text)
+                    if len(embedding) != stored.embedding_dimensions:
+                        raise ValueError(
+                            f"Embedding model {configuration.modelname!r} returned "
+                            f"{len(embedding)} dimensions for configuration "
+                            f"{stored.id}; expected {stored.embedding_dimensions}"
+                        )
+
+                    _upsert_document(
+                        cursor,
+                        stored.id,
+                        {
+                            "tm_id": tm_id,
+                            "metadata_path": _relative_path(idp_data, metadata),
+                            "document_path": document_path,
+                            "document_text": document_text,
+                            "input_hash": input_hash,
+                            "embedding": _vector_literal(embedding),
+                        },
+                    )
+                    updated_config_ids.add(stored.id)
+                    updated_count += 1
+
+            for stored in stored_configurations:
+                if stored.id in updated_config_ids:
+                    _create_embedding_index(
+                        cursor,
+                        stored.id,
+                        stored.embedding_dimensions,
+                        if_not_exists=True,
+                    )
+                    _refresh_configuration_document_count(cursor, stored.id)
+
+    return updated_count
 
 
 def delete_embeddings(
@@ -329,6 +440,7 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
     tm_id text NOT NULL,
     metadata_path text NOT NULL,
     document_text text NOT NULL,
+    input_hash text NOT NULL,
     embedding vector NOT NULL,
     PRIMARY KEY (config_id, document_path)
 )
@@ -416,6 +528,49 @@ WHERE model_name = %(model_name)s
     return int(_first_column(row))
 
 
+def _list_embedding_configurations(
+    cursor: Any,
+) -> tuple[StoredEmbeddingConfiguration, ...]:
+    cursor.execute(
+        """
+SELECT
+    id,
+    model_name,
+    document_kind,
+    abbrev,
+    break_on_gap,
+    lost,
+    unclear,
+    regularize,
+    embedding_dimensions
+FROM embedding_configurations
+ORDER BY id
+"""
+    )
+    return tuple(_stored_embedding_configuration(row) for row in cursor.fetchall())
+
+
+def _stored_embedding_configuration(row: Any) -> StoredEmbeddingConfiguration:
+    document_kind = _row_value(row, "document_kind", 2)
+    if document_kind not in {"transcription", "translation"}:
+        raise ValueError(f"Unknown embedding document kind: {document_kind!r}")
+
+    configuration = EmbeddingConfiguration(
+        _row_value(row, "model_name", 1),
+        abbrev=bool(_row_value(row, "abbrev", 3)),
+        break_on_gap=bool(_row_value(row, "break_on_gap", 4)),
+        lost=bool(_row_value(row, "lost", 5)),
+        unclear=bool(_row_value(row, "unclear", 6)),
+        regularize=bool(_row_value(row, "regularize", 7)),
+        translation=document_kind == "translation",
+    )
+    return StoredEmbeddingConfiguration(
+        int(_row_value(row, "id", 0)),
+        configuration,
+        int(_row_value(row, "embedding_dimensions", 8)),
+    )
+
+
 def _delete_embedding_configuration(cursor: Any, config_id: int) -> None:
     cursor.execute(
         """
@@ -435,6 +590,7 @@ INSERT INTO document_embeddings (
     tm_id,
     metadata_path,
     document_text,
+    input_hash,
     embedding
 )
 VALUES (
@@ -443,6 +599,7 @@ VALUES (
     %(tm_id)s,
     %(metadata_path)s,
     %(document_text)s,
+    %(input_hash)s,
     %(embedding)s::vector
 )
 ON CONFLICT (config_id, document_path)
@@ -450,10 +607,31 @@ DO UPDATE SET
     tm_id = EXCLUDED.tm_id,
     metadata_path = EXCLUDED.metadata_path,
     document_text = EXCLUDED.document_text,
+    input_hash = EXCLUDED.input_hash,
     embedding = EXCLUDED.embedding
 """,
         {"config_id": config_id, **row},
     )
+
+
+def _select_document_input_hash(
+    cursor: Any,
+    config_id: int,
+    document_path: str,
+) -> str | None:
+    cursor.execute(
+        """
+SELECT input_hash
+FROM document_embeddings
+WHERE config_id = %(config_id)s
+    AND document_path = %(document_path)s
+""",
+        {"config_id": config_id, "document_path": document_path},
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return _first_column(row)
 
 
 def _drop_embedding_index(cursor: Any, config_id: int) -> None:
@@ -465,21 +643,32 @@ DROP INDEX IF EXISTS {index_name}
     )
 
 
-def _recreate_embedding_index(
+def _create_embedding_index(
     cursor: Any,
     config_id: int,
     embedding_dimensions: int,
+    *,
+    if_not_exists: bool = False,
 ) -> None:
     index_name = _embedding_index_name(config_id)
-    _drop_embedding_index(cursor, config_id)
+    existence_clause = "IF NOT EXISTS " if if_not_exists else ""
     cursor.execute(
         f"""
-CREATE INDEX {index_name}
+CREATE INDEX {existence_clause}{index_name}
 ON document_embeddings
 USING hnsw ((embedding::vector({embedding_dimensions})) vector_cosine_ops)
 WHERE config_id = {config_id}
 """
     )
+
+
+def _recreate_embedding_index(
+    cursor: Any,
+    config_id: int,
+    embedding_dimensions: int,
+) -> None:
+    _drop_embedding_index(cursor, config_id)
+    _create_embedding_index(cursor, config_id, embedding_dimensions)
 
 
 def _refresh_configuration_document_count(cursor: Any, config_id: int) -> None:
@@ -517,6 +706,27 @@ def _configuration_params(configuration: EmbeddingConfiguration) -> dict[str, An
     }
 
 
+def _configuration_document_text(
+    document: Path,
+    configuration: EmbeddingConfiguration,
+) -> str:
+    if configuration.translation:
+        return translation_epidoc_xml_to_text(document)
+
+    return epidoc_xml_to_text(
+        document,
+        abbrev=configuration.abbrev,
+        break_on_gap=configuration.break_on_gap,
+        lost=configuration.lost,
+        unclear=configuration.unclear,
+        regularize=configuration.regularize,
+    )
+
+
+def _input_hash(document_text: str) -> str:
+    return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
+
+
 def _relative_path(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
@@ -549,3 +759,9 @@ def _first_column(row: Any) -> Any:
     if isinstance(row, dict):
         return next(iter(row.values()))
     return row[0]
+
+
+def _row_value(row: Any, key: str, index: int) -> Any:
+    if isinstance(row, dict):
+        return row[key]
+    return row[index]
