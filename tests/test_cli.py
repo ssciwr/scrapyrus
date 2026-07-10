@@ -238,3 +238,135 @@ def test_metadata_dump_subcommand_uses_database_url_envvar(monkeypatch):
             "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
         )
     ]
+
+
+def test_embeddings_ingest_subcommand_triggers_embedding_store(tmp_path, monkeypatch):
+    init_calls = []
+    setup_calls = []
+
+    class FakeEmbeddingStore:
+        def __init__(self, inference_server_url, model_name, api_key):
+            init_calls.append((inference_server_url, model_name, api_key))
+
+        def setup_store(
+            self,
+            idp_data,
+            database_url,
+            progress,
+            *,
+            abbrev,
+            break_on_gap,
+            lost,
+            unclear,
+            regularize,
+            translation,
+        ):
+            setup_calls.append(
+                (
+                    idp_data,
+                    database_url,
+                    progress,
+                    abbrev,
+                    break_on_gap,
+                    lost,
+                    unclear,
+                    regularize,
+                    translation,
+                )
+            )
+
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", FakeEmbeddingStore)
+    idp_data = tmp_path / "idp.data"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        (
+            "--idp-data",
+            str(idp_data),
+            "embeddings",
+            "ingest",
+            "--database-url",
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "--inference-server-url",
+            "https://inference.example/v1",
+            "--model-name",
+            "text-embedding-model",
+            "--api-key",
+            "api-secret",
+            "--translation",
+            "--abbrev",
+            "--break-on-gap",
+            "--lost",
+            "--unclear",
+            "--regularize",
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert init_calls == [
+        ("https://inference.example/v1", "text-embedding-model", "api-secret")
+    ]
+    assert setup_calls == [
+        (
+            idp_data,
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        )
+    ]
+    assert result.output == ""
+
+
+def test_embeddings_ingest_subcommand_uses_envvars(monkeypatch):
+    init_calls = []
+    setup_calls = []
+
+    class FakeEmbeddingStore:
+        def __init__(self, inference_server_url, model_name, api_key):
+            init_calls.append((inference_server_url, model_name, api_key))
+
+        def setup_store(self, idp_data, database_url, progress, **kwargs):
+            setup_calls.append((idp_data, database_url, progress, kwargs))
+
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", FakeEmbeddingStore)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ("embeddings", "ingest"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": (
+                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
+            ),
+            "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example",
+            "SCRAPYRUS_EMBEDDINGS_MODEL": "text-embedding-model",
+            "SCRAPYRUS_EMBEDDINGS_API_KEY": "api-secret",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert init_calls == [
+        ("https://inference.example", "text-embedding-model", "api-secret")
+    ]
+    assert setup_calls == [
+        (
+            Path("idp.data"),
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            True,
+            {
+                "abbrev": False,
+                "break_on_gap": False,
+                "lost": False,
+                "unclear": False,
+                "regularize": False,
+                "translation": False,
+            },
+        )
+    ]

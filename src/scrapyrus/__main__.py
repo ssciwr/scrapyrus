@@ -8,6 +8,7 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.transcriptions.embeddings import EmbeddingStore
 
 
 idp_data = click.option(
@@ -152,6 +153,100 @@ def dump(database_url: str, output_dir: Path) -> None:
     """Dump metadata database tables as CSV files."""
 
     dump_metadata_tables(output_dir, database_url)
+
+
+@main.group("embeddings")
+def embeddings() -> None:
+    """Work with transcription and translation embeddings."""
+
+
+@embeddings.command("ingest")
+@database_url
+@click.option(
+    "--inference-server-url",
+    envvar="SCRAPYRUS_EMBEDDINGS_URL",
+    required=True,
+    help="OpenAI-compatible inference server URL.",
+)
+@click.option(
+    "--model-name",
+    "--modelname",
+    envvar="SCRAPYRUS_EMBEDDINGS_MODEL",
+    required=True,
+    help="Embedding model name.",
+)
+@click.option(
+    "--api-key",
+    envvar="SCRAPYRUS_EMBEDDINGS_API_KEY",
+    required=True,
+    help="API key for the OpenAI-compatible inference server.",
+)
+@click.option(
+    "--translation/--transcription",
+    default=False,
+    show_default=True,
+    help="Embed translations instead of transcriptions.",
+)
+@click.option(
+    "--abbrev",
+    is_flag=True,
+    help="Include expansion text when embedding transcriptions.",
+)
+@click.option(
+    "--break-on-gap",
+    is_flag=True,
+    help="Insert line breaks at gaps when embedding transcriptions.",
+)
+@click.option(
+    "--lost",
+    is_flag=True,
+    help="Include supplied lost text when embedding transcriptions.",
+)
+@click.option(
+    "--unclear",
+    is_flag=True,
+    help="Include unclear readings when embedding transcriptions.",
+)
+@click.option(
+    "--regularize",
+    is_flag=True,
+    help="Use regularized readings when embedding transcriptions.",
+)
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while reading idp.data records.",
+)
+@click.pass_context
+def ingest_embeddings(
+    context: click.Context,
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    translation: bool,
+    abbrev: bool,
+    break_on_gap: bool,
+    lost: bool,
+    unclear: bool,
+    regularize: bool,
+    progress: bool,
+) -> None:
+    """Ingest transcription or translation embeddings into PostgreSQL."""
+
+    store = EmbeddingStore(inference_server_url, model_name, api_key)
+    store.setup_store(
+        context.obj["idp_data"],
+        database_url,
+        progress,
+        abbrev=abbrev,
+        break_on_gap=break_on_gap,
+        lost=lost,
+        unclear=unclear,
+        regularize=regularize,
+        translation=translation,
+    )
 
 
 if __name__ == "__main__":
