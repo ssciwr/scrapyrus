@@ -6,6 +6,7 @@ from scrapyrus.transcriptions.core import epidoc_xml_to_text
 from scrapyrus.transcriptions.embeddings import (
     EmbeddingConfiguration,
     EmbeddingStore,
+    delete_embeddings,
     retrieve_embedding,
 )
 
@@ -199,10 +200,15 @@ def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch)
         "embedding_dimensions": 3,
     }
 
-    _, delete_params = _execution_matching(cursor, "DELETE FROM document_embeddings")
-    assert delete_params == {"config_id": 42}
+    assert all(
+        "DELETE FROM document_embeddings" not in _normalize_sql(query)
+        for query, _ in cursor.executions
+    )
 
-    _, insert_params = _execution_matching(cursor, "INSERT INTO document_embeddings")
+    insert_sql, insert_params = _execution_matching(
+        cursor, "INSERT INTO document_embeddings"
+    )
+    assert "ON CONFLICT (config_id, document_path)" in _normalize_sql(insert_sql)
     assert insert_params == {
         "config_id": 42,
         "tm_id": "46",
@@ -230,8 +236,11 @@ def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch)
     )
     assert "WHERE config_id = 42" in normalized_index_sql
 
-    _, update_params = _execution_matching(cursor, "UPDATE embedding_configurations")
-    assert update_params == {"config_id": 42, "document_count": 1}
+    update_sql, update_params = _execution_matching(
+        cursor, "UPDATE embedding_configurations"
+    )
+    assert update_params == {"config_id": 42}
+    assert "SELECT count(*)::integer" in _normalize_sql(update_sql)
 
 
 def test_embedding_store_ingests_translation_embeddings(tmp_path, monkeypatch):
@@ -332,6 +341,58 @@ def test_retrieve_embedding_returns_none_for_missing_document(monkeypatch):
             document_path="DDB_EpiDoc_XML/p.test/missing.xml",
         )
         is None
+    )
+
+
+def test_delete_embeddings_removes_selected_configuration(monkeypatch):
+    cursor = RecordingCursor(results=[(42,)])
+    connection = RecordingConnection(cursor)
+
+    def connect(conninfo):
+        assert conninfo == "postgresql://metadata.example/scrapyrus"
+        return connection
+
+    monkeypatch.setattr(psycopg, "connect", connect)
+
+    deleted_config_id = delete_embeddings(
+        "postgresql://metadata.example/scrapyrus",
+        modelname="embed/model",
+        abbrev=True,
+        lost=True,
+    )
+
+    assert deleted_config_id == 42
+    select_sql, select_params = cursor.executions[0]
+    assert "FROM embedding_configurations" in _normalize_sql(select_sql)
+    assert select_params == {
+        "model_name": "embed/model",
+        "document_kind": "transcription",
+        "abbrev": True,
+        "break_on_gap": False,
+        "lost": True,
+        "unclear": False,
+        "regularize": False,
+    }
+    drop_sql, _ = _execution_matching(
+        cursor, "DROP INDEX IF EXISTS doc_embed_cfg_42_hnsw_idx"
+    )
+    assert _normalize_sql(drop_sql).endswith(
+        "DROP INDEX IF EXISTS doc_embed_cfg_42_hnsw_idx"
+    )
+    _, delete_params = _execution_matching(
+        cursor, "DELETE FROM embedding_configurations"
+    )
+    assert delete_params == {"config_id": 42}
+
+
+def test_delete_embeddings_returns_none_for_missing_configuration(monkeypatch):
+    cursor = RecordingCursor(results=[None])
+    connection = RecordingConnection(cursor)
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: connection)
+
+    assert delete_embeddings(modelname="embed/model") is None
+    assert all(
+        "DELETE FROM" not in _normalize_sql(query) for query, _ in cursor.executions
     )
 
 

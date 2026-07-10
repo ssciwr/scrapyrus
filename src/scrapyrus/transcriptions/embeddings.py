@@ -81,7 +81,6 @@ class EmbeddingStore:
             translation=translation,
         )
         config_id = None
-        document_count = 0
         embedding_dimensions = None
 
         with psycopg.connect(conninfo) as connection:
@@ -118,9 +117,8 @@ class EmbeddingStore:
                             configuration,
                             embedding_dimensions,
                         )
-                        _delete_configuration_embeddings(cursor, config_id)
 
-                    _insert_document(
+                    _upsert_document(
                         cursor,
                         config_id,
                         {
@@ -131,17 +129,12 @@ class EmbeddingStore:
                             "embedding": _vector_literal(embedding),
                         },
                     )
-                    document_count += 1
 
                 if config_id is not None:
                     if embedding_dimensions is None:
                         raise RuntimeError("Embedding dimensions were not recorded")
                     _recreate_embedding_index(cursor, config_id, embedding_dimensions)
-                    _update_configuration_document_count(
-                        cursor,
-                        config_id,
-                        document_count,
-                    )
+                    _refresh_configuration_document_count(cursor, config_id)
 
         return config_id
 
@@ -190,6 +183,41 @@ class EmbeddingStore:
         if not all(math.isfinite(value) for value in vector):
             raise ValueError("Embedding response contained non-finite vector values")
         return vector
+
+
+def delete_embeddings(
+    conninfo: str = "",
+    /,
+    *,
+    modelname: str,
+    abbrev: bool = False,
+    break_on_gap: bool = False,
+    lost: bool = False,
+    unclear: bool = False,
+    regularize: bool = False,
+    translation: bool = False,
+) -> int | None:
+    """Delete stored embeddings for one embedding configuration."""
+
+    configuration = EmbeddingConfiguration(
+        modelname,
+        abbrev=abbrev,
+        break_on_gap=break_on_gap,
+        lost=lost,
+        unclear=unclear,
+        regularize=regularize,
+        translation=translation,
+    )
+
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            config_id = _select_embedding_configuration_id(cursor, configuration)
+            if config_id is None:
+                return None
+            _drop_embedding_index(cursor, config_id)
+            _delete_embedding_configuration(cursor, config_id)
+
+    return config_id
 
 
 def retrieve_embedding(
@@ -323,9 +351,7 @@ INSERT INTO embedding_configurations (
     lost,
     unclear,
     regularize,
-    embedding_dimensions,
-    refreshed_at,
-    document_count
+    embedding_dimensions
 )
 VALUES (
     %(model_name)s,
@@ -335,9 +361,7 @@ VALUES (
     %(lost)s,
     %(unclear)s,
     %(regularize)s,
-    %(embedding_dimensions)s,
-    now(),
-    0
+    %(embedding_dimensions)s
 )
 ON CONFLICT (
     model_name,
@@ -349,9 +373,8 @@ ON CONFLICT (
     regularize
 )
 DO UPDATE SET
-    embedding_dimensions = EXCLUDED.embedding_dimensions,
-    refreshed_at = now(),
-    document_count = 0
+    embedding_dimensions = EXCLUDED.embedding_dimensions
+WHERE embedding_configurations.embedding_dimensions = EXCLUDED.embedding_dimensions
 RETURNING id
 """,
         {
@@ -361,21 +384,49 @@ RETURNING id
     )
     row = cursor.fetchone()
     if row is None:
-        raise RuntimeError("Embedding configuration upsert did not return an id")
+        raise ValueError(
+            "Embedding configuration already exists with different dimensions; "
+            "delete it with `scrapyrus embeddings delete` before ingesting this "
+            "configuration again."
+        )
     return int(_first_column(row))
 
 
-def _delete_configuration_embeddings(cursor: Any, config_id: int) -> None:
+def _select_embedding_configuration_id(
+    cursor: Any,
+    configuration: EmbeddingConfiguration,
+) -> int | None:
     cursor.execute(
         """
-DELETE FROM document_embeddings
-WHERE config_id = %(config_id)s
+SELECT id
+FROM embedding_configurations
+WHERE model_name = %(model_name)s
+    AND document_kind = %(document_kind)s
+    AND abbrev = %(abbrev)s
+    AND break_on_gap = %(break_on_gap)s
+    AND lost = %(lost)s
+    AND unclear = %(unclear)s
+    AND regularize = %(regularize)s
+""",
+        _configuration_params(configuration),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return int(_first_column(row))
+
+
+def _delete_embedding_configuration(cursor: Any, config_id: int) -> None:
+    cursor.execute(
+        """
+DELETE FROM embedding_configurations
+WHERE id = %(config_id)s
 """,
         {"config_id": config_id},
     )
 
 
-def _insert_document(cursor: Any, config_id: int, row: dict[str, str]) -> None:
+def _upsert_document(cursor: Any, config_id: int, row: dict[str, str]) -> None:
     cursor.execute(
         """
 INSERT INTO document_embeddings (
@@ -394,8 +445,23 @@ VALUES (
     %(document_text)s,
     %(embedding)s::vector
 )
+ON CONFLICT (config_id, document_path)
+DO UPDATE SET
+    tm_id = EXCLUDED.tm_id,
+    metadata_path = EXCLUDED.metadata_path,
+    document_text = EXCLUDED.document_text,
+    embedding = EXCLUDED.embedding
 """,
         {"config_id": config_id, **row},
+    )
+
+
+def _drop_embedding_index(cursor: Any, config_id: int) -> None:
+    index_name = _embedding_index_name(config_id)
+    cursor.execute(
+        f"""
+DROP INDEX IF EXISTS {index_name}
+"""
     )
 
 
@@ -405,11 +471,7 @@ def _recreate_embedding_index(
     embedding_dimensions: int,
 ) -> None:
     index_name = _embedding_index_name(config_id)
-    cursor.execute(
-        f"""
-DROP INDEX IF EXISTS {index_name}
-"""
-    )
+    _drop_embedding_index(cursor, config_id)
     cursor.execute(
         f"""
 CREATE INDEX {index_name}
@@ -420,18 +482,20 @@ WHERE config_id = {config_id}
     )
 
 
-def _update_configuration_document_count(
-    cursor: Any,
-    config_id: int,
-    document_count: int,
-) -> None:
+def _refresh_configuration_document_count(cursor: Any, config_id: int) -> None:
     cursor.execute(
         """
 UPDATE embedding_configurations
-SET document_count = %(document_count)s
+SET
+    refreshed_at = now(),
+    document_count = (
+        SELECT count(*)::integer
+        FROM document_embeddings
+        WHERE config_id = %(config_id)s
+    )
 WHERE id = %(config_id)s
 """,
-        {"config_id": config_id, "document_count": document_count},
+        {"config_id": config_id},
     )
 
 

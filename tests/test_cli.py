@@ -370,3 +370,83 @@ def test_embeddings_ingest_subcommand_uses_envvars(monkeypatch):
             },
         )
     ]
+
+
+def test_embeddings_delete_subcommand_deletes_embedding_configuration(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.delete_embeddings",
+        lambda database_url, **kwargs: calls.append((database_url, kwargs)),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        (
+            "embeddings",
+            "delete",
+            "--database-url",
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "--model-name",
+            "text-embedding-model",
+            "--translation",
+            "--abbrev",
+            "--break-on-gap",
+            "--lost",
+            "--unclear",
+            "--regularize",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            {
+                "modelname": "text-embedding-model",
+                "abbrev": True,
+                "break_on_gap": True,
+                "lost": True,
+                "unclear": True,
+                "regularize": True,
+                "translation": True,
+            },
+        )
+    ]
+    assert result.output == ""
+
+
+def test_embeddings_delete_subcommand_uses_envvars(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.delete_embeddings",
+        lambda database_url, **kwargs: calls.append((database_url, kwargs)),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ("embeddings", "delete"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": (
+                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
+            ),
+            "SCRAPYRUS_EMBEDDINGS_MODEL": "text-embedding-model",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            {
+                "modelname": "text-embedding-model",
+                "abbrev": False,
+                "break_on_gap": False,
+                "lost": False,
+                "unclear": False,
+                "regularize": False,
+                "translation": False,
+            },
+        )
+    ]
