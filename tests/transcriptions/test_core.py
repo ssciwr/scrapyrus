@@ -85,6 +85,12 @@ def test_epidoc_xml_to_text_can_expand_abbreviations():
     assert epidoc_xml_to_text(xml, abbrev=True) == "γδε"
 
 
+def test_epidoc_xml_to_text_preserves_acrophonic_numerals():
+    xml = '<div type="edition"><ab><lb n="1"/>α  𐅵   𐅷 𐅸 β</ab></div>'
+
+    assert epidoc_xml_to_text(xml) == "α 𐅵 𐅷 𐅸 β"
+
+
 def test_epidoc_xml_to_text_can_break_on_gaps():
     xml = '<div type="edition"><ab><lb n="1"/>α<gap reason="lost"/>β</ab></div>'
 

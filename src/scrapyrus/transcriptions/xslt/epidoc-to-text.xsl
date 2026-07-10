@@ -32,10 +32,16 @@
     <xsl:variable name="newlines" select="replace($text, '&#xD;&#xA;?', '&#xA;')"/>
     <xsl:variable name="clean-lines" as="xs:string*">
       <xsl:for-each select="tokenize($newlines, '&#xA;')">
-        <xsl:sequence select="normalize-space(.)"/>
+        <xsl:sequence select="s:normalize-whitespace(.)"/>
       </xsl:for-each>
     </xsl:variable>
     <xsl:sequence
         select="replace(replace(string-join($clean-lines, '&#xA;'), '^[\s]+', ''), '[\s]+$', '')"/>
+  </xsl:function>
+
+  <xsl:function name="s:normalize-whitespace" as="xs:string">
+    <xsl:param name="text" as="xs:string"/>
+    <xsl:sequence
+        select="replace(replace(replace($text, '\s+', ' '), '^[\s]+', ''), '[\s]+$', '')"/>
   </xsl:function>
 </xsl:stylesheet>
