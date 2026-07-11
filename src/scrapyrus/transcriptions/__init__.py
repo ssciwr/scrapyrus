@@ -11,13 +11,21 @@ from scrapyrus.transcriptions.embeddings import (
     retrieve_embedding,
     update_embeddings,
 )
+from scrapyrus.transcriptions.evaluation import (
+    EmbeddingEvaluation,
+    EvaluationEmbeddingConfiguration,
+    evaluate_embeddings_model,
+)
 
 __all__ = [
     "available_translation_languages",
     "EmbeddingConfiguration",
     "EmbeddingStore",
+    "EmbeddingEvaluation",
+    "EvaluationEmbeddingConfiguration",
     "delete_embeddings",
     "epidoc_xml_to_text",
+    "evaluate_embeddings_model",
     "retrieve_embedding",
     "update_embeddings",
     "translation_epidoc_xml_to_text",
