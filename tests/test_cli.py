@@ -546,3 +546,94 @@ def test_embeddings_update_subcommand_uses_envvars(monkeypatch):
             "api-secret",
         )
     ]
+
+
+def test_embeddings_evaluate_subcommand_writes_markdown(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_evaluate_embeddings_model(database_url, **kwargs):
+        calls.append((database_url, kwargs))
+
+    monkeypatch.setattr(
+        "scrapyrus.__main__.evaluate_embeddings_model",
+        fake_evaluate_embeddings_model,
+    )
+    output_file = tmp_path / "evaluation.md"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        (
+            "embeddings",
+            "evaluate",
+            "--database-url",
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "--model-name",
+            "text-embedding-model",
+            "--output",
+            str(output_file),
+            "--abbrev",
+            "--break-on-gap",
+            "--lost",
+            "--unclear",
+            "--regularize",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            {
+                "modelname": "text-embedding-model",
+                "output_file": output_file,
+                "abbrev": True,
+                "break_on_gap": True,
+                "lost": True,
+                "unclear": True,
+                "regularize": True,
+            },
+        )
+    ]
+    assert result.output == ""
+
+
+def test_embeddings_evaluate_subcommand_uses_envvars(monkeypatch):
+    calls = []
+
+    def fake_evaluate_embeddings_model(database_url, **kwargs):
+        calls.append((database_url, kwargs))
+
+    monkeypatch.setattr(
+        "scrapyrus.__main__.evaluate_embeddings_model",
+        fake_evaluate_embeddings_model,
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ("embeddings", "evaluate"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": (
+                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
+            ),
+            "SCRAPYRUS_EMBEDDINGS_MODEL": "text-embedding-model",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            {
+                "modelname": "text-embedding-model",
+                "output_file": Path("embedding-evaluation.md"),
+                "abbrev": False,
+                "break_on_gap": False,
+                "lost": False,
+                "unclear": False,
+                "regularize": False,
+            },
+        )
+    ]
+    assert result.output == ""

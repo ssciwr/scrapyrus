@@ -13,6 +13,7 @@ from scrapyrus.transcriptions.embeddings import (
     delete_embeddings,
     update_embeddings,
 )
+from scrapyrus.transcriptions.evaluation import evaluate_embeddings_model
 
 
 idp_data = click.option(
@@ -56,49 +57,68 @@ def embedding_client_options(function):
     )
 
 
+def _embedding_model_options():
+    return [
+        click.option(
+            "--model-name",
+            "--modelname",
+            envvar="SCRAPYRUS_EMBEDDINGS_MODEL",
+            required=True,
+            help="Embedding model name.",
+        )
+    ]
+
+
+def _transcription_text_options():
+    return [
+        click.option(
+            "--abbrev",
+            is_flag=True,
+            help="Include expansion text when selecting transcription embeddings.",
+        ),
+        click.option(
+            "--break-on-gap",
+            is_flag=True,
+            help="Insert line breaks at gaps when selecting transcription embeddings.",
+        ),
+        click.option(
+            "--lost",
+            is_flag=True,
+            help="Include supplied lost text when selecting transcription embeddings.",
+        ),
+        click.option(
+            "--unclear",
+            is_flag=True,
+            help="Include unclear readings when selecting transcription embeddings.",
+        ),
+        click.option(
+            "--regularize",
+            is_flag=True,
+            help="Use regularized readings when selecting transcription embeddings.",
+        ),
+    ]
+
+
 def embedding_configuration_options(function):
     return _apply_options(
         function,
         [
-            click.option(
-                "--model-name",
-                "--modelname",
-                envvar="SCRAPYRUS_EMBEDDINGS_MODEL",
-                required=True,
-                help="Embedding model name.",
-            ),
+            *_embedding_model_options(),
             click.option(
                 "--translation/--transcription",
                 default=False,
                 show_default=True,
                 help="Select translation embeddings instead of transcription embeddings.",
             ),
-            click.option(
-                "--abbrev",
-                is_flag=True,
-                help="Include expansion text when selecting transcription embeddings.",
-            ),
-            click.option(
-                "--break-on-gap",
-                is_flag=True,
-                help="Insert line breaks at gaps when selecting transcription embeddings.",
-            ),
-            click.option(
-                "--lost",
-                is_flag=True,
-                help="Include supplied lost text when selecting transcription embeddings.",
-            ),
-            click.option(
-                "--unclear",
-                is_flag=True,
-                help="Include unclear readings when selecting transcription embeddings.",
-            ),
-            click.option(
-                "--regularize",
-                is_flag=True,
-                help="Use regularized readings when selecting transcription embeddings.",
-            ),
+            *_transcription_text_options(),
         ],
+    )
+
+
+def embedding_evaluation_options(function):
+    return _apply_options(
+        function,
+        [*_embedding_model_options(), *_transcription_text_options()],
     )
 
 
@@ -329,6 +349,41 @@ def update_embedding_configurations(
         progress,
         inference_server_url=inference_server_url,
         api_key=api_key,
+    )
+
+
+@embeddings.command("evaluate")
+@database_url
+@embedding_evaluation_options
+@click.option(
+    "--output",
+    "output_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("embedding-evaluation.md"),
+    show_default=True,
+    help="Markdown file to write evaluation findings to.",
+)
+def evaluate_embedding_model(
+    database_url: str,
+    model_name: str,
+    output_file: Path,
+    abbrev: bool,
+    break_on_gap: bool,
+    lost: bool,
+    unclear: bool,
+    regularize: bool,
+) -> None:
+    """Evaluate transcription-to-translation embedding retrieval."""
+
+    evaluate_embeddings_model(
+        database_url,
+        modelname=model_name,
+        output_file=output_file,
+        abbrev=abbrev,
+        break_on_gap=break_on_gap,
+        lost=lost,
+        unclear=unclear,
+        regularize=regularize,
     )
 
 
