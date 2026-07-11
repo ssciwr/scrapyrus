@@ -1,5 +1,7 @@
 from inspect import signature
 import hashlib
+import threading
+import time
 
 import psycopg
 
@@ -7,6 +9,7 @@ from scrapyrus.transcriptions.core import epidoc_xml_to_text
 from scrapyrus.transcriptions.embeddings import (
     EmbeddingConfiguration,
     EmbeddingStore,
+    MAX_CONCURRENT_EMBEDDING_REQUESTS,
     delete_embeddings,
     retrieve_embedding,
     update_embeddings,
@@ -69,6 +72,16 @@ class FakeEmbeddingClient:
         self.headers = {}
         self.embeddings = list(embeddings)
         self.posts = []
+        self.entered = 0
+        self.exited = 0
+
+    def __enter__(self):
+        self.entered += 1
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.exited += 1
+        return False
 
     def post(self, url, *, json, timeout):
         self.posts.append((url, json, timeout))
@@ -151,8 +164,11 @@ def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch)
         text_converter,
     )
     fake_client = FakeEmbeddingClient([[0.25, 0.5, 0.75]])
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.requests.Session",
+        lambda: fake_client,
+    )
     store = EmbeddingStore("https://inference.example/v1", "embed/model", "secret")
-    store.client = fake_client
 
     config_id = store.setup_store(
         idp_data,
@@ -255,6 +271,49 @@ def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch)
     assert "SELECT count(*)::integer" in _normalize_sql(update_sql)
 
 
+def test_embedding_store_reports_embedding_request_progress(tmp_path, monkeypatch):
+    idp_data = tmp_path / "idp.data"
+    metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "46.xml"
+    first = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.46.xml"
+    second = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.47.xml"
+    cursor = RecordingCursor(results=[(42,)])
+    connection = RecordingConnection(cursor)
+    progress_calls = []
+
+    def iterate(idp_data_arg, *, progressbar):
+        assert idp_data_arg == idp_data
+        assert progressbar is True
+        yield "46", metadata, first, None
+        yield "47", metadata, second, None
+
+    def fake_tqdm(iterable, *, total, unit, desc):
+        progress_calls.append({"total": total, "unit": unit, "desc": desc})
+        return iterable
+
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: connection)
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.iterate_idpdata_triples",
+        iterate,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
+        lambda path, **kwargs: f"Text for {path.name}",
+    )
+    monkeypatch.setattr("scrapyrus.transcriptions.embeddings.tqdm", fake_tqdm)
+    fake_client = FakeEmbeddingClient([[1, 2], [3, 4]])
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.requests.Session",
+        lambda: fake_client,
+    )
+
+    store = EmbeddingStore("https://inference.example", "embed-model", "secret")
+
+    assert store.setup_store(idp_data, "", True) == 42
+    assert progress_calls == [
+        {"total": 2, "unit": "request", "desc": "Embedding documents"}
+    ]
+
+
 def test_embedding_store_ingests_translation_embeddings(tmp_path, monkeypatch):
     idp_data = tmp_path / "idp.data"
     metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "53.xml"
@@ -290,8 +349,11 @@ def test_embedding_store_ingests_translation_embeddings(tmp_path, monkeypatch):
         translation_converter,
     )
     fake_client = FakeEmbeddingClient([[1, 2]])
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.requests.Session",
+        lambda: fake_client,
+    )
     store = EmbeddingStore("https://inference.example", "embed-model", "secret")
-    store.client = fake_client
 
     config_id = store.setup_store(idp_data, "", False, translation=True)
 
@@ -549,7 +611,7 @@ def test_delete_embeddings_returns_none_for_missing_configuration(monkeypatch):
     )
 
 
-def test_embedding_store_initializes_client_headers(monkeypatch):
+def test_embedding_store_configures_session_headers(monkeypatch):
     fake_client = FakeEmbeddingClient([])
     monkeypatch.setattr(
         "scrapyrus.transcriptions.embeddings.requests.Session",
@@ -558,8 +620,77 @@ def test_embedding_store_initializes_client_headers(monkeypatch):
 
     store = EmbeddingStore("https://inference.example", "model", "test-key")
 
-    assert store.client is fake_client
+    assert store._session() is fake_client
     assert fake_client.headers == {
         "Authorization": "Bearer test-key",
         "Content-Type": "application/json",
     }
+
+
+class TrackingEmbeddingClient:
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+        self.posts = []
+        self.headers = {}
+        self._lock = threading.Lock()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def post(self, url, *, json, timeout):
+        with self._lock:
+            self.posts.append((url, json, timeout))
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(0.01)
+            return FakeEmbeddingResponse([0.25, 0.5, 0.75])
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+def test_embedding_requests_are_capped_at_100_concurrent(tmp_path, monkeypatch):
+    idp_data = tmp_path / "idp.data"
+    metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "46.xml"
+    cursor = RecordingCursor(results=[(42,)])
+    connection = RecordingConnection(cursor)
+    request_count = MAX_CONCURRENT_EMBEDDING_REQUESTS + 25
+
+    def iterate(idp_data_arg, *, progressbar):
+        assert idp_data_arg == idp_data
+        assert progressbar is False
+        for index in range(request_count):
+            transcription = (
+                idp_data / "DDB_EpiDoc_XML" / "p.test" / f"p.test.{index}.xml"
+            )
+            yield str(index), metadata, transcription, None
+
+    tracking_client = TrackingEmbeddingClient()
+
+    def session_factory():
+        return tracking_client
+
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: connection)
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.iterate_idpdata_triples",
+        iterate,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
+        lambda path, **kwargs: f"Text for {path.name}",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.requests.Session",
+        session_factory,
+    )
+
+    store = EmbeddingStore("https://inference.example/v1", "embed/model", "secret")
+
+    assert store.setup_store(idp_data, "", False) == 42
+    assert len(tracking_client.posts) == request_count
+    assert 1 < tracking_client.max_active <= MAX_CONCURRENT_EMBEDDING_REQUESTS

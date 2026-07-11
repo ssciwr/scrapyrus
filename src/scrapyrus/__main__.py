@@ -244,7 +244,7 @@ def embeddings() -> None:
     "--progress/--no-progress",
     default=True,
     show_default=True,
-    help="Show a progress bar while reading idp.data records.",
+    help="Show progress bars while reading idp.data records and embedding documents.",
 )
 @click.pass_context
 def ingest_embeddings(
@@ -311,7 +311,7 @@ def delete_embedding_configuration(
     "--progress/--no-progress",
     default=True,
     show_default=True,
-    help="Show a progress bar while reading idp.data records.",
+    help="Show progress bars while reading idp.data records and embedding documents.",
 )
 @click.pass_context
 def update_embedding_configurations(

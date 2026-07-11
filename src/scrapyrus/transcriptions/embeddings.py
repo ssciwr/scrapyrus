@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import math
@@ -8,12 +11,17 @@ from typing import Any
 
 import psycopg
 import requests
+from tqdm import tqdm
 
 from scrapyrus.idpdata import iterate_idpdata_triples
 from scrapyrus.transcriptions.core import (
     epidoc_xml_to_text,
     translation_epidoc_xml_to_text,
 )
+
+
+MAX_CONCURRENT_EMBEDDING_REQUESTS = 100
+EMBEDDING_REQUEST_TIMEOUT = 60
 
 
 @dataclass(frozen=True)
@@ -44,6 +52,41 @@ class StoredEmbeddingConfiguration:
     embedding_dimensions: int
 
 
+@dataclass(frozen=True)
+class _EmbeddingJob:
+    ordinal: int
+    store: "EmbeddingStore"
+    row: dict[str, str]
+    config_id: int | None = None
+    expected_dimensions: int | None = None
+    configuration: EmbeddingConfiguration | None = None
+
+
+@dataclass(frozen=True)
+class _EmbeddedDocument:
+    job: _EmbeddingJob
+    embedding: tuple[float, ...]
+
+
+class _EmbeddingRequestSentinel:
+    """Limit embedding requests running against the inference server."""
+
+    def __init__(self, limit: int = MAX_CONCURRENT_EMBEDDING_REQUESTS) -> None:
+        if limit < 1:
+            raise ValueError("Embedding request concurrency limit must be positive")
+        self._semaphore = asyncio.Semaphore(limit)
+
+    async def embed(
+        self,
+        store: "EmbeddingStore",
+        executor: ThreadPoolExecutor,
+        text: str,
+    ) -> tuple[float, ...]:
+        async with self._semaphore:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(executor, store._embed_sync, text)
+
+
 class EmbeddingStore:
     """Build a pgvector store for EpiDoc transcription or translation text."""
 
@@ -55,13 +98,10 @@ class EmbeddingStore:
     ) -> None:
         self.inference_server_url = inference_server_url
         self.modelname = modelname
-        self.client = requests.Session()
-        self.client.headers.update(
-            {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
-        )
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
         self._embeddings_url = _embeddings_url(inference_server_url)
 
     def setup_store(
@@ -92,6 +132,7 @@ class EmbeddingStore:
         )
         config_id = None
         embedding_dimensions = None
+        jobs: list[_EmbeddingJob] = []
 
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
@@ -119,8 +160,28 @@ class EmbeddingStore:
                     if document_text.strip() == "":
                         continue
 
-                    input_hash = _input_hash(document_text)
-                    embedding = self._embed(document_text)
+                    jobs.append(
+                        _EmbeddingJob(
+                            ordinal=len(jobs),
+                            store=self,
+                            row={
+                                "tm_id": tm_id,
+                                "metadata_path": _relative_path(idp_data, metadata),
+                                "document_path": _relative_path(idp_data, document),
+                                "document_text": document_text,
+                                "input_hash": _input_hash(document_text),
+                            },
+                            configuration=configuration,
+                        )
+                    )
+
+                embedded_documents = _embed_documents(
+                    jobs,
+                    progressbar=progressbar,
+                    progressbar_title="Embedding documents",
+                )
+                for embedded_document in embedded_documents:
+                    embedding = embedded_document.embedding
                     if config_id is None:
                         embedding_dimensions = len(embedding)
                         config_id = _upsert_embedding_configuration(
@@ -133,11 +194,7 @@ class EmbeddingStore:
                         cursor,
                         config_id,
                         {
-                            "tm_id": tm_id,
-                            "metadata_path": _relative_path(idp_data, metadata),
-                            "document_path": _relative_path(idp_data, document),
-                            "document_text": document_text,
-                            "input_hash": input_hash,
+                            **embedded_document.job.row,
                             "embedding": _vector_literal(embedding),
                         },
                     )
@@ -173,14 +230,20 @@ class EmbeddingStore:
             regularize=regularize,
         )
 
-    def _embed(self, text: str) -> tuple[float, ...]:
-        response = self.client.post(
-            self._embeddings_url,
-            json={"model": self.modelname, "input": text},
-            timeout=60,
-        )
-        response.raise_for_status()
-        payload = response.json()
+    def _session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(self.headers)
+        return session
+
+    def _embed_sync(self, text: str) -> tuple[float, ...]:
+        with self._session() as client:
+            response = client.post(
+                self._embeddings_url,
+                json={"model": self.modelname, "input": text},
+                timeout=EMBEDDING_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
         try:
             embedding = payload["data"][0]["embedding"]
         except (KeyError, IndexError, TypeError) as error:
@@ -195,6 +258,74 @@ class EmbeddingStore:
         if not all(math.isfinite(value) for value in vector):
             raise ValueError("Embedding response contained non-finite vector values")
         return vector
+
+
+def _embed_documents(
+    jobs: Sequence[_EmbeddingJob],
+    *,
+    progressbar: bool,
+    progressbar_title: str,
+) -> list[_EmbeddedDocument]:
+    if not jobs:
+        return []
+    return asyncio.run(
+        _embed_documents_async(
+            jobs,
+            progressbar=progressbar,
+            progressbar_title=progressbar_title,
+        )
+    )
+
+
+async def _embed_documents_async(
+    jobs: Sequence[_EmbeddingJob],
+    *,
+    progressbar: bool,
+    progressbar_title: str,
+) -> list[_EmbeddedDocument]:
+    sentinel = _EmbeddingRequestSentinel()
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_EMBEDDING_REQUESTS) as executor:
+        tasks = [
+            asyncio.create_task(_embed_document(job, sentinel, executor))
+            for job in jobs
+        ]
+        completed: list[_EmbeddedDocument] = []
+        progress = None
+        completions: Iterable[Any] = asyncio.as_completed(tasks)
+        if progressbar:
+            progress = tqdm(
+                completions,
+                total=len(tasks),
+                unit="request",
+                desc=progressbar_title,
+            )
+            completions = progress
+
+        try:
+            for future in completions:
+                completed.append(await future)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        finally:
+            if progress is not None and hasattr(progress, "close"):
+                progress.close()
+
+    completed.sort(key=lambda document: document.job.ordinal)
+    return completed
+
+
+async def _embed_document(
+    job: _EmbeddingJob,
+    sentinel: _EmbeddingRequestSentinel,
+    executor: ThreadPoolExecutor,
+) -> _EmbeddedDocument:
+    return _EmbeddedDocument(
+        job,
+        await sentinel.embed(job.store, executor, job.row["document_text"]),
+    )
 
 
 def update_embeddings(
@@ -212,6 +343,7 @@ def update_embeddings(
     stores: dict[str, EmbeddingStore] = {}
     updated_config_ids: set[int] = set()
     updated_count = 0
+    jobs: list[_EmbeddingJob] = []
 
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
@@ -260,28 +392,58 @@ def update_embeddings(
                         )
                         stores[configuration.modelname] = store
 
-                    embedding = store._embed(document_text)
-                    if len(embedding) != stored.embedding_dimensions:
-                        raise ValueError(
-                            f"Embedding model {configuration.modelname!r} returned "
-                            f"{len(embedding)} dimensions for configuration "
-                            f"{stored.id}; expected {stored.embedding_dimensions}"
+                    jobs.append(
+                        _EmbeddingJob(
+                            ordinal=len(jobs),
+                            store=store,
+                            row={
+                                "tm_id": tm_id,
+                                "metadata_path": _relative_path(idp_data, metadata),
+                                "document_path": document_path,
+                                "document_text": document_text,
+                                "input_hash": input_hash,
+                            },
+                            config_id=stored.id,
+                            expected_dimensions=stored.embedding_dimensions,
+                            configuration=configuration,
                         )
-
-                    _upsert_document(
-                        cursor,
-                        stored.id,
-                        {
-                            "tm_id": tm_id,
-                            "metadata_path": _relative_path(idp_data, metadata),
-                            "document_path": document_path,
-                            "document_text": document_text,
-                            "input_hash": input_hash,
-                            "embedding": _vector_literal(embedding),
-                        },
                     )
-                    updated_config_ids.add(stored.id)
-                    updated_count += 1
+
+            embedded_documents = _embed_documents(
+                jobs,
+                progressbar=progressbar,
+                progressbar_title="Updating embeddings",
+            )
+            for embedded_document in embedded_documents:
+                job = embedded_document.job
+                embedding = embedded_document.embedding
+                if job.config_id is None:
+                    raise RuntimeError(
+                        "Updated embedding job did not include config id"
+                    )
+                if job.expected_dimensions is None:
+                    raise RuntimeError(
+                        "Updated embedding job did not include expected dimensions"
+                    )
+                if job.configuration is None:
+                    raise RuntimeError(
+                        "Updated embedding job did not include configuration"
+                    )
+
+                if len(embedding) != job.expected_dimensions:
+                    raise ValueError(
+                        f"Embedding model {job.configuration.modelname!r} returned "
+                        f"{len(embedding)} dimensions for configuration "
+                        f"{job.config_id}; expected {job.expected_dimensions}"
+                    )
+
+                _upsert_document(
+                    cursor,
+                    job.config_id,
+                    {**job.row, "embedding": _vector_literal(embedding)},
+                )
+                updated_config_ids.add(job.config_id)
+                updated_count += 1
 
             for stored in stored_configurations:
                 if stored.id in updated_config_ids:
