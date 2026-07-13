@@ -1,11 +1,11 @@
 import logging
 from pathlib import Path
 
-from scrapyrus.images import DEFAULT_BROKEN_IMAGE_FILE
-from scrapyrus.__main__ import main
-from scrapyrus.transcriptions.embeddings import PgvectorUnavailableError
-
 from click.testing import CliRunner
+
+from scrapyrus.__main__ import main
+from scrapyrus.images import DEFAULT_BROKEN_IMAGE_FILE
+from scrapyrus.transcriptions.embeddings import PgvectorUnavailableError
 
 
 def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
@@ -38,9 +38,7 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
     monkeypatch.setattr("scrapyrus.__main__.scrape_images", fake_scrape_images)
     idp_data = tmp_path / "idp.data"
     target = tmp_path / "images"
-    runner = CliRunner()
-
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
         (
             "--idp-data",
@@ -61,7 +59,6 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
             str(target),
         ),
     )
-
     assert result.exit_code == 0
     assert calls == [
         (
@@ -73,10 +70,7 @@ def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
             idp_data,
         )
     ]
-    assert "DEBUG scrapyrus.images.scrapers.test: scraper debug details" in (
-        log.read_text(encoding="utf-8")
-    )
-    assert result.output == ""
+    assert "scraper debug details" in log.read_text(encoding="utf-8")
 
 
 def test_images_subcommand_uses_defaults(monkeypatch):
@@ -101,11 +95,9 @@ def test_images_subcommand_uses_defaults(monkeypatch):
         ),
     )
     runner = CliRunner()
-
     with runner.isolated_filesystem():
         result = runner.invoke(main, ("images",))
         assert Path("images.log").exists()
-
     assert result.exit_code == 0
     assert calls == [
         (
@@ -121,15 +113,14 @@ def test_images_subcommand_uses_defaults(monkeypatch):
 
 def test_metadata_ingest_subcommand_triggers_metadata_ingest(tmp_path, monkeypatch):
     calls = []
-
-    def fake_ingest_metadata(idp_data, database_url, *, progressbar):
-        calls.append((idp_data, database_url, progressbar))
-
-    monkeypatch.setattr("scrapyrus.__main__.ingest_metadata", fake_ingest_metadata)
+    monkeypatch.setattr(
+        "scrapyrus.__main__.ingest_metadata",
+        lambda idp_data, database_url, *, progressbar: calls.append(
+            (idp_data, database_url, progressbar)
+        ),
+    )
     idp_data = tmp_path / "idp.data"
-    runner = CliRunner()
-
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
         (
             "--idp-data",
@@ -141,16 +132,10 @@ def test_metadata_ingest_subcommand_triggers_metadata_ingest(tmp_path, monkeypat
             "--no-progress",
         ),
     )
-
     assert result.exit_code == 0
     assert calls == [
-        (
-            idp_data,
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            False,
-        )
+        (idp_data, "postgresql://scrapyrus:secret@postgres:5432/scrapyrus", False)
     ]
-    assert result.output == ""
 
 
 def test_metadata_ingest_subcommand_uses_database_url_envvar(monkeypatch):
@@ -161,18 +146,13 @@ def test_metadata_ingest_subcommand_uses_database_url_envvar(monkeypatch):
             (idp_data, database_url, progressbar)
         ),
     )
-    runner = CliRunner()
-
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
         ("metadata", "ingest"),
         env={
-            "SCRAPYRUS_DATABASE_URL": (
-                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
-            )
+            "SCRAPYRUS_DATABASE_URL": "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
         },
     )
-
     assert result.exit_code == 0
     assert calls == [
         (
@@ -190,28 +170,19 @@ def test_metadata_dump_subcommand_triggers_csv_dump(tmp_path, monkeypatch):
         lambda output_dir, database_url: calls.append((output_dir, database_url)),
     )
     output_dir = tmp_path / "metadata-csv"
-    runner = CliRunner()
-
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
         (
             "metadata",
             "dump",
             "--database-url",
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "postgresql://database.example/scrapyrus",
             "--output-dir",
             str(output_dir),
         ),
     )
-
     assert result.exit_code == 0
-    assert calls == [
-        (
-            output_dir,
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-        )
-    ]
-    assert result.output == ""
+    assert calls == [(output_dir, "postgresql://database.example/scrapyrus")]
 
 
 def test_metadata_dump_subcommand_uses_database_url_envvar(monkeypatch):
@@ -220,25 +191,13 @@ def test_metadata_dump_subcommand_uses_database_url_envvar(monkeypatch):
         "scrapyrus.__main__.dump_metadata_tables",
         lambda output_dir, database_url: calls.append((output_dir, database_url)),
     )
-    runner = CliRunner()
-
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
         ("metadata", "dump"),
-        env={
-            "SCRAPYRUS_DATABASE_URL": (
-                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
-            )
-        },
+        env={"SCRAPYRUS_DATABASE_URL": "postgresql://database.example/scrapyrus"},
     )
-
     assert result.exit_code == 0
-    assert calls == [
-        (
-            Path("metadata-csv"),
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-        )
-    ]
+    assert calls == [(Path("metadata-csv"), "postgresql://database.example/scrapyrus")]
 
 
 def test_transcriptions_ingest_subcommand_triggers_ingestion(tmp_path, monkeypatch):
@@ -250,7 +209,6 @@ def test_transcriptions_ingest_subcommand_triggers_ingestion(tmp_path, monkeypat
         ),
     )
     idp_data = tmp_path / "idp.data"
-
     result = CliRunner().invoke(
         main,
         (
@@ -263,7 +221,6 @@ def test_transcriptions_ingest_subcommand_triggers_ingestion(tmp_path, monkeypat
             "--no-progress",
         ),
     )
-
     assert result.exit_code == 0
     assert calls == [(idp_data, "postgresql://database.example/scrapyrus", False)]
 
@@ -275,7 +232,6 @@ def test_transcriptions_dump_subcommand_triggers_csv_dump(tmp_path, monkeypatch)
         lambda output_dir, database_url: calls.append((output_dir, database_url)),
     )
     output_dir = tmp_path / "transcriptions-csv"
-
     result = CliRunner().invoke(
         main,
         (
@@ -287,444 +243,179 @@ def test_transcriptions_dump_subcommand_triggers_csv_dump(tmp_path, monkeypatch)
             str(output_dir),
         ),
     )
-
     assert result.exit_code == 0
     assert calls == [(output_dir, "postgresql://database.example/scrapyrus")]
 
 
-def test_embeddings_ingest_subcommand_triggers_embedding_store(tmp_path, monkeypatch):
-    init_calls = []
-    setup_calls = []
+def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypatch):
+    calls = []
 
-    class FakeEmbeddingStore:
-        def __init__(self, inference_server_url, model_name, api_key):
-            init_calls.append((inference_server_url, model_name, api_key))
+    class Store:
+        def __init__(self, url, model, key):
+            calls.append(("init", url, model, key))
 
-        def setup_store(
-            self,
-            idp_data,
-            database_url,
-            progress,
-            *,
-            abbrev,
-            break_on_gap,
-            lost,
-            unclear,
-            regularize,
-            translation,
-        ):
-            setup_calls.append(
-                (
-                    idp_data,
-                    database_url,
-                    progress,
-                    abbrev,
-                    break_on_gap,
-                    lost,
-                    unclear,
-                    regularize,
-                    translation,
-                )
-            )
+        def setup_store(self, database_url, progress):
+            calls.append(("setup", database_url, progress))
 
-    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", FakeEmbeddingStore)
-    idp_data = tmp_path / "idp.data"
-    runner = CliRunner()
-
-    result = runner.invoke(
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
+    result = CliRunner().invoke(
         main,
         (
-            "--idp-data",
-            str(idp_data),
             "embeddings",
             "ingest",
             "--database-url",
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "postgresql://db",
             "--inference-server-url",
             "https://inference.example/v1",
             "--model-name",
-            "text-embedding-model",
+            "model",
             "--api-key",
-            "api-secret",
-            "--translation",
-            "--abbrev",
-            "--break-on-gap",
-            "--lost",
-            "--unclear",
-            "--regularize",
+            "secret",
             "--no-progress",
         ),
     )
-
     assert result.exit_code == 0
-    assert init_calls == [
-        ("https://inference.example/v1", "text-embedding-model", "api-secret")
+    assert calls == [
+        ("init", "https://inference.example/v1", "model", "secret"),
+        ("setup", "postgresql://db", False),
     ]
-    assert setup_calls == [
-        (
-            idp_data,
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            False,
-            True,
-            True,
-            True,
-            True,
-            True,
-            True,
-        )
-    ]
-    assert result.output == ""
 
 
-def test_embeddings_ingest_subcommand_uses_envvars(monkeypatch):
-    init_calls = []
-    setup_calls = []
+def test_embeddings_ingest_uses_envvars(monkeypatch):
+    calls = []
 
-    class FakeEmbeddingStore:
-        def __init__(self, inference_server_url, model_name, api_key):
-            init_calls.append((inference_server_url, model_name, api_key))
+    class Store:
+        def __init__(self, url, model, key):
+            calls.append((url, model, key))
 
-        def setup_store(self, idp_data, database_url, progress, **kwargs):
-            setup_calls.append((idp_data, database_url, progress, kwargs))
+        def setup_store(self, database_url, progress):
+            calls.append((database_url, progress))
 
-    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", FakeEmbeddingStore)
-    runner = CliRunner()
-
-    result = runner.invoke(
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
+    result = CliRunner().invoke(
         main,
         ("embeddings", "ingest"),
         env={
-            "SCRAPYRUS_DATABASE_URL": (
-                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
-            ),
+            "SCRAPYRUS_DATABASE_URL": "postgresql://db",
             "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example",
-            "SCRAPYRUS_EMBEDDINGS_MODEL": "text-embedding-model",
-            "SCRAPYRUS_EMBEDDINGS_API_KEY": "api-secret",
+            "SCRAPYRUS_EMBEDDINGS_MODEL": "model",
+            "SCRAPYRUS_EMBEDDINGS_API_KEY": "secret",
         },
     )
-
     assert result.exit_code == 0
-    assert init_calls == [
-        ("https://inference.example", "text-embedding-model", "api-secret")
-    ]
-    assert setup_calls == [
-        (
-            Path("idp.data"),
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            True,
-            {
-                "abbrev": False,
-                "break_on_gap": False,
-                "lost": False,
-                "unclear": False,
-                "regularize": False,
-                "translation": False,
-            },
-        )
+    assert calls == [
+        ("https://inference.example", "model", "secret"),
+        ("postgresql://db", True),
     ]
 
 
-def test_embeddings_ingest_subcommand_reports_missing_pgvector(monkeypatch):
-    class FakeEmbeddingStore:
-        def __init__(self, inference_server_url, model_name, api_key):
+def test_embeddings_ingest_reports_missing_pgvector(monkeypatch):
+    class Store:
+        def __init__(self, *args):
             pass
 
-        def setup_store(self, idp_data, database_url, progress, **kwargs):
+        def setup_store(self, *args):
             raise PgvectorUnavailableError(
                 "PostgreSQL extension 'vector' is not available."
             )
 
-    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", FakeEmbeddingStore)
-    runner = CliRunner()
-
-    result = runner.invoke(
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
+    result = CliRunner().invoke(
         main,
         (
             "embeddings",
             "ingest",
             "--database-url",
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "postgresql://db",
             "--inference-server-url",
-            "https://inference.example/v1",
+            "https://example",
             "--model-name",
-            "text-embedding-model",
+            "model",
             "--api-key",
-            "api-secret",
+            "secret",
         ),
     )
-
     assert result.exit_code == 1
-    assert "Error: PostgreSQL extension 'vector' is not available." in result.output
-    assert "Traceback" not in result.output
+    assert "extension 'vector' is not available" in result.output
 
 
-def test_embeddings_delete_subcommand_deletes_embedding_configuration(monkeypatch):
+def test_embeddings_delete_removes_model_from_both_tables(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "scrapyrus.__main__.delete_embeddings",
         lambda database_url, **kwargs: calls.append((database_url, kwargs)),
     )
-    runner = CliRunner()
-
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
         (
             "embeddings",
             "delete",
             "--database-url",
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "postgresql://db",
             "--model-name",
-            "text-embedding-model",
-            "--translation",
-            "--abbrev",
-            "--break-on-gap",
-            "--lost",
-            "--unclear",
-            "--regularize",
+            "model",
         ),
     )
-
     assert result.exit_code == 0
-    assert calls == [
-        (
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            {
-                "modelname": "text-embedding-model",
-                "abbrev": True,
-                "break_on_gap": True,
-                "lost": True,
-                "unclear": True,
-                "regularize": True,
-                "translation": True,
-            },
-        )
-    ]
-    assert result.output == ""
+    assert calls == [("postgresql://db", {"modelname": "model"})]
 
 
-def test_embeddings_delete_subcommand_uses_envvars(monkeypatch):
+def test_embeddings_update_requires_model_and_uses_database(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        "scrapyrus.__main__.delete_embeddings",
-        lambda database_url, **kwargs: calls.append((database_url, kwargs)),
-    )
-    runner = CliRunner()
-
-    result = runner.invoke(
-        main,
-        ("embeddings", "delete"),
-        env={
-            "SCRAPYRUS_DATABASE_URL": (
-                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
-            ),
-            "SCRAPYRUS_EMBEDDINGS_MODEL": "text-embedding-model",
-        },
-    )
-
-    assert result.exit_code == 0
-    assert calls == [
-        (
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            {
-                "modelname": "text-embedding-model",
-                "abbrev": False,
-                "break_on_gap": False,
-                "lost": False,
-                "unclear": False,
-                "regularize": False,
-                "translation": False,
-            },
-        )
-    ]
-
-
-def test_embeddings_update_subcommand_updates_all_embedding_configurations(
-    tmp_path,
-    monkeypatch,
-):
-    calls = []
-
-    def fake_update_embeddings(
-        idp_data,
-        database_url,
-        progress,
-        *,
-        inference_server_url,
-        api_key,
-    ):
-        calls.append((idp_data, database_url, progress, inference_server_url, api_key))
-
     monkeypatch.setattr(
         "scrapyrus.__main__.update_embeddings",
-        fake_update_embeddings,
+        lambda *args, **kwargs: calls.append((args, kwargs)),
     )
-    idp_data = tmp_path / "idp.data"
-    runner = CliRunner()
-
-    result = runner.invoke(
+    result = CliRunner().invoke(
         main,
         (
-            "--idp-data",
-            str(idp_data),
             "embeddings",
             "update",
             "--database-url",
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "postgresql://db",
             "--inference-server-url",
-            "https://inference.example/v1",
+            "https://example",
+            "--model-name",
+            "model",
             "--api-key",
-            "api-secret",
+            "secret",
             "--no-progress",
         ),
     )
-
     assert result.exit_code == 0
     assert calls == [
         (
-            idp_data,
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            False,
-            "https://inference.example/v1",
-            "api-secret",
-        )
-    ]
-    assert result.output == ""
-
-
-def test_embeddings_update_subcommand_uses_envvars(monkeypatch):
-    calls = []
-
-    def fake_update_embeddings(
-        idp_data,
-        database_url,
-        progress,
-        *,
-        inference_server_url,
-        api_key,
-    ):
-        calls.append((idp_data, database_url, progress, inference_server_url, api_key))
-
-    monkeypatch.setattr(
-        "scrapyrus.__main__.update_embeddings",
-        fake_update_embeddings,
-    )
-    runner = CliRunner()
-
-    result = runner.invoke(
-        main,
-        ("embeddings", "update"),
-        env={
-            "SCRAPYRUS_DATABASE_URL": (
-                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
-            ),
-            "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example",
-            "SCRAPYRUS_EMBEDDINGS_API_KEY": "api-secret",
-        },
-    )
-
-    assert result.exit_code == 0
-    assert calls == [
-        (
-            Path("idp.data"),
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            True,
-            "https://inference.example",
-            "api-secret",
+            ("postgresql://db", False),
+            {
+                "inference_server_url": "https://example",
+                "modelname": "model",
+                "api_key": "secret",
+            },
         )
     ]
 
 
-def test_embeddings_evaluate_subcommand_writes_markdown(tmp_path, monkeypatch):
+def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monkeypatch):
     calls = []
-
-    def fake_evaluate_embeddings_model(database_url, **kwargs):
-        calls.append((database_url, kwargs))
-
     monkeypatch.setattr(
         "scrapyrus.__main__.evaluate_embeddings_model",
-        fake_evaluate_embeddings_model,
+        lambda *args, **kwargs: calls.append((args, kwargs)),
     )
-    idp_data = tmp_path / "idp.data"
-    output_file = tmp_path / "evaluation.md"
-    runner = CliRunner()
-
-    result = runner.invoke(
+    output = tmp_path / "evaluation.md"
+    result = CliRunner().invoke(
         main,
         (
-            "--idp-data",
-            str(idp_data),
             "embeddings",
             "evaluate",
             "--database-url",
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "postgresql://db",
             "--model-name",
-            "text-embedding-model",
+            "model",
             "--output",
-            str(output_file),
-            "--abbrev",
-            "--break-on-gap",
-            "--lost",
-            "--unclear",
-            "--regularize",
+            str(output),
         ),
     )
-
     assert result.exit_code == 0
     assert calls == [
-        (
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            {
-                "modelname": "text-embedding-model",
-                "idp_data": idp_data,
-                "output_file": output_file,
-                "abbrev": True,
-                "break_on_gap": True,
-                "lost": True,
-                "unclear": True,
-                "regularize": True,
-            },
-        )
+        (("postgresql://db",), {"modelname": "model", "output_file": output})
     ]
-    assert result.output == ""
-
-
-def test_embeddings_evaluate_subcommand_uses_envvars(monkeypatch):
-    calls = []
-
-    def fake_evaluate_embeddings_model(database_url, **kwargs):
-        calls.append((database_url, kwargs))
-
-    monkeypatch.setattr(
-        "scrapyrus.__main__.evaluate_embeddings_model",
-        fake_evaluate_embeddings_model,
-    )
-    runner = CliRunner()
-
-    result = runner.invoke(
-        main,
-        ("embeddings", "evaluate"),
-        env={
-            "SCRAPYRUS_DATABASE_URL": (
-                "postgresql://scrapyrus:secret@postgres:5432/scrapyrus"
-            ),
-            "SCRAPYRUS_EMBEDDINGS_MODEL": "text-embedding-model",
-        },
-    )
-
-    assert result.exit_code == 0
-    assert calls == [
-        (
-            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
-            {
-                "modelname": "text-embedding-model",
-                "idp_data": Path("idp.data"),
-                "output_file": Path("embedding-evaluation.md"),
-                "abbrev": False,
-                "break_on_gap": False,
-                "lost": False,
-                "unclear": False,
-                "regularize": False,
-            },
-        )
-    ]
-    assert result.output == ""

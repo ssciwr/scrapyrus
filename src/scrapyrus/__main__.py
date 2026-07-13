@@ -71,57 +71,8 @@ def _embedding_model_options():
     ]
 
 
-def _transcription_text_options():
-    return [
-        click.option(
-            "--abbrev",
-            is_flag=True,
-            help="Include expansion text when selecting transcription embeddings.",
-        ),
-        click.option(
-            "--break-on-gap",
-            is_flag=True,
-            help="Insert line breaks at gaps when selecting transcription embeddings.",
-        ),
-        click.option(
-            "--lost",
-            is_flag=True,
-            help="Include supplied lost text when selecting transcription embeddings.",
-        ),
-        click.option(
-            "--unclear",
-            is_flag=True,
-            help="Include unclear readings when selecting transcription embeddings.",
-        ),
-        click.option(
-            "--regularize",
-            is_flag=True,
-            help="Use regularized readings when selecting transcription embeddings.",
-        ),
-    ]
-
-
-def embedding_configuration_options(function):
-    return _apply_options(
-        function,
-        [
-            *_embedding_model_options(),
-            click.option(
-                "--translation/--transcription",
-                default=False,
-                show_default=True,
-                help="Select translation embeddings instead of transcription embeddings.",
-            ),
-            *_transcription_text_options(),
-        ],
-    )
-
-
-def embedding_evaluation_options(function):
-    return _apply_options(
-        function,
-        [*_embedding_model_options(), *_transcription_text_options()],
-    )
+def embedding_model_options(function):
+    return _apply_options(function, _embedding_model_options())
 
 
 @click.group()
@@ -304,42 +255,27 @@ def embeddings() -> None:
 @embeddings.command("ingest")
 @database_url
 @embedding_client_options
-@embedding_configuration_options
+@embedding_model_options
 @click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
-    help="Show progress bars while reading idp.data records and embedding documents.",
+    help="Show progress bars while embedding database XML rows.",
 )
-@click.pass_context
 def ingest_embeddings(
-    context: click.Context,
     database_url: str,
     inference_server_url: str,
     model_name: str,
     api_key: str,
-    translation: bool,
-    abbrev: bool,
-    break_on_gap: bool,
-    lost: bool,
-    unclear: bool,
-    regularize: bool,
     progress: bool,
 ) -> None:
-    """Ingest transcription or translation embeddings into PostgreSQL."""
+    """Embed all transcription and translation XML rows in PostgreSQL."""
 
     store = EmbeddingStore(inference_server_url, model_name, api_key)
     try:
         store.setup_store(
-            context.obj["idp_data"],
             database_url,
             progress,
-            abbrev=abbrev,
-            break_on_gap=break_on_gap,
-            lost=lost,
-            unclear=unclear,
-            regularize=regularize,
-            translation=translation,
         )
     except PgvectorUnavailableError as error:
         raise click.ClickException(str(error)) from error
@@ -347,56 +283,41 @@ def ingest_embeddings(
 
 @embeddings.command("delete")
 @database_url
-@embedding_configuration_options
-def delete_embedding_configuration(
+@embedding_model_options
+def delete_embedding_model(
     database_url: str,
     model_name: str,
-    translation: bool,
-    abbrev: bool,
-    break_on_gap: bool,
-    lost: bool,
-    unclear: bool,
-    regularize: bool,
 ) -> None:
-    """Delete one selected embedding configuration from PostgreSQL."""
+    """Delete one model's transcription and translation embeddings."""
 
-    delete_embeddings(
-        database_url,
-        modelname=model_name,
-        abbrev=abbrev,
-        break_on_gap=break_on_gap,
-        lost=lost,
-        unclear=unclear,
-        regularize=regularize,
-        translation=translation,
-    )
+    delete_embeddings(database_url, modelname=model_name)
 
 
 @embeddings.command("update")
 @database_url
 @embedding_client_options
+@embedding_model_options
 @click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
-    help="Show progress bars while reading idp.data records and embedding documents.",
+    help="Show progress bars while embedding stale database XML rows.",
 )
-@click.pass_context
-def update_embedding_configurations(
-    context: click.Context,
+def update_embedding_rows(
     database_url: str,
     inference_server_url: str,
+    model_name: str,
     api_key: str,
     progress: bool,
 ) -> None:
-    """Compute missing or stale embeddings for all stored configurations."""
+    """Compute missing or stale embeddings for one model."""
 
     try:
         update_embeddings(
-            context.obj["idp_data"],
             database_url,
             progress,
             inference_server_url=inference_server_url,
+            modelname=model_name,
             api_key=api_key,
         )
     except PgvectorUnavailableError as error:
@@ -405,7 +326,7 @@ def update_embedding_configurations(
 
 @embeddings.command("evaluate")
 @database_url
-@embedding_evaluation_options
+@embedding_model_options
 @click.option(
     "--output",
     "output_file",
@@ -414,30 +335,17 @@ def update_embedding_configurations(
     show_default=True,
     help="Markdown file to write evaluation findings to.",
 )
-@click.pass_context
 def evaluate_embedding_model(
-    context: click.Context,
     database_url: str,
     model_name: str,
     output_file: Path,
-    abbrev: bool,
-    break_on_gap: bool,
-    lost: bool,
-    unclear: bool,
-    regularize: bool,
 ) -> None:
     """Evaluate transcription-to-translation embedding retrieval."""
 
     evaluate_embeddings_model(
         database_url,
         modelname=model_name,
-        idp_data=context.obj["idp_data"],
         output_file=output_file,
-        abbrev=abbrev,
-        break_on_gap=break_on_gap,
-        lost=lost,
-        unclear=unclear,
-        regularize=regularize,
     )
 
 

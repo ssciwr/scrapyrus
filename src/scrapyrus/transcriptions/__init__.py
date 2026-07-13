@@ -9,7 +9,6 @@ from scrapyrus.transcriptions.core import (
     transcription_xml_snippet,
 )
 from scrapyrus.transcriptions.embeddings import (
-    EmbeddingConfiguration,
     EmbeddingStore,
     delete_embeddings,
     retrieve_embedding,
@@ -17,17 +16,14 @@ from scrapyrus.transcriptions.embeddings import (
 )
 from scrapyrus.transcriptions.evaluation import (
     EmbeddingEvaluation,
-    EvaluationEmbeddingConfiguration,
     LanguageEmbeddingEvaluation,
     evaluate_embeddings_model,
 )
 
 __all__ = [
     "available_translation_languages",
-    "EmbeddingConfiguration",
     "EmbeddingStore",
     "EmbeddingEvaluation",
-    "EvaluationEmbeddingConfiguration",
     "LanguageEmbeddingEvaluation",
     "delete_embeddings",
     "dump_transcriptions",
