@@ -31,23 +31,28 @@ python -m pytest
 
 ## Docker Compose
 
-The repository includes a Docker Compose setup with PostgreSQL and a long-lived
+The repository includes a Docker Compose setup with PostgreSQL and a profiled
 `scrapyrus` execution container. The PostgreSQL service uses a pgvector-enabled
 image because `scrapyrus embeddings` commands require the `vector` extension:
 
 ```
-docker compose up --build -d
+docker compose up -d postgres
 ```
 
 The `scrapyrus` container mounts this repository at `/workspace` and sets
 `SCRAPYRUS_DATABASE_URL` to the PostgreSQL service. It also mounts the local
 `./exchange` directory at `/exchange` for moving data between the host and the
-container. To ingest metadata, enter the container and run the CLI:
+container. Start it as a one-off shell when you need to run the CLI:
 
 ```
-docker compose exec scrapyrus bash
+docker compose run --build --rm scrapyrus bash
 scrapyrus metadata ingest
 ```
+
+The `scrapyrus` service is intentionally not started by the default `up`
+command. Some Snap-packaged Docker installations fail to stop idle long-lived
+containers during rebuilds with `cannot stop container: ... permission denied`;
+using one-off `run --rm` containers avoids that host-side recreate path.
 
 If `idp.data` is somewhere else inside the mounted workspace, pass it explicitly:
 
