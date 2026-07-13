@@ -8,6 +8,7 @@ from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.metadata.xmlutils import (
     create_xpath_expr,
     drop_known_id_placeholders,
+    optional_string,
     publication_idno_string,
 )
 
@@ -19,17 +20,6 @@ TM_AUTHORWORK_RE = re.compile(
     r"(?:https?://)?(?:www\.)?trismegistos\.org/authorwork/(?P<id>\d+)\b"
 )
 PERSEUS_URN_RE = re.compile(r"urn:cts:[^\s]+")
-
-
-def _optional_string(result):
-    if result is None:
-        return None
-
-    value = result.string_value.strip()
-    if value == "":
-        return None
-
-    return value
 
 
 def _first_tm_authorwork_id(ref: str | None) -> int | None:
@@ -161,7 +151,7 @@ class AncientEditionModelFactory:
         return self._node_string("normalize-space((tei:author)[1])")
 
     def _node_string(self, expression):
-        return _optional_string(self.bibl_value_proc.evaluate_single(expression))
+        return optional_string(self.bibl_value_proc.evaluate_single(expression))
 
     def next_ancient_edition_id(self):
         ancient_edition_id = self._next_ancient_edition_id

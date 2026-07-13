@@ -17,14 +17,6 @@ TEI_NAMESPACE = "http://www.tei-c.org/ns/1.0"
 TEI_NAMESPACES = {"tei": TEI_NAMESPACE}
 
 
-def _identifier_text(metadata: Path, identifier_type: str) -> str | None:
-    """Return a metadata ``idno`` value by type."""
-
-    with PySaxonProcessor(license=False) as proc:
-        document = parse_xml_document(proc, metadata)
-        return _identifier_text_from_document(proc, document, identifier_type)
-
-
 def _identifier_text_from_document(
     proc: PySaxonProcessor,
     document,
@@ -40,20 +32,6 @@ def _identifier_text_from_document(
     )
 
 
-def _ddb_filename(metadata: Path) -> str | None:
-    """Return the DDbDP filename referenced by an HGV metadata file."""
-
-    return _identifier_text(metadata, "ddb-filename")
-
-
-def _has_nonempty_edition(metadata: Path) -> bool:
-    """Return whether an XML file contains a non-empty edition division."""
-
-    with PySaxonProcessor(license=False) as proc:
-        document = parse_xml_document(proc, metadata)
-        return _has_nonempty_edition_document(proc, document)
-
-
 def _has_nonempty_edition_document(proc: PySaxonProcessor, document) -> bool:
     """Return whether a parsed XML document contains a non-empty edition division."""
 
@@ -63,15 +41,6 @@ def _has_nonempty_edition_document(proc: PySaxonProcessor, document) -> bool:
         "exists(.//*[local-name() = 'div'][@type = 'edition']"
         "[normalize-space(.) or *])",
     )
-
-
-def trismegistos_id(metadata: Path) -> str:
-    """Return the Trismegistos identifier declared by an HGV metadata file."""
-
-    tm_id = _identifier_text(metadata, "TM")
-    if tm_id is None:
-        raise ValueError(f"{metadata} does not contain an idno with type='TM'")
-    return tm_id
 
 
 def iterate_hgv_triples(

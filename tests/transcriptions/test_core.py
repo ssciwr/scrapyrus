@@ -4,7 +4,7 @@ from scrapyrus.saxon_xml import (
     attribute_value,
     direct_children,
     document_element,
-    expanded_name,
+    namespace_uri,
     normalized_text,
     parse_xml_text,
 )
@@ -37,7 +37,8 @@ def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
     assert isinstance(snippet, str)
     with PySaxonProcessor(license=False) as proc:
         edition = _parse_snippet(proc, snippet)
-        assert expanded_name(edition) == "div"
+        assert edition.local_name == "div"
+        assert namespace_uri(edition.name) == ""
         assert attribute_value(edition, "type") == "edition"
         assert normalized_text(direct_children(edition, "ab")[0]) == "Text"
 
@@ -53,7 +54,8 @@ def test_transcription_xml_snippet_can_retain_namespaces(tmp_path):
 
     with PySaxonProcessor(license=False) as proc:
         edition = _parse_snippet(proc, snippet)
-        assert expanded_name(edition) == "{http://www.tei-c.org/ns/1.0}div"
+        assert edition.local_name == "div"
+        assert namespace_uri(edition.name) == "http://www.tei-c.org/ns/1.0"
         assert (
             normalized_text(
                 direct_children(edition, "{http://www.tei-c.org/ns/1.0}ab")[0]

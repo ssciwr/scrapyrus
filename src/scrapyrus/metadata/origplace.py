@@ -8,6 +8,7 @@ from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.metadata.xmlutils import (
     create_xpath_expr,
     drop_known_id_placeholders,
+    optional_string,
     publication_idno_string,
 )
 
@@ -24,17 +25,6 @@ PLEIADES_PLACE_RE = re.compile(
 )
 PLACE_TYPES = {"located", "found", "composed", "sent", "acquired", "received"}
 GRANULARITIES = {"settlement", "nome", "region"}
-
-
-def _optional_string(result):
-    if result is None:
-        return None
-
-    value = result.string_value.strip()
-    if value == "":
-        return None
-
-    return value
 
 
 def _first_place_id(pattern: re.Pattern[str], value: str | None) -> int | None:
@@ -166,7 +156,7 @@ class OrigPlaceModelFactory:
         ]
 
     def _node_string(self, expression):
-        return _optional_string(self.place_value_proc.evaluate_single(expression))
+        return optional_string(self.place_value_proc.evaluate_single(expression))
 
     def next_place_id(self):
         place_id = self._next_place_id

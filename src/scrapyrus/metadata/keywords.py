@@ -8,23 +8,13 @@ from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.metadata.xmlutils import (
     create_xpath_expr,
     drop_known_id_placeholders,
+    optional_string,
     publication_idno_string,
 )
 
 
 KEYWORD_TERMS_XPATH = ".//tei:profileDesc/tei:textClass/tei:keywords/tei:term"
 UNCERTAINTY_MARKER_RE = re.compile(r"\(\s*\?\s*\)|\?")
-
-
-def _optional_string(result):
-    if result is None:
-        return None
-
-    value = result.string_value.strip()
-    if value == "":
-        return None
-
-    return value
 
 
 def _keyword_value(value: str) -> tuple[Optional[str], bool]:
@@ -102,7 +92,7 @@ class KeywordModelFactory:
 
     def _parse_term(self, tm_id, term_node):
         self.term_value_proc.set_context(xdm_item=term_node)
-        keyword = _optional_string(
+        keyword = optional_string(
             self.term_value_proc.evaluate_single("normalize-space(.)")
         )
         if keyword is None:
@@ -114,10 +104,10 @@ class KeywordModelFactory:
         return KeywordModel(
             keyword_id=self.next_keyword_id(),
             tm_id=tm_id,
-            scheme=_optional_string(
+            scheme=optional_string(
                 self.term_value_proc.evaluate_single("string((../@scheme)[1])")
             ),
-            keyword_type=_optional_string(
+            keyword_type=optional_string(
                 self.term_value_proc.evaluate_single("string((@type)[1])")
             ),
             keyword=keyword,

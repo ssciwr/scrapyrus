@@ -8,6 +8,7 @@ from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.metadata.xmlutils import (
     create_xpath_expr,
     drop_known_id_placeholders,
+    optional_string,
     publication_idno_string,
 )
 
@@ -17,17 +18,6 @@ PRINCIPAL_EDITION_NODES_XPATH = (
     "/tei:listBibl/tei:bibl"
 )
 BIBLIO_TARGET_RE = re.compile(r"https?://papyri\.info/biblio/(?P<id>\d+)\b")
-
-
-def _optional_string(result):
-    if result is None:
-        return None
-
-    value = result.string_value.strip()
-    if value == "":
-        return None
-
-    return value
 
 
 def _biblio_id(target: str | None) -> int | None:
@@ -131,7 +121,7 @@ class PrincipalEditionModelFactory:
         )
 
     def _node_string(self, expression):
-        return _optional_string(
+        return optional_string(
             self.principal_edition_value_proc.evaluate_single(expression)
         )
 

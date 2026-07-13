@@ -8,6 +8,7 @@ from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.metadata.xmlutils import (
     create_xpath_expr,
     drop_known_id_placeholders,
+    optional_string,
     publication_idno_string,
 )
 
@@ -16,17 +17,6 @@ ORIG_DATE_NODES_XPATH = ".//tei:origDate"
 DATE_ATTRIBUTE_RE = re.compile(
     r"^(?P<year>-?\d{4,})(?:-(?P<month>\d{2})(?:-(?P<day>\d{2}))?)?$"
 )
-
-
-def _optional_string(result):
-    if result is None:
-        return None
-
-    value = result.string_value.strip()
-    if value == "":
-        return None
-
-    return value
 
 
 def _date_parts(value: str) -> tuple[int, int | None, int | None]:
@@ -164,7 +154,7 @@ class OrigDateModelFactory:
         )
 
     def _node_string(self, expression):
-        return _optional_string(self.date_value_proc.evaluate_single(expression))
+        return optional_string(self.date_value_proc.evaluate_single(expression))
 
     def _date_attribute(self, *attribute_names):
         for attribute_name in attribute_names:

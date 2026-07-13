@@ -2,6 +2,16 @@ from collections.abc import Callable
 from typing import Any
 
 
+def optional_string(result: Any) -> str | None:
+    """Return a stripped Saxon string value, or ``None`` when it is empty."""
+
+    if result is None:
+        return None
+
+    value = result.string_value.strip()
+    return value or None
+
+
 def create_xpath_expr(
     proc: Any, xpath: str, value_processor: Callable[[str], str | None] | None = None
 ):

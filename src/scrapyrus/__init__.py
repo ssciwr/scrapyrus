@@ -1,4 +1,4 @@
-from importlib import metadata
+from importlib import metadata as importlib_metadata
 
 from scrapyrus.metadata.base import catalog, table_summary
 from scrapyrus.transcriptions.core import (
@@ -6,7 +6,7 @@ from scrapyrus.transcriptions.core import (
     translation_epidoc_xml_to_text,
 )
 
-__version__ = metadata.version(__package__)
+__version__ = importlib_metadata.version(__package__)
 
 __all__ = [
     "__version__",

@@ -71,15 +71,6 @@ def display_name(name: str | None) -> str:
     return name.rpartition(":")[2]
 
 
-def expanded_name(node: PyXdmNode) -> str:
-    """Return the node name in Clark notation."""
-
-    namespace = namespace_uri(node.name)
-    if not namespace:
-        return node.local_name
-    return f"{{{namespace}}}{node.local_name}"
-
-
 def parse_xml_document(proc: PySaxonProcessor, path: str | Path) -> PyXdmNode:
     """Parse an XML file and return Saxon's document node."""
 

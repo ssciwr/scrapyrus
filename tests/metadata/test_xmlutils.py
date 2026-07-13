@@ -5,6 +5,7 @@ from scrapyrus.metadata.xmlutils import (
     drop_known_id_placeholders,
     drop_unknown,
     first_string,
+    optional_string,
     publication_idno_string,
 )
 
@@ -38,6 +39,19 @@ class FakeProcessor:
 
     def new_xpath_processor(self):
         return self.xpath_processor
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (None, None),
+        (FakeXPathResult(""), None),
+        (FakeXPathResult("   "), None),
+        (FakeXPathResult("  value  "), "value"),
+    ],
+)
+def test_optional_string_normalizes_saxon_values(result, expected):
+    assert optional_string(result) == expected
 
 
 def test_create_xpath_expr_evaluates_with_tei_namespace_and_context():

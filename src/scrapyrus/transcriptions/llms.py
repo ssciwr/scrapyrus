@@ -19,6 +19,11 @@ class LLMProviderBase:
 
     _providers: ClassVar[list[type[LLMProviderBase]]] = []
 
+    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
+        self.inference_server_url = inference_server_url
+        self.modelname = modelname
+        self.api_key = api_key
+
     def __init_subclass__(
         cls,
         *,
@@ -63,6 +68,40 @@ class LLMProviderBase:
 
         raise NotImplementedError
 
+    def _session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(
+            {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+        return session
+
+    def _get_json(self, path: str) -> dict[str, Any]:
+        return self._request_json("GET", path)
+
+    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self._request_json("POST", path, body)
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._session() as client:
+            request = client.get if method == "GET" else client.post
+            kwargs: dict[str, Any] = {"timeout": LLM_REQUEST_TIMEOUT}
+            if body is not None:
+                kwargs["json"] = body
+            response = request(f"{self.inference_server_url}{path}", **kwargs)
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Inference server response was not a JSON object")
+        return payload
+
 
 def initialize_llm_provider(
     inference_server_url: str, modelname: str, api_key: str
@@ -82,9 +121,7 @@ class MistralProvider(LLMProviderBase):
     """Provider for Mistral AI's hosted API."""
 
     def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
-        self.inference_server_url = _mistral_base_url(inference_server_url)
-        self.modelname = modelname
-        self.api_key = api_key
+        super().__init__(_mistral_base_url(inference_server_url), modelname, api_key)
         self._context_length: int | None = None
         self._embedding_length: int | None = None
 
@@ -159,49 +196,12 @@ class MistralProvider(LLMProviderBase):
         self._embedding_length = len(vector)
         return vector, token_count
 
-    def _session(self) -> requests.Session:
-        session = requests.Session()
-        session.headers.update(
-            {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-        )
-        return session
-
-    def _get_json(self, path: str) -> dict[str, Any]:
-        with self._session() as client:
-            response = client.get(
-                f"{self.inference_server_url}{path}",
-                timeout=LLM_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Mistral response was not a JSON object")
-        return payload
-
-    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        with self._session() as client:
-            response = client.post(
-                f"{self.inference_server_url}{path}",
-                json=body,
-                timeout=LLM_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Mistral response was not a JSON object")
-        return payload
-
 
 class VLLMProvider(LLMProviderBase):
     """Provider for a vLLM OpenAI-compatible inference server."""
 
     def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
-        self.inference_server_url = _vllm_base_url(inference_server_url)
-        self.modelname = modelname
-        self.api_key = api_key
+        super().__init__(_vllm_base_url(inference_server_url), modelname, api_key)
         self._context_length: int | None = None
         self._embedding_length: int | None = None
 
@@ -213,13 +213,7 @@ class VLLMProvider(LLMProviderBase):
 
         provider = cls(inference_server_url, modelname, api_key)
         try:
-            with provider._session() as client:
-                response = client.get(
-                    f"{provider.inference_server_url}/version",
-                    timeout=LLM_REQUEST_TIMEOUT,
-                )
-                response.raise_for_status()
-                payload = response.json()
+            payload = provider._get_json("/version")
         except (requests.RequestException, ValueError):
             return None
         if not isinstance(payload, dict) or not isinstance(payload.get("version"), str):
@@ -262,16 +256,6 @@ class VLLMProvider(LLMProviderBase):
         self._embedding_length = len(vector)
         return vector
 
-    def _session(self) -> requests.Session:
-        session = requests.Session()
-        session.headers.update(
-            {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-        )
-        return session
-
     def _tokenize(self, text: str) -> tuple[int, int]:
         payload = self._post_json(
             "/tokenize", {"model": self.modelname, "prompt": text}
@@ -291,19 +275,6 @@ class VLLMProvider(LLMProviderBase):
             )
         self._context_length = context_length
         return count, context_length
-
-    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        with self._session() as client:
-            response = client.post(
-                f"{self.inference_server_url}{path}",
-                json=body,
-                timeout=LLM_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Inference server response was not a JSON object")
-        return payload
 
 
 def _vllm_base_url(inference_server_url: str) -> str:

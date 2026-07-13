@@ -4,7 +4,6 @@ from scrapyrus.idpdata import (
     iterate_dclp_triples,
     iterate_hgv_triples,
     iterate_idpdata_triples,
-    trismegistos_id,
 )
 
 
@@ -92,7 +91,6 @@ def test_iterate_hgv_triples_returns_tm_id_from_metadata(tmp_path):
     translation = translation_root / "999999.xml"
     translation.write_text("<TEI />", encoding="utf-8")
 
-    assert trismegistos_id(metadata) == "123456"
     assert list(iterate_hgv_triples(idp_data, progressbar=False)) == [
         ("123456", metadata, transcription, translation)
     ]
