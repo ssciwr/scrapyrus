@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import math
@@ -20,7 +18,6 @@ from scrapyrus.transcriptions.core import (
 )
 
 
-MAX_CONCURRENT_EMBEDDING_REQUESTS = 100
 EMBEDDING_REQUEST_TIMEOUT = 60
 
 PGVECTOR_UNAVAILABLE_MESSAGE = (
@@ -82,25 +79,6 @@ class _EmbeddedDocument:
 class _SkippedEmbeddingDocument:
     job: _EmbeddingJob
     message: str
-
-
-class _EmbeddingRequestSentinel:
-    """Limit embedding requests running against the inference server."""
-
-    def __init__(self, limit: int = MAX_CONCURRENT_EMBEDDING_REQUESTS) -> None:
-        if limit < 1:
-            raise ValueError("Embedding request concurrency limit must be positive")
-        self._semaphore = asyncio.Semaphore(limit)
-
-    async def embed(
-        self,
-        store: "EmbeddingStore",
-        executor: ThreadPoolExecutor,
-        text: str,
-    ) -> tuple[float, ...]:
-        async with self._semaphore:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(executor, store._embed_sync, text)
 
 
 class EmbeddingStore:
@@ -251,7 +229,7 @@ class EmbeddingStore:
         session.headers.update(self.headers)
         return session
 
-    def _embed_sync(self, text: str) -> tuple[float, ...]:
+    def _embed(self, text: str) -> tuple[float, ...]:
         with self._session() as client:
             response = client.post(
                 self._embeddings_url,
@@ -284,73 +262,39 @@ def _embed_documents(
 ) -> list[_EmbeddedDocument]:
     if not jobs:
         return []
-    embedded_documents, skipped_messages = asyncio.run(
-        _embed_documents_async(
-            jobs,
-            progressbar=progressbar,
-            progressbar_title=progressbar_title,
+
+    progress = None
+    if progressbar:
+        progress = tqdm(
+            total=len(jobs),
+            unit="request",
+            desc=progressbar_title,
         )
-    )
-    for message in skipped_messages:
-        print(message, flush=True)
-    return embedded_documents
+    completed: list[_EmbeddedDocument] = []
+    skipped: list[_SkippedEmbeddingDocument] = []
+
+    try:
+        for job in jobs:
+            result = _embed_document(job, progress)
+            if isinstance(result, _SkippedEmbeddingDocument):
+                skipped.append(result)
+            else:
+                completed.append(result)
+    finally:
+        if progress is not None and hasattr(progress, "close"):
+            progress.close()
+
+    for skipped_document in skipped:
+        print(skipped_document.message, flush=True)
+    return completed
 
 
-async def _embed_documents_async(
-    jobs: Sequence[_EmbeddingJob],
-    *,
-    progressbar: bool,
-    progressbar_title: str,
-) -> tuple[list[_EmbeddedDocument], list[str]]:
-    sentinel = _EmbeddingRequestSentinel()
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_EMBEDDING_REQUESTS) as executor:
-        progress = None
-        if progressbar:
-            progress = tqdm(
-                total=len(jobs),
-                unit="request",
-                desc=progressbar_title,
-            )
-        tasks = [
-            asyncio.create_task(_embed_document(job, sentinel, executor, progress))
-            for job in jobs
-        ]
-        completed: list[_EmbeddedDocument] = []
-        skipped: list[_SkippedEmbeddingDocument] = []
-
-        try:
-            for result in await asyncio.gather(*tasks):
-                if isinstance(result, _SkippedEmbeddingDocument):
-                    skipped.append(result)
-                else:
-                    completed.append(result)
-        except BaseException:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-        finally:
-            if progress is not None and hasattr(progress, "close"):
-                progress.close()
-
-    completed.sort(key=lambda document: document.job.ordinal)
-    skipped_messages = [
-        skipped_document.message
-        for skipped_document in sorted(
-            skipped, key=lambda document: document.job.ordinal
-        )
-    ]
-    return completed, skipped_messages
-
-
-async def _embed_document(
+def _embed_document(
     job: _EmbeddingJob,
-    sentinel: _EmbeddingRequestSentinel,
-    executor: ThreadPoolExecutor,
     progress: Any | None,
 ) -> _EmbeddedDocument | _SkippedEmbeddingDocument:
     try:
-        embedding = await sentinel.embed(job.store, executor, job.row["document_text"])
+        embedding = job.store._embed(job.row["document_text"])
     except Exception as error:
         if _is_skippable_embedding_error(error):
             result: _EmbeddedDocument | _SkippedEmbeddingDocument = (

@@ -1,4 +1,3 @@
-import asyncio
 from inspect import signature
 import hashlib
 
@@ -155,8 +154,7 @@ def test_embed_document_skips_context_length_errors():
     class FakeStore:
         modelname = "embed/model"
 
-    class FakeSentinel:
-        async def embed(self, store, executor, text):
+        def _embed(self, text):
             if text == "Too long.":
                 raise ValueError(
                     "vllm.exceptions.VLLMValidationError: "
@@ -166,7 +164,6 @@ def test_embed_document_skips_context_length_errors():
             return (0.25, 0.5, 0.75)
 
     store = FakeStore()
-    sentinel = FakeSentinel()
     configuration = EmbeddingConfiguration("embed/model")
     skipped_job = _EmbeddingJob(
         0,
@@ -193,8 +190,8 @@ def test_embed_document_skips_context_length_errors():
         configuration=configuration,
     )
 
-    skipped = asyncio.run(_embed_document(skipped_job, sentinel, None, None))
-    embedded = asyncio.run(_embed_document(embedded_job, sentinel, None, None))
+    skipped = _embed_document(skipped_job, None)
+    embedded = _embed_document(embedded_job, None)
 
     assert isinstance(skipped, _SkippedEmbeddingDocument)
     assert skipped.job is skipped_job
