@@ -32,7 +32,8 @@ python -m pytest
 ## Docker Compose
 
 The repository includes a Docker Compose setup with PostgreSQL and a long-lived
-`scrapyrus` execution container:
+`scrapyrus` execution container. The PostgreSQL service uses a pgvector-enabled
+image because `scrapyrus embeddings` commands require the `vector` extension:
 
 ```
 docker compose up --build -d
@@ -58,6 +59,13 @@ To export the metadata database tables as CSV files:
 
 ```
 scrapyrus metadata dump
+```
+
+If an older checkout already started the Compose stack with the stock PostgreSQL
+image, recreate the database service after updating:
+
+```
+docker compose up -d --force-recreate postgres
 ```
 
 ## Acknowledgments

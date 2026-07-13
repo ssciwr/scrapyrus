@@ -10,6 +10,7 @@ from scrapyrus.images import (
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
 from scrapyrus.transcriptions.embeddings import (
     EmbeddingStore,
+    PgvectorUnavailableError,
     delete_embeddings,
     update_embeddings,
 )
@@ -284,17 +285,20 @@ def ingest_embeddings(
     """Ingest transcription or translation embeddings into PostgreSQL."""
 
     store = EmbeddingStore(inference_server_url, model_name, api_key)
-    store.setup_store(
-        context.obj["idp_data"],
-        database_url,
-        progress,
-        abbrev=abbrev,
-        break_on_gap=break_on_gap,
-        lost=lost,
-        unclear=unclear,
-        regularize=regularize,
-        translation=translation,
-    )
+    try:
+        store.setup_store(
+            context.obj["idp_data"],
+            database_url,
+            progress,
+            abbrev=abbrev,
+            break_on_gap=break_on_gap,
+            lost=lost,
+            unclear=unclear,
+            regularize=regularize,
+            translation=translation,
+        )
+    except PgvectorUnavailableError as error:
+        raise click.ClickException(str(error)) from error
 
 
 @embeddings.command("delete")
@@ -343,13 +347,16 @@ def update_embedding_configurations(
 ) -> None:
     """Compute missing or stale embeddings for all stored configurations."""
 
-    update_embeddings(
-        context.obj["idp_data"],
-        database_url,
-        progress,
-        inference_server_url=inference_server_url,
-        api_key=api_key,
-    )
+    try:
+        update_embeddings(
+            context.obj["idp_data"],
+            database_url,
+            progress,
+            inference_server_url=inference_server_url,
+            api_key=api_key,
+        )
+    except PgvectorUnavailableError as error:
+        raise click.ClickException(str(error)) from error
 
 
 @embeddings.command("evaluate")

@@ -23,6 +23,16 @@ from scrapyrus.transcriptions.core import (
 MAX_CONCURRENT_EMBEDDING_REQUESTS = 100
 EMBEDDING_REQUEST_TIMEOUT = 60
 
+PGVECTOR_UNAVAILABLE_MESSAGE = (
+    "PostgreSQL extension 'vector' is not available. Install pgvector on the "
+    "database server before using embeddings, or use a pgvector-enabled "
+    "PostgreSQL image such as pgvector/pgvector:pg16."
+)
+
+
+class PgvectorUnavailableError(RuntimeError):
+    """Raised when the PostgreSQL server does not provide pgvector."""
+
 
 @dataclass(frozen=True)
 class EmbeddingConfiguration:
@@ -556,9 +566,24 @@ def _embeddings_url(inference_server_url: str) -> str:
 
 
 def _ensure_embedding_schema(cursor: Any) -> None:
-    cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    try:
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except (
+        psycopg.errors.FeatureNotSupported,
+        psycopg.errors.UndefinedFile,
+    ) as error:
+        if _is_missing_vector_extension_error(error):
+            raise PgvectorUnavailableError(PGVECTOR_UNAVAILABLE_MESSAGE) from error
+        raise
     _create_embedding_configurations_table(cursor)
     _create_document_embeddings_table(cursor)
+
+
+def _is_missing_vector_extension_error(error: psycopg.Error) -> bool:
+    message = str(error)
+    return (
+        'extension "vector" is not available' in message or "vector.control" in message
+    )
 
 
 def _create_embedding_configurations_table(cursor: Any) -> None:

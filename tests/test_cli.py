@@ -3,6 +3,7 @@ from pathlib import Path
 
 from scrapyrus.images import DEFAULT_BROKEN_IMAGE_FILE
 from scrapyrus.__main__ import main
+from scrapyrus.transcriptions.embeddings import PgvectorUnavailableError
 
 from click.testing import CliRunner
 
@@ -370,6 +371,40 @@ def test_embeddings_ingest_subcommand_uses_envvars(monkeypatch):
             },
         )
     ]
+
+
+def test_embeddings_ingest_subcommand_reports_missing_pgvector(monkeypatch):
+    class FakeEmbeddingStore:
+        def __init__(self, inference_server_url, model_name, api_key):
+            pass
+
+        def setup_store(self, idp_data, database_url, progress, **kwargs):
+            raise PgvectorUnavailableError(
+                "PostgreSQL extension 'vector' is not available."
+            )
+
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", FakeEmbeddingStore)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        (
+            "embeddings",
+            "ingest",
+            "--database-url",
+            "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
+            "--inference-server-url",
+            "https://inference.example/v1",
+            "--model-name",
+            "text-embedding-model",
+            "--api-key",
+            "api-secret",
+        ),
+    )
+
+    assert result.exit_code == 1
+    assert "Error: PostgreSQL extension 'vector' is not available." in result.output
+    assert "Traceback" not in result.output
 
 
 def test_embeddings_delete_subcommand_deletes_embedding_configuration(monkeypatch):
