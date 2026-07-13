@@ -18,6 +18,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SCRAPYRUS_DATABASE_URL: postgresql://scrapyrus:scrapyrus@postgres:5432/scrapyrus
     stdin_open: true
