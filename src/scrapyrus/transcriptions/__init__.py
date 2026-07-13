@@ -19,17 +19,25 @@ from scrapyrus.transcriptions.evaluation import (
     LanguageEmbeddingEvaluation,
     evaluate_embeddings_model,
 )
+from scrapyrus.transcriptions.llms import (
+    LLMProviderBase,
+    VLLMProvider,
+    initialize_llm_provider,
+)
 
 __all__ = [
     "available_translation_languages",
     "EmbeddingStore",
     "EmbeddingEvaluation",
     "LanguageEmbeddingEvaluation",
+    "LLMProviderBase",
+    "VLLMProvider",
     "delete_embeddings",
     "dump_transcriptions",
     "epidoc_xml_to_text",
     "evaluate_embeddings_model",
     "ingest_transcriptions",
+    "initialize_llm_provider",
     "retrieve_embedding",
     "transcription_language",
     "update_embeddings",

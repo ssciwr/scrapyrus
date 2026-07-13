@@ -54,32 +54,14 @@ class RecordingConnection:
         return self._cursor
 
 
-class FakeResponse:
-    def __init__(self, embedding):
-        self.embedding = embedding
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return {"data": [{"embedding": self.embedding}]}
-
-
-class FakeClient:
+class FakeProvider:
     def __init__(self, embeddings):
-        self.headers = {}
         self.embeddings = list(embeddings)
-        self.posts = []
+        self.inputs = []
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def post(self, url, *, json, timeout):
-        self.posts.append((url, json, timeout))
-        return FakeResponse(self.embeddings.pop(0))
+    def embed(self, text):
+        self.inputs.append(text)
+        return tuple(self.embeddings.pop(0))
 
 
 def test_maximum_transcription_variant_is_fixed(monkeypatch):
@@ -134,9 +116,10 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
         "scrapyrus.transcriptions.embeddings.transcription_language",
         lambda xml: "grc",
     )
-    client = FakeClient([[0.1, 0.2], [0.3, 0.4]])
+    provider = FakeProvider([[0.1, 0.2], [0.3, 0.4]])
     monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.requests.Session", lambda: client
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: provider,
     )
 
     count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
@@ -158,7 +141,7 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     assert "translation_embeddings" in inserts[1][0]
     assert inserts[1][1]["language"] == "en"
     assert inserts[1][1]["document_text"] == "Beta"
-    assert [post[1]["input"] for post in client.posts] == ["Alpha", "Beta"]
+    assert provider.inputs == ["Alpha", "Beta"]
 
 
 def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
@@ -174,6 +157,10 @@ def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
     )
     monkeypatch.setattr(
         "scrapyrus.transcriptions.embeddings.transcription_language", lambda xml: None
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: FakeProvider([]),
     )
 
     assert (
@@ -220,11 +207,14 @@ def test_delete_embeddings_deletes_model_from_both_tables(monkeypatch):
     assert any("translation_embeddings" in query for query in deletes)
 
 
-def test_embedding_store_configures_session_headers(monkeypatch):
-    client = FakeClient([])
+def test_embedding_store_initializes_provider(monkeypatch):
+    calls = []
+    provider = FakeProvider([])
     monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.requests.Session", lambda: client
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: calls.append(args) or provider,
     )
     store = EmbeddingStore("https://example", "model", "test-key")
-    assert store._session() is client
-    assert client.headers["Authorization"] == "Bearer test-key"
+
+    assert store.provider is provider
+    assert calls == [("https://example", "model", "test-key")]

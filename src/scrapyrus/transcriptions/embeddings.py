@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
-import math
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +17,9 @@ from scrapyrus.transcriptions.core import (
     transcription_language,
     translation_epidoc_xml_to_text,
 )
+from scrapyrus.transcriptions.llms import LLMProviderBase, initialize_llm_provider
 
 
-EMBEDDING_REQUEST_TIMEOUT = 60
 TRANSCRIPTION_EMBEDDINGS_TABLE = "transcription_embeddings"
 TRANSLATION_EMBEDDINGS_TABLE = "translation_embeddings"
 EMBEDDING_TABLES = {
@@ -75,11 +74,9 @@ class EmbeddingStore:
     def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
         self.inference_server_url = inference_server_url
         self.modelname = modelname
-        self.headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        self._embeddings_url = _embeddings_url(inference_server_url)
+        self.provider: LLMProviderBase = initialize_llm_provider(
+            inference_server_url, modelname, api_key
+        )
 
     def setup_store(
         self,
@@ -174,32 +171,8 @@ class EmbeddingStore:
 
         return len(embedded)
 
-    def _session(self) -> requests.Session:
-        session = requests.Session()
-        session.headers.update(self.headers)
-        return session
-
     def _embed(self, text: str) -> tuple[float, ...]:
-        with self._session() as client:
-            response = client.post(
-                self._embeddings_url,
-                json={"model": self.modelname, "input": text},
-                timeout=EMBEDDING_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        try:
-            embedding = payload["data"][0]["embedding"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise ValueError(
-                "Embedding response did not contain data[0].embedding"
-            ) from error
-        if not isinstance(embedding, list) or not embedding:
-            raise ValueError("Embedding response did not contain a non-empty vector")
-        vector = tuple(float(value) for value in embedding)
-        if not all(math.isfinite(value) for value in vector):
-            raise ValueError("Embedding response contained non-finite vector values")
-        return vector
+        return self.provider.embed(text)
 
 
 def update_embeddings(
@@ -499,15 +472,6 @@ def _response_error_message(response: Any) -> str | None:
         return str(error_payload)
     text = getattr(response, "text", None)
     return text.strip() if isinstance(text, str) and text.strip() else None
-
-
-def _embeddings_url(inference_server_url: str) -> str:
-    base_url = inference_server_url.rstrip("/")
-    return (
-        f"{base_url}/embeddings"
-        if base_url.endswith("/v1")
-        else f"{base_url}/v1/embeddings"
-    )
 
 
 def _input_hash(document_text: str) -> str:
