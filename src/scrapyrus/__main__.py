@@ -265,6 +265,13 @@ def embeddings() -> None:
     ),
 )
 @click.option(
+    "--seed",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Seed used to make --sample selection deterministic.",
+)
+@click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
@@ -276,6 +283,7 @@ def ingest_embeddings(
     model_name: str,
     api_key: str,
     sample: int | None,
+    seed: int,
     progress: bool,
 ) -> None:
     """Embed transcription and translation XML rows in PostgreSQL."""
@@ -286,6 +294,7 @@ def ingest_embeddings(
             database_url,
             progress,
             sample=sample,
+            seed=seed,
         )
     except PgvectorUnavailableError as error:
         raise click.ClickException(str(error)) from error

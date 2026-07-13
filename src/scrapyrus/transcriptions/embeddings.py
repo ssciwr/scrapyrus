@@ -86,15 +86,16 @@ class EmbeddingStore:
         *,
         stale_only: bool = False,
         sample: int | None = None,
+        seed: int = 0,
     ) -> int:
         """Embed transcription/translation XML rows in PostgreSQL.
 
         Transcriptions always use the maximum text variant. Translations use
         their complete plain-text rendering. Rows are stored in separate tables.
         When ``stale_only`` is true, unchanged rows are not sent to the model.
-        When ``sample`` is set, randomly select that many ``tm_id`` records
-        which have both a transcription and a translation, and embed all XML
-        rows belonging to those records.
+        When ``sample`` is set, deterministically select that many ``tm_id``
+        records using ``seed`` from those which have both a transcription and
+        a translation, and embed all XML rows belonging to those records.
         """
 
         jobs: list[_EmbeddingJob] = []
@@ -102,7 +103,7 @@ class EmbeddingStore:
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 _ensure_embedding_schema(cursor)
-                for source in _select_xml_rows(cursor, sample=sample):
+                for source in _select_xml_rows(cursor, sample=sample, seed=seed):
                     document_kind = str(source["type"])
                     if document_kind not in EMBEDDING_TABLES:
                         continue
@@ -245,7 +246,7 @@ def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
 
 
 def _select_xml_rows(
-    cursor: Any, *, sample: int | None = None
+    cursor: Any, *, sample: int | None = None, seed: int = 0
 ) -> tuple[dict[str, Any], ...]:
     if sample is None:
         cursor.execute(
@@ -264,7 +265,7 @@ WITH sampled_records AS (
     GROUP BY tm_id
     HAVING bool_or(type = 'transcription')
        AND bool_or(type = 'translation')
-    ORDER BY random()
+    ORDER BY md5(tm_id::text || ':' || (%s)::text), tm_id
     LIMIT %s
 )
 SELECT transcription_id, source_path, tm_id, xml_content::text, type, language
@@ -272,7 +273,7 @@ FROM {TRANSCRIPTIONS_TABLE}
 JOIN sampled_records USING (tm_id)
 ORDER BY transcription_id
 """,
-            (sample,),
+            (seed, sample),
         )
     keys = (
         "transcription_id",

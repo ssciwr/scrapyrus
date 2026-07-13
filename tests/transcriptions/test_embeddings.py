@@ -145,17 +145,18 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     assert provider.inputs == ["Alpha", "Beta"]
 
 
-def test_select_xml_rows_samples_only_records_with_both_document_kinds():
+def test_select_xml_rows_samples_deterministically_with_seed():
     cursor = RecordingCursor()
 
-    _select_xml_rows(cursor, sample=10)
+    _select_xml_rows(cursor, sample=10, seed=42)
 
     query, params = cursor.executions[0]
     assert "GROUP BY tm_id" in query
     assert "bool_or(type = 'transcription')" in query
     assert "bool_or(type = 'translation')" in query
-    assert "ORDER BY random()" in query
-    assert params == (10,)
+    assert "ORDER BY md5(tm_id::text || ':' || (%s)::text), tm_id" in query
+    assert "random()" not in query
+    assert params == (42, 10)
 
 
 def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
