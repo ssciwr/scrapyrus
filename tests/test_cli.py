@@ -241,6 +241,57 @@ def test_metadata_dump_subcommand_uses_database_url_envvar(monkeypatch):
     ]
 
 
+def test_transcriptions_ingest_subcommand_triggers_ingestion(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.ingest_transcriptions",
+        lambda idp_data, database_url, *, progressbar: calls.append(
+            (idp_data, database_url, progressbar)
+        ),
+    )
+    idp_data = tmp_path / "idp.data"
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "--idp-data",
+            str(idp_data),
+            "transcriptions",
+            "ingest",
+            "--database-url",
+            "postgresql://database.example/scrapyrus",
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [(idp_data, "postgresql://database.example/scrapyrus", False)]
+
+
+def test_transcriptions_dump_subcommand_triggers_csv_dump(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_transcriptions",
+        lambda output_dir, database_url: calls.append((output_dir, database_url)),
+    )
+    output_dir = tmp_path / "transcriptions-csv"
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "transcriptions",
+            "dump",
+            "--database-url",
+            "postgresql://database.example/scrapyrus",
+            "--output-dir",
+            str(output_dir),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [(output_dir, "postgresql://database.example/scrapyrus")]
+
+
 def test_embeddings_ingest_subcommand_triggers_embedding_store(tmp_path, monkeypatch):
     init_calls = []
     setup_calls = []

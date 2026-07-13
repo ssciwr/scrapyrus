@@ -8,6 +8,7 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.transcriptions.core import dump_transcriptions, ingest_transcriptions
 from scrapyrus.transcriptions.embeddings import (
     EmbeddingStore,
     PgvectorUnavailableError,
@@ -250,6 +251,49 @@ def dump(database_url: str, output_dir: Path) -> None:
     """Dump metadata database tables as CSV files."""
 
     dump_metadata_tables(output_dir, database_url)
+
+
+@main.group("transcriptions")
+def transcriptions() -> None:
+    """Work with transcription and translation XML."""
+
+
+@transcriptions.command("ingest")
+@database_url
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while reading idp.data records.",
+)
+@click.pass_context
+def ingest_transcription_xml(
+    context: click.Context,
+    database_url: str,
+    progress: bool,
+) -> None:
+    """Ingest transcription and translation XML into PostgreSQL."""
+
+    ingest_transcriptions(
+        context.obj["idp_data"],
+        database_url,
+        progressbar=progress,
+    )
+
+
+@transcriptions.command("dump")
+@database_url
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=Path("transcriptions-csv"),
+    show_default=True,
+    help="Directory to write the transcription XML CSV file.",
+)
+def dump_transcription_xml(database_url: str, output_dir: Path) -> None:
+    """Dump transcription and translation XML as CSV."""
+
+    dump_transcriptions(output_dir, database_url)
 
 
 @main.group("embeddings")
