@@ -21,6 +21,7 @@ from scrapyrus.transcriptions.evaluation import (
 )
 from scrapyrus.transcriptions.llms import (
     LLMProviderBase,
+    MistralProvider,
     VLLMProvider,
     initialize_llm_provider,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "EmbeddingEvaluation",
     "LanguageEmbeddingEvaluation",
     "LLMProviderBase",
+    "MistralProvider",
     "VLLMProvider",
     "delete_embeddings",
     "dump_transcriptions",

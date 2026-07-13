@@ -5,6 +5,7 @@ import pytest
 from scrapyrus.transcriptions.llms import (
     LLM_REQUEST_TIMEOUT,
     LLMProviderBase,
+    MistralProvider,
     VLLMProvider,
     initialize_llm_provider,
 )
@@ -93,6 +94,99 @@ def test_initialize_llm_provider_rejects_unknown_server(monkeypatch):
 
     with pytest.raises(ValueError, match="No registered LLM provider"):
         initialize_llm_provider("https://unknown", "model", "key")
+
+
+def test_mistral_initialize_detects_api_hostname_and_normalizes_url():
+    provider = MistralProvider.initialize(
+        "https://api.mistral.ai", "mistral-embed", "secret"
+    )
+
+    assert isinstance(provider, MistralProvider)
+    assert provider.inference_server_url == "https://api.mistral.ai/v1"
+    assert provider.modelname == "mistral-embed"
+    assert provider.api_key == "secret"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/mistral.ai",
+        "https://api.mistral.ai.example.com/v1",
+        "not-a-url",
+    ],
+)
+def test_mistral_initialize_declines_other_hostnames(url):
+    assert MistralProvider.initialize(url, "model", "key") is None
+
+
+def test_mistral_token_count_uses_embedding_usage(monkeypatch):
+    client = FakeClient(
+        posts=[
+            FakeResponse(
+                {
+                    "data": [{"embedding": [0.25, -0.5, 1]}],
+                    "usage": {"prompt_tokens": 3},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.llms.requests.Session", lambda: client
+    )
+    provider = MistralProvider("https://api.mistral.ai/v1/", "mistral-embed", "secret")
+
+    assert provider.token_count("some text") == 3
+    assert client.headers["Authorization"] == "Bearer secret"
+    assert client.requests == [
+        (
+            "POST",
+            "https://api.mistral.ai/v1/embeddings",
+            {"model": "mistral-embed", "input": "some text"},
+            LLM_REQUEST_TIMEOUT,
+        )
+    ]
+
+
+def test_mistral_context_length_uses_model_endpoint_and_is_cached(monkeypatch):
+    client = FakeClient(gets=[FakeResponse({"max_context_length": 32768})])
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.llms.requests.Session", lambda: client
+    )
+    provider = MistralProvider(
+        "https://api.mistral.ai/v1", "mistral embed/model", "key"
+    )
+
+    assert provider.context_length() == 32768
+    assert provider.context_length() == 32768
+    assert client.requests == [
+        (
+            "GET",
+            "https://api.mistral.ai/v1/models/mistral%20embed%2Fmodel",
+            None,
+            LLM_REQUEST_TIMEOUT,
+        )
+    ]
+
+
+def test_mistral_embedding_methods_use_embedding_endpoint(monkeypatch):
+    client = FakeClient(
+        posts=[
+            FakeResponse(
+                {
+                    "data": [{"embedding": [0.25, -0.5, 1]}],
+                    "usage": {"prompt_tokens": 1},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.llms.requests.Session", lambda: client
+    )
+    provider = MistralProvider("https://api.mistral.ai/v1", "mistral-embed", "key")
+
+    assert provider.embed("document") == (0.25, -0.5, 1.0)
+    assert provider.embedding_length() == 3
+    assert len(client.requests) == 1
 
 
 def test_vllm_initialize_detects_server_and_normalizes_v1_url(monkeypatch):

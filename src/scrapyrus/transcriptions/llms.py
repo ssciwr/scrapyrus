@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from typing import Any, ClassVar
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -75,6 +76,123 @@ def initialize_llm_provider(
     raise ValueError(
         f"No registered LLM provider handles inference server {inference_server_url!r}"
     )
+
+
+class MistralProvider(LLMProviderBase):
+    """Provider for Mistral AI's hosted API."""
+
+    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
+        self.inference_server_url = _mistral_base_url(inference_server_url)
+        self.modelname = modelname
+        self.api_key = api_key
+        self._context_length: int | None = None
+        self._embedding_length: int | None = None
+
+    @classmethod
+    def initialize(
+        cls, inference_server_url: str, modelname: str, api_key: str
+    ) -> MistralProvider | None:
+        """Detect Mistral AI from its API hostname."""
+
+        hostname = urlparse(inference_server_url).hostname
+        if hostname is None or hostname.rstrip(".").lower() != "api.mistral.ai":
+            return None
+        return cls(inference_server_url, modelname, api_key)
+
+    def token_count(self, text: str) -> int:
+        _, token_count = self._embed(text)
+        return token_count
+
+    def context_length(self) -> int:
+        if self._context_length is None:
+            model_id = quote(self.modelname, safe="")
+            payload = self._get_json(f"/models/{model_id}")
+            context_length = payload.get("max_context_length")
+            if (
+                not isinstance(context_length, int)
+                or isinstance(context_length, bool)
+                or context_length < 1
+            ):
+                raise ValueError(
+                    "Model response did not contain a valid max_context_length"
+                )
+            self._context_length = context_length
+        return self._context_length
+
+    def embedding_length(self) -> int:
+        if self._embedding_length is None:
+            self.embed("test")
+        assert self._embedding_length is not None
+        return self._embedding_length
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        vector, _ = self._embed(text)
+        return vector
+
+    def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        payload = self._post_json(
+            "/embeddings", {"model": self.modelname, "input": text}
+        )
+        try:
+            embedding = payload["data"][0]["embedding"]
+            token_count = payload["usage"]["prompt_tokens"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise ValueError(
+                "Embedding response did not contain data[0].embedding and "
+                "usage.prompt_tokens"
+            ) from error
+        if not isinstance(embedding, list) or not embedding:
+            raise ValueError("Embedding response did not contain a non-empty vector")
+        if (
+            not isinstance(token_count, int)
+            or isinstance(token_count, bool)
+            or token_count < 0
+        ):
+            raise ValueError(
+                "Embedding response did not contain a valid usage.prompt_tokens"
+            )
+        vector = tuple(float(value) for value in embedding)
+        if not all(math.isfinite(value) for value in vector):
+            raise ValueError("Embedding response contained non-finite vector values")
+        if self._embedding_length is not None and self._embedding_length != len(vector):
+            raise ValueError("Embedding response changed vector length")
+        self._embedding_length = len(vector)
+        return vector, token_count
+
+    def _session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(
+            {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+        return session
+
+    def _get_json(self, path: str) -> dict[str, Any]:
+        with self._session() as client:
+            response = client.get(
+                f"{self.inference_server_url}{path}",
+                timeout=LLM_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Mistral response was not a JSON object")
+        return payload
+
+    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        with self._session() as client:
+            response = client.post(
+                f"{self.inference_server_url}{path}",
+                json=body,
+                timeout=LLM_REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Mistral response was not a JSON object")
+        return payload
 
 
 class VLLMProvider(LLMProviderBase):
@@ -191,3 +309,8 @@ class VLLMProvider(LLMProviderBase):
 def _vllm_base_url(inference_server_url: str) -> str:
     base_url = inference_server_url.rstrip("/")
     return base_url[:-3] if base_url.endswith("/v1") else base_url
+
+
+def _mistral_base_url(inference_server_url: str) -> str:
+    base_url = inference_server_url.rstrip("/")
+    return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
