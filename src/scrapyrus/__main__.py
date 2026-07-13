@@ -370,7 +370,9 @@ def update_embedding_configurations(
     show_default=True,
     help="Markdown file to write evaluation findings to.",
 )
+@click.pass_context
 def evaluate_embedding_model(
+    context: click.Context,
     database_url: str,
     model_name: str,
     output_file: Path,
@@ -385,6 +387,7 @@ def evaluate_embedding_model(
     evaluate_embeddings_model(
         database_url,
         modelname=model_name,
+        idp_data=context.obj["idp_data"],
         output_file=output_file,
         abbrev=abbrev,
         break_on_gap=break_on_gap,

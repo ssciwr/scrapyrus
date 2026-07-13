@@ -11,6 +11,7 @@ from scrapyrus.saxon_xml import (
 from scrapyrus.transcriptions import (
     available_translation_languages,
     epidoc_xml_to_text,
+    transcription_language,
     transcription_xml_snippet,
     translation_epidoc_xml_to_text,
 )
@@ -66,6 +67,32 @@ def test_transcription_xml_snippet_returns_none_without_edition(tmp_path):
     transcription.write_text('<TEI><div type="commentary" /></TEI>')
 
     assert transcription_xml_snippet(transcription) is None
+
+
+def test_transcription_language_returns_edition_language():
+    xml = """<TEI xmlns="http://www.tei-c.org/ns/1.0" xml:lang="en">
+    <text><body>
+        <div xml:lang="grc" type="edition"><ab>Text</ab></div>
+    </body></text>
+    </TEI>"""
+
+    assert transcription_language(xml) == "grc"
+
+
+def test_transcription_language_falls_back_to_document_language(tmp_path):
+    transcription = tmp_path / "transcription.xml"
+    transcription.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0" xml:lang="la">'
+        '<text><body><div type="edition"><ab>Text</ab></div></body></text>'
+        "</TEI>",
+        encoding="utf-8",
+    )
+
+    assert transcription_language(transcription) == "la"
+
+
+def test_transcription_language_returns_none_without_language():
+    assert transcription_language('<TEI><div type="edition" /></TEI>') is None
 
 
 def test_epidoc_xml_to_text_defaults_to_known_papyrus_text():

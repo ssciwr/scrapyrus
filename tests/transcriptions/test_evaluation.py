@@ -52,6 +52,21 @@ def test_evaluate_embeddings_model_computes_recall_and_writes_markdown(
     tmp_path,
     monkeypatch,
 ):
+    idp_data = tmp_path / "idp.data"
+    for document_path, language in {
+        "DDB_EpiDoc_XML/p.test/1.xml": "grc",
+        "DDB_EpiDoc_XML/p.test/2.xml": "cop",
+        "DDB_EpiDoc_XML/p.test/3.xml": "grc",
+    }.items():
+        transcription = idp_data / document_path
+        transcription.parent.mkdir(parents=True, exist_ok=True)
+        transcription.write_text(
+            '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+            f'<div xml:lang="{language}" type="edition"><ab>Text</ab></div>'
+            "</TEI>",
+            encoding="utf-8",
+        )
+
     cursor = RecordingCursor(
         results=[(42, 3, 3), (7, 3, 4)],
         all_results=[
@@ -110,6 +125,7 @@ def test_evaluate_embeddings_model_computes_recall_and_writes_markdown(
     evaluation = evaluate_embeddings_model(
         "postgresql://metadata.example/scrapyrus",
         modelname="embed/model",
+        idp_data=idp_data,
         output_file=output_file,
         abbrev=True,
         lost=True,
@@ -130,9 +146,27 @@ def test_evaluate_embeddings_model_computes_recall_and_writes_markdown(
         4: 2 / 3,
         5: 2 / 3,
     }
+    assert evaluation.language_results["greek"].evaluated_count == 2
+    assert evaluation.language_results["greek"].recall_hits == {
+        1: 1,
+        2: 1,
+        3: 1,
+        4: 1,
+        5: 1,
+    }
+    assert evaluation.language_results["coptic"].evaluated_count == 1
+    assert evaluation.language_results["coptic"].recall_hits == {
+        1: 0,
+        2: 1,
+        3: 1,
+        4: 1,
+        5: 1,
+    }
     assert output_file.read_text(encoding="utf-8") == evaluation.to_markdown()
     assert "| recall@1 | 1 | 3 | 33.33% |" in evaluation.to_markdown()
     assert "| recall@5 | 2 | 3 | 66.67% |" in evaluation.to_markdown()
+    assert "| greek | recall@1 | 1 | 2 | 50.00% |" in evaluation.to_markdown()
+    assert "| coptic | recall@2 | 1 | 1 | 100.00% |" in evaluation.to_markdown()
 
     transcription_select = cursor.executions[0]
     assert "FROM embedding_configurations" in _normalize_sql(transcription_select[0])

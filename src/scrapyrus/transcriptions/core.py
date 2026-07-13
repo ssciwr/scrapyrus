@@ -3,6 +3,7 @@ from pathlib import Path
 from saxonche import PySaxonProcessor
 
 from scrapyrus.saxon_xml import (
+    first_string,
     parse_xml_document,
     parse_xml_text,
     select_first,
@@ -43,6 +44,28 @@ def transcription_xml_snippet(
                 remove_namespaces=remove_namespaces,
             )
     return None
+
+
+def transcription_language(epidoc_xml: str | bytes | Path) -> str | None:
+    """Return the ``xml:lang`` value for an EpiDoc transcription edition."""
+
+    with PySaxonProcessor(license=False) as proc:
+        document = _parse_epidoc_xml(proc, epidoc_xml)
+        language = first_string(
+            proc,
+            document,
+            "((descendant-or-self::*[local-name() = 'div']"
+            "[@type = 'edition'])[1]"
+            "/@*[local-name() = 'lang' and "
+            "namespace-uri() = 'http://www.w3.org/XML/1998/namespace'], "
+            "/*[1]/@*[local-name() = 'lang' and "
+            "namespace-uri() = 'http://www.w3.org/XML/1998/namespace'])[1]",
+        )
+    if language is None:
+        return None
+
+    language = language.strip()
+    return language or None
 
 
 def epidoc_xml_to_text(

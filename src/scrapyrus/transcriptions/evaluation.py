@@ -12,9 +12,33 @@ from scrapyrus.transcriptions.embeddings import (
     _document_path,
     _row_value,
 )
+from scrapyrus.transcriptions.core import transcription_language
 
 
 RECALL_RANKS = (1, 2, 3, 4, 5)
+UNKNOWN_LANGUAGE = "unknown"
+LANGUAGE_LABELS = {
+    "ar": "arabic",
+    "ara": "arabic",
+    "cop": "coptic",
+    "coptic": "coptic",
+    "dem": "demotic",
+    "demotic": "demotic",
+    "egy": "egyptian",
+    "egyptian": "egyptian",
+    "el": "greek",
+    "grc": "greek",
+    "greek": "greek",
+    "he": "hebrew",
+    "heb": "hebrew",
+    "hebrew": "hebrew",
+    "la": "latin",
+    "lat": "latin",
+    "latin": "latin",
+    "syr": "syriac",
+    "syc": "syriac",
+    "syriac": "syriac",
+}
 
 
 @dataclass(frozen=True)
@@ -38,6 +62,24 @@ class TranslationRetrievalQuery:
 
 
 @dataclass(frozen=True)
+class LanguageEmbeddingEvaluation:
+    """Summary statistics for one transcription language."""
+
+    language: str
+    evaluated_count: int
+    recall_hits: dict[int, int]
+
+    @property
+    def recall_at(self) -> dict[int, float]:
+        if self.evaluated_count == 0:
+            return {rank: 0.0 for rank in sorted(self.recall_hits)}
+        return {
+            rank: hits / self.evaluated_count
+            for rank, hits in sorted(self.recall_hits.items())
+        }
+
+
+@dataclass(frozen=True)
 class EmbeddingEvaluation:
     """Summary statistics for transcription-to-translation retrieval."""
 
@@ -46,6 +88,7 @@ class EmbeddingEvaluation:
     translation_configuration: EvaluationEmbeddingConfiguration
     evaluated_count: int
     recall_hits: dict[int, int]
+    language_results: dict[str, LanguageEmbeddingEvaluation]
 
     @property
     def recall_at(self) -> dict[int, float]:
@@ -84,6 +127,26 @@ class EmbeddingEvaluation:
                 f"| recall@{rank} | {hits} | {self.evaluated_count} | {score:.2%} |"
             )
 
+        if self.language_results:
+            lines.extend(
+                [
+                    "",
+                    "## Metrics by Language",
+                    "",
+                    "| Language | Metric | Hits | Queries | Score |",
+                    "| --- | --- | ---: | ---: | ---: |",
+                ]
+            )
+            for result in sorted(
+                self.language_results.values(), key=lambda result: result.language
+            ):
+                for rank, hits in sorted(result.recall_hits.items()):
+                    score = result.recall_at[rank]
+                    lines.append(
+                        f"| {result.language} | recall@{rank} | {hits} | "
+                        f"{result.evaluated_count} | {score:.2%} |"
+                    )
+
         return "\n".join(lines) + "\n"
 
 
@@ -92,6 +155,7 @@ def evaluate_embeddings_model(
     /,
     *,
     modelname: str,
+    idp_data: str | Path = Path("idp.data"),
     output_file: str | Path | None = None,
     abbrev: bool = False,
     break_on_gap: bool = False,
@@ -160,8 +224,18 @@ def evaluate_embeddings_model(
                     "embeddings for the selected model"
                 )
 
+            source_root = Path(idp_data)
             hits = {rank: 0 for rank in RECALL_RANKS}
+            language_counts: dict[str, int] = {}
+            language_hits: dict[str, dict[int, int]] = {}
+            language_cache: dict[str, str] = {}
             for query in queries:
+                language = _query_language(source_root, query, language_cache)
+                language_counts[language] = language_counts.get(language, 0) + 1
+                query_language_hits = language_hits.setdefault(
+                    language,
+                    {rank: 0 for rank in RECALL_RANKS},
+                )
                 candidates = _select_nearest_translations(
                     cursor,
                     translation.id,
@@ -174,6 +248,7 @@ def evaluate_embeddings_model(
                         for candidate in candidates[:rank]
                     ):
                         hits[rank] += 1
+                        query_language_hits[rank] += 1
 
     evaluation = EmbeddingEvaluation(
         modelname=modelname,
@@ -181,12 +256,55 @@ def evaluate_embeddings_model(
         translation_configuration=translation,
         evaluated_count=len(queries),
         recall_hits=hits,
+        language_results={
+            language: LanguageEmbeddingEvaluation(
+                language=language,
+                evaluated_count=language_counts[language],
+                recall_hits=language_hits[language],
+            )
+            for language in sorted(language_counts)
+        },
     )
 
     if output_file is not None:
         Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
 
     return evaluation
+
+
+def _query_language(
+    idp_data: Path,
+    query: TranslationRetrievalQuery,
+    cache: dict[str, str],
+) -> str:
+    transcription_path = idp_data / query.transcription_path
+    cache_key = transcription_path.as_posix()
+    if cache_key not in cache:
+        cache[cache_key] = _language_label(
+            _source_transcription_language(transcription_path)
+        )
+    return cache[cache_key]
+
+
+def _source_transcription_language(transcription_path: Path) -> str | None:
+    try:
+        if not transcription_path.is_file():
+            return None
+    except OSError:
+        return None
+
+    return transcription_language(transcription_path)
+
+
+def _language_label(language: str | None) -> str:
+    if language is None:
+        return UNKNOWN_LANGUAGE
+
+    normalized = "-".join(language.strip().lower().replace("_", "-").split())
+    if not normalized:
+        return UNKNOWN_LANGUAGE
+
+    return LANGUAGE_LABELS.get(normalized.split("-", 1)[0], normalized)
 
 
 def _select_evaluation_configuration(

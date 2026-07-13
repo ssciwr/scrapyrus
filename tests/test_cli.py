@@ -593,12 +593,15 @@ def test_embeddings_evaluate_subcommand_writes_markdown(tmp_path, monkeypatch):
         "scrapyrus.__main__.evaluate_embeddings_model",
         fake_evaluate_embeddings_model,
     )
+    idp_data = tmp_path / "idp.data"
     output_file = tmp_path / "evaluation.md"
     runner = CliRunner()
 
     result = runner.invoke(
         main,
         (
+            "--idp-data",
+            str(idp_data),
             "embeddings",
             "evaluate",
             "--database-url",
@@ -621,6 +624,7 @@ def test_embeddings_evaluate_subcommand_writes_markdown(tmp_path, monkeypatch):
             "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
             {
                 "modelname": "text-embedding-model",
+                "idp_data": idp_data,
                 "output_file": output_file,
                 "abbrev": True,
                 "break_on_gap": True,
@@ -662,6 +666,7 @@ def test_embeddings_evaluate_subcommand_uses_envvars(monkeypatch):
             "postgresql://scrapyrus:secret@postgres:5432/scrapyrus",
             {
                 "modelname": "text-embedding-model",
+                "idp_data": Path("idp.data"),
                 "output_file": Path("embedding-evaluation.md"),
                 "abbrev": False,
                 "break_on_gap": False,

@@ -1,6 +1,7 @@
 from scrapyrus.transcriptions.core import (
     available_translation_languages,
     epidoc_xml_to_text,
+    transcription_language,
     translation_epidoc_xml_to_text,
     transcription_xml_snippet,
 )
@@ -14,6 +15,7 @@ from scrapyrus.transcriptions.embeddings import (
 from scrapyrus.transcriptions.evaluation import (
     EmbeddingEvaluation,
     EvaluationEmbeddingConfiguration,
+    LanguageEmbeddingEvaluation,
     evaluate_embeddings_model,
 )
 
@@ -23,10 +25,12 @@ __all__ = [
     "EmbeddingStore",
     "EmbeddingEvaluation",
     "EvaluationEmbeddingConfiguration",
+    "LanguageEmbeddingEvaluation",
     "delete_embeddings",
     "epidoc_xml_to_text",
     "evaluate_embeddings_model",
     "retrieve_embedding",
+    "transcription_language",
     "update_embeddings",
     "translation_epidoc_xml_to_text",
     "transcription_xml_snippet",
