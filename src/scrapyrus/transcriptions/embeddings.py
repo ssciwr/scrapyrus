@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
@@ -76,6 +76,12 @@ class _EmbeddingJob:
 class _EmbeddedDocument:
     job: _EmbeddingJob
     embedding: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class _SkippedEmbeddingDocument:
+    job: _EmbeddingJob
+    message: str
 
 
 class _EmbeddingRequestSentinel:
@@ -278,13 +284,16 @@ def _embed_documents(
 ) -> list[_EmbeddedDocument]:
     if not jobs:
         return []
-    return asyncio.run(
+    embedded_documents, skipped_messages = asyncio.run(
         _embed_documents_async(
             jobs,
             progressbar=progressbar,
             progressbar_title=progressbar_title,
         )
     )
+    for message in skipped_messages:
+        print(message, flush=True)
+    return embedded_documents
 
 
 async def _embed_documents_async(
@@ -292,28 +301,29 @@ async def _embed_documents_async(
     *,
     progressbar: bool,
     progressbar_title: str,
-) -> list[_EmbeddedDocument]:
+) -> tuple[list[_EmbeddedDocument], list[str]]:
     sentinel = _EmbeddingRequestSentinel()
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_EMBEDDING_REQUESTS) as executor:
-        tasks = [
-            asyncio.create_task(_embed_document(job, sentinel, executor))
-            for job in jobs
-        ]
-        completed: list[_EmbeddedDocument] = []
         progress = None
-        completions: Iterable[Any] = asyncio.as_completed(tasks)
         if progressbar:
             progress = tqdm(
-                completions,
-                total=len(tasks),
+                total=len(jobs),
                 unit="request",
                 desc=progressbar_title,
             )
-            completions = progress
+        tasks = [
+            asyncio.create_task(_embed_document(job, sentinel, executor, progress))
+            for job in jobs
+        ]
+        completed: list[_EmbeddedDocument] = []
+        skipped: list[_SkippedEmbeddingDocument] = []
 
         try:
-            for future in completions:
-                completed.append(await future)
+            for result in await asyncio.gather(*tasks):
+                if isinstance(result, _SkippedEmbeddingDocument):
+                    skipped.append(result)
+                else:
+                    completed.append(result)
         except BaseException:
             for task in tasks:
                 task.cancel()
@@ -324,18 +334,105 @@ async def _embed_documents_async(
                 progress.close()
 
     completed.sort(key=lambda document: document.job.ordinal)
-    return completed
+    skipped_messages = [
+        skipped_document.message
+        for skipped_document in sorted(
+            skipped, key=lambda document: document.job.ordinal
+        )
+    ]
+    return completed, skipped_messages
 
 
 async def _embed_document(
     job: _EmbeddingJob,
     sentinel: _EmbeddingRequestSentinel,
     executor: ThreadPoolExecutor,
-) -> _EmbeddedDocument:
-    return _EmbeddedDocument(
-        job,
-        await sentinel.embed(job.store, executor, job.row["document_text"]),
+    progress: Any | None,
+) -> _EmbeddedDocument | _SkippedEmbeddingDocument:
+    try:
+        embedding = await sentinel.embed(job.store, executor, job.row["document_text"])
+    except Exception as error:
+        if _is_skippable_embedding_error(error):
+            result: _EmbeddedDocument | _SkippedEmbeddingDocument = (
+                _SkippedEmbeddingDocument(
+                    job,
+                    _skipped_embedding_message(job, error),
+                )
+            )
+        else:
+            raise
+    else:
+        result = _EmbeddedDocument(
+            job,
+            embedding,
+        )
+    finally:
+        if progress is not None:
+            progress.update(1)
+
+    return result
+
+
+def _is_skippable_embedding_error(error: BaseException) -> bool:
+    message = _embedding_error_message(error).lower()
+    return (
+        "maximum context length" in message
+        and ("input_tokens" in message or "input token" in message)
+        and ("prompt contains" in message or "requested" in message)
     )
+
+
+def _skipped_embedding_message(job: _EmbeddingJob, error: BaseException) -> str:
+    document_kind = (
+        job.configuration.document_kind if job.configuration is not None else "unknown"
+    )
+    return (
+        "Skipping embedding document after context-length validation error: "
+        f"tm_id={job.row['tm_id']} "
+        f"metadata_path={job.row['metadata_path']} "
+        f"document_path={job.row['document_path']} "
+        f"model={job.store.modelname} "
+        f"document_kind={document_kind}: "
+        f"{_embedding_error_message(error)}"
+    )
+
+
+def _embedding_error_message(error: BaseException) -> str:
+    message = str(error)
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        response_message = _response_error_message(error.response)
+        if response_message:
+            if message and response_message not in message:
+                return f"{message}: {response_message}"
+            return response_message
+    return message
+
+
+def _response_error_message(response: Any) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        error_payload = payload.get("error", payload)
+        if isinstance(error_payload, dict):
+            parts = [
+                str(error_payload[key])
+                for key in ("message", "type", "param", "code")
+                if error_payload.get(key) is not None
+            ]
+            if parts:
+                return " ".join(parts)
+        elif isinstance(error_payload, str):
+            return error_payload
+        return str(payload)
+
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    return None
 
 
 def update_embeddings(

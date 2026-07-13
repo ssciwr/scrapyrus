@@ -1,3 +1,4 @@
+import asyncio
 from inspect import signature
 import hashlib
 
@@ -9,6 +10,9 @@ from scrapyrus.transcriptions.embeddings import (
     EmbeddingConfiguration,
     EmbeddingStore,
     PgvectorUnavailableError,
+    _EmbeddingJob,
+    _SkippedEmbeddingDocument,
+    _embed_document,
     _ensure_embedding_schema,
     delete_embeddings,
     retrieve_embedding,
@@ -65,6 +69,14 @@ class FakeEmbeddingResponse:
 
     def json(self):
         return {"data": [{"embedding": self._embedding}]}
+
+
+VLLM_CONTEXT_LENGTH_MESSAGE = (
+    "This model's maximum context length is 32768 tokens. However, you "
+    "requested 0 output tokens and your prompt contains at least 32769 input "
+    "tokens, for a total of at least 32769 tokens. Please reduce the length "
+    "of the input prompt or the number of requested output tokens."
+)
 
 
 class FakeEmbeddingClient:
@@ -137,6 +149,62 @@ def test_setup_store_keyword_only_arguments_match_text_conversion_flags():
     ]
 
     assert store_keyword_names == [*text_flag_names, "translation"]
+
+
+def test_embed_document_skips_context_length_errors():
+    class FakeStore:
+        modelname = "embed/model"
+
+    class FakeSentinel:
+        async def embed(self, store, executor, text):
+            if text == "Too long.":
+                raise ValueError(
+                    "vllm.exceptions.VLLMValidationError: "
+                    f"{VLLM_CONTEXT_LENGTH_MESSAGE} "
+                    "(parameter=input_tokens, value=32769)"
+                )
+            return (0.25, 0.5, 0.75)
+
+    store = FakeStore()
+    sentinel = FakeSentinel()
+    configuration = EmbeddingConfiguration("embed/model")
+    skipped_job = _EmbeddingJob(
+        0,
+        store,
+        {
+            "tm_id": "46",
+            "metadata_path": "HGV_meta_EpiDoc/HGV1/46.xml",
+            "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
+            "document_text": "Too long.",
+            "input_hash": "skipped-hash",
+        },
+        configuration=configuration,
+    )
+    embedded_job = _EmbeddingJob(
+        1,
+        store,
+        {
+            "tm_id": "47",
+            "metadata_path": "HGV_meta_EpiDoc/HGV1/47.xml",
+            "document_path": "DDB_EpiDoc_XML/p.test/p.test.47.xml",
+            "document_text": "Alpha beta.",
+            "input_hash": "embedded-hash",
+        },
+        configuration=configuration,
+    )
+
+    skipped = asyncio.run(_embed_document(skipped_job, sentinel, None, None))
+    embedded = asyncio.run(_embed_document(embedded_job, sentinel, None, None))
+
+    assert isinstance(skipped, _SkippedEmbeddingDocument)
+    assert skipped.job is skipped_job
+    assert "tm_id=46" in skipped.message
+    assert "metadata_path=HGV_meta_EpiDoc/HGV1/46.xml" in skipped.message
+    assert "document_path=DDB_EpiDoc_XML/p.test/p.test.46.xml" in skipped.message
+    assert "input_tokens" in skipped.message
+    assert "maximum context length" in skipped.message
+    assert embedded.job is embedded_job
+    assert embedded.embedding == (0.25, 0.5, 0.75)
 
 
 def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch):
