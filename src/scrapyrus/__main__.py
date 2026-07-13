@@ -257,6 +257,14 @@ def embeddings() -> None:
 @embedding_client_options
 @embedding_model_options
 @click.option(
+    "--sample",
+    type=click.IntRange(min=1),
+    help=(
+        "Randomly select this many records that have both a transcription "
+        "and a translation."
+    ),
+)
+@click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
@@ -267,15 +275,17 @@ def ingest_embeddings(
     inference_server_url: str,
     model_name: str,
     api_key: str,
+    sample: int | None,
     progress: bool,
 ) -> None:
-    """Embed all transcription and translation XML rows in PostgreSQL."""
+    """Embed transcription and translation XML rows in PostgreSQL."""
 
     store = EmbeddingStore(inference_server_url, model_name, api_key)
     try:
         store.setup_store(
             database_url,
             progress,
+            sample=sample,
         )
     except PgvectorUnavailableError as error:
         raise click.ClickException(str(error)) from error

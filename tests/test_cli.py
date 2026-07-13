@@ -254,8 +254,8 @@ def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypat
         def __init__(self, url, model, key):
             calls.append(("init", url, model, key))
 
-        def setup_store(self, database_url, progress):
-            calls.append(("setup", database_url, progress))
+        def setup_store(self, database_url, progress, **kwargs):
+            calls.append(("setup", database_url, progress, kwargs))
 
     monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
     result = CliRunner().invoke(
@@ -277,7 +277,7 @@ def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypat
     assert result.exit_code == 0
     assert calls == [
         ("init", "https://inference.example/v1", "model", "secret"),
-        ("setup", "postgresql://db", False),
+        ("setup", "postgresql://db", False, {"sample": None}),
     ]
 
 
@@ -288,8 +288,8 @@ def test_embeddings_ingest_uses_envvars(monkeypatch):
         def __init__(self, url, model, key):
             calls.append((url, model, key))
 
-        def setup_store(self, database_url, progress):
-            calls.append((database_url, progress))
+        def setup_store(self, database_url, progress, **kwargs):
+            calls.append((database_url, progress, kwargs))
 
     monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
     result = CliRunner().invoke(
@@ -305,8 +305,42 @@ def test_embeddings_ingest_uses_envvars(monkeypatch):
     assert result.exit_code == 0
     assert calls == [
         ("https://inference.example", "model", "secret"),
-        ("postgresql://db", True),
+        ("postgresql://db", True, {"sample": None}),
     ]
+
+
+def test_embeddings_ingest_passes_sample_size(monkeypatch):
+    calls = []
+
+    class Store:
+        def __init__(self, *args):
+            pass
+
+        def setup_store(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "ingest",
+            "--database-url",
+            "postgresql://db",
+            "--inference-server-url",
+            "https://example",
+            "--model-name",
+            "model",
+            "--api-key",
+            "secret",
+            "--sample",
+            "12",
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [(("postgresql://db", False), {"sample": 12})]
 
 
 def test_embeddings_ingest_reports_missing_pgvector(monkeypatch):
@@ -314,7 +348,7 @@ def test_embeddings_ingest_reports_missing_pgvector(monkeypatch):
         def __init__(self, *args):
             pass
 
-        def setup_store(self, *args):
+        def setup_store(self, *args, **kwargs):
             raise PgvectorUnavailableError(
                 "PostgreSQL extension 'vector' is not available."
             )

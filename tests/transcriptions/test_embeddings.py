@@ -6,6 +6,7 @@ from scrapyrus.transcriptions.embeddings import (
     MAXIMUM_TRANSCRIPTION_OPTIONS,
     EmbeddingStore,
     _ensure_embedding_schema,
+    _select_xml_rows,
     _xml_to_embedding_text,
     delete_embeddings,
     retrieve_embedding,
@@ -142,6 +143,19 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     assert inserts[1][1]["language"] == "en"
     assert inserts[1][1]["document_text"] == "Beta"
     assert provider.inputs == ["Alpha", "Beta"]
+
+
+def test_select_xml_rows_samples_only_records_with_both_document_kinds():
+    cursor = RecordingCursor()
+
+    _select_xml_rows(cursor, sample=10)
+
+    query, params = cursor.executions[0]
+    assert "GROUP BY tm_id" in query
+    assert "bool_or(type = 'transcription')" in query
+    assert "bool_or(type = 'translation')" in query
+    assert "ORDER BY random()" in query
+    assert params == (10,)
 
 
 def test_update_embeddings_only_embeds_stale_rows(monkeypatch):

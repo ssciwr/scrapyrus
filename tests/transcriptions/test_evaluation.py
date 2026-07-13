@@ -85,3 +85,20 @@ def test_markdown_renders_collection_counts():
     assert "- Transcription documents: 4" in report
     assert "- Translation documents: 3" in report
     assert "| recall@1 | 1 | 2 | 50.00% |" in report
+
+
+def test_evaluation_accepts_partial_embedding_collections(monkeypatch):
+    cursor = Cursor()
+    cursor.fetchone_results = [(3, 3), (1, 3)]
+    cursor.fetchall_results = [
+        [("1", "ddb/1.xml", "grc", "[1,0,0]")],
+        [("1", "hgv/1.xml")],
+    ]
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+
+    evaluation = evaluate_embeddings_model("postgresql://db", modelname="sample")
+
+    assert evaluation.transcription_count == 3
+    assert evaluation.translation_count == 1
+    assert evaluation.evaluated_count == 1
+    assert evaluation.recall_at[5] == 1.0
