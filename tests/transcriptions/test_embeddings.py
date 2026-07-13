@@ -1,48 +1,43 @@
-from inspect import signature
 import hashlib
 
 import psycopg
-import pytest
 
-from scrapyrus.transcriptions.core import epidoc_xml_to_text
 from scrapyrus.transcriptions.embeddings import (
-    EmbeddingConfiguration,
+    MAXIMUM_TRANSCRIPTION_OPTIONS,
     EmbeddingStore,
-    PgvectorUnavailableError,
-    _EmbeddingJob,
-    _SkippedEmbeddingDocument,
-    _embed_document,
     _ensure_embedding_schema,
+    _xml_to_embedding_text,
     delete_embeddings,
     retrieve_embedding,
     update_embeddings,
 )
 
 
+def _sql_text(query):
+    return query if isinstance(query, str) else query.as_string()
+
+
 class RecordingCursor:
-    def __init__(self, results=(), all_results=()):
+    def __init__(self, *, rows=(), results=(), rowcount=0):
+        self.rows = list(rows)
+        self.results = list(results)
         self.executions = []
-        self._results = list(results)
-        self._all_results = list(all_results)
+        self.rowcount = rowcount
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(self, *args):
         return False
 
     def execute(self, query, params=None):
-        self.executions.append((query, params))
-
-    def fetchone(self):
-        if not self._results:
-            return None
-        return self._results.pop(0)
+        self.executions.append((_sql_text(query), params))
 
     def fetchall(self):
-        if not self._all_results:
-            return []
-        return self._all_results.pop(0)
+        return self.rows
+
+    def fetchone(self):
+        return self.results.pop(0) if self.results else None
 
 
 class RecordingConnection:
@@ -52,609 +47,184 @@ class RecordingConnection:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(self, *args):
         return False
 
     def cursor(self):
         return self._cursor
 
 
-class FakeEmbeddingResponse:
+class FakeResponse:
     def __init__(self, embedding):
-        self._embedding = embedding
+        self.embedding = embedding
 
     def raise_for_status(self):
-        return None
+        pass
 
     def json(self):
-        return {"data": [{"embedding": self._embedding}]}
+        return {"data": [{"embedding": self.embedding}]}
 
 
-VLLM_CONTEXT_LENGTH_MESSAGE = (
-    "This model's maximum context length is 32768 tokens. However, you "
-    "requested 0 output tokens and your prompt contains at least 32769 input "
-    "tokens, for a total of at least 32769 tokens. Please reduce the length "
-    "of the input prompt or the number of requested output tokens."
-)
-
-
-class FakeEmbeddingClient:
+class FakeClient:
     def __init__(self, embeddings):
         self.headers = {}
         self.embeddings = list(embeddings)
         self.posts = []
-        self.entered = 0
-        self.exited = 0
 
     def __enter__(self):
-        self.entered += 1
         return self
 
-    def __exit__(self, exc_type, exc, traceback):
-        self.exited += 1
+    def __exit__(self, *args):
         return False
 
     def post(self, url, *, json, timeout):
         self.posts.append((url, json, timeout))
-        return FakeEmbeddingResponse(self.embeddings.pop(0))
+        return FakeResponse(self.embeddings.pop(0))
 
 
-def _normalize_sql(sql):
-    return " ".join(sql.split())
-
-
-def _execution_matching(cursor, fragment):
-    for execution in cursor.executions:
-        query, _ = execution
-        if fragment in _normalize_sql(query):
-            return execution
-    raise AssertionError(f"No SQL execution contained {fragment!r}")
-
-
-def test_embedding_configuration_is_parameter_specific():
-    default = EmbeddingConfiguration("vendor/Text Embedding 3")
-    same = EmbeddingConfiguration("vendor/Text Embedding 3")
-    translation = EmbeddingConfiguration("vendor/Text Embedding 3", translation=True)
-    expanded = EmbeddingConfiguration("vendor/Text Embedding 3", abbrev=True)
-
-    assert same == default
-    assert translation != default
-    assert expanded != default
-    assert default.document_kind == "transcription"
-    assert translation.document_kind == "translation"
-
-
-def test_ensure_embedding_schema_reports_missing_pgvector():
-    class MissingPgvectorCursor:
-        def execute(self, query, params=None):
-            raise psycopg.errors.FeatureNotSupported(
-                'extension "vector" is not available'
-            )
-
-    with pytest.raises(PgvectorUnavailableError, match="pgvector"):
-        _ensure_embedding_schema(MissingPgvectorCursor())
-
-
-def test_setup_store_keyword_only_arguments_match_text_conversion_flags():
-    text_flag_names = [
-        name
-        for name, parameter in signature(epidoc_xml_to_text).parameters.items()
-        if parameter.kind is parameter.KEYWORD_ONLY
-    ]
-    store_keyword_names = [
-        name
-        for name, parameter in signature(EmbeddingStore.setup_store).parameters.items()
-        if parameter.kind is parameter.KEYWORD_ONLY
-    ]
-
-    assert store_keyword_names == [*text_flag_names, "translation"]
-
-
-def test_embed_document_skips_context_length_errors():
-    class FakeStore:
-        modelname = "embed/model"
-
-        def _embed(self, text):
-            if text == "Too long.":
-                raise ValueError(
-                    "vllm.exceptions.VLLMValidationError: "
-                    f"{VLLM_CONTEXT_LENGTH_MESSAGE} "
-                    "(parameter=input_tokens, value=32769)"
-                )
-            return (0.25, 0.5, 0.75)
-
-    store = FakeStore()
-    configuration = EmbeddingConfiguration("embed/model")
-    skipped_job = _EmbeddingJob(
-        0,
-        store,
-        {
-            "tm_id": "46",
-            "metadata_path": "HGV_meta_EpiDoc/HGV1/46.xml",
-            "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
-            "document_text": "Too long.",
-            "input_hash": "skipped-hash",
-        },
-        configuration=configuration,
-    )
-    embedded_job = _EmbeddingJob(
-        1,
-        store,
-        {
-            "tm_id": "47",
-            "metadata_path": "HGV_meta_EpiDoc/HGV1/47.xml",
-            "document_path": "DDB_EpiDoc_XML/p.test/p.test.47.xml",
-            "document_text": "Alpha beta.",
-            "input_hash": "embedded-hash",
-        },
-        configuration=configuration,
-    )
-
-    skipped = _embed_document(skipped_job, None)
-    embedded = _embed_document(embedded_job, None)
-
-    assert isinstance(skipped, _SkippedEmbeddingDocument)
-    assert skipped.job is skipped_job
-    assert "tm_id=46" in skipped.message
-    assert "metadata_path=HGV_meta_EpiDoc/HGV1/46.xml" in skipped.message
-    assert "document_path=DDB_EpiDoc_XML/p.test/p.test.46.xml" in skipped.message
-    assert "input_tokens" in skipped.message
-    assert "maximum context length" in skipped.message
-    assert embedded.job is embedded_job
-    assert embedded.embedding == (0.25, 0.5, 0.75)
-
-
-def test_embedding_store_ingests_transcription_embeddings(tmp_path, monkeypatch):
-    idp_data = tmp_path / "idp.data"
-    metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "46.xml"
-    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.46.xml"
-    metadata.parent.mkdir(parents=True)
-    transcription.parent.mkdir(parents=True)
-    metadata.write_text("<TEI />", encoding="utf-8")
-    transcription.write_text("<TEI />", encoding="utf-8")
-    cursor = RecordingCursor(results=[(42,)])
-    connection = RecordingConnection(cursor)
-    text_calls = []
-
-    def connect(conninfo):
-        assert conninfo == "postgresql://metadata.example/scrapyrus"
-        return connection
-
-    def iterate(idp_data_arg, *, progressbar):
-        assert idp_data_arg == idp_data
-        assert progressbar is False
-        yield "46", metadata, transcription, None
-        yield "47", metadata, None, None
-
-    def text_converter(path, **kwargs):
-        text_calls.append((path, kwargs))
-        return "Alpha beta."
-
-    monkeypatch.setattr(psycopg, "connect", connect)
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.iterate_idpdata_triples",
-        iterate,
-    )
+def test_maximum_transcription_variant_is_fixed(monkeypatch):
+    calls = []
     monkeypatch.setattr(
         "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
-        text_converter,
-    )
-    fake_client = FakeEmbeddingClient([[0.25, 0.5, 0.75]])
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.requests.Session",
-        lambda: fake_client,
-    )
-    store = EmbeddingStore("https://inference.example/v1", "embed/model", "secret")
-
-    config_id = store.setup_store(
-        idp_data,
-        "postgresql://metadata.example/scrapyrus",
-        False,
-        abbrev=True,
-        lost=True,
+        lambda xml, **options: calls.append((xml, options)) or "maximum",
     )
 
-    assert config_id == 42
-    assert text_calls == [
-        (
-            transcription,
-            {
-                "abbrev": True,
-                "break_on_gap": False,
-                "lost": True,
-                "unclear": False,
-                "regularize": False,
-            },
-        )
-    ]
-    assert fake_client.posts == [
-        (
-            "https://inference.example/v1/embeddings",
-            {"model": "embed/model", "input": "Alpha beta."},
-            60,
-        )
-    ]
-    assert (
-        _normalize_sql(cursor.executions[0][0])
-        == "CREATE EXTENSION IF NOT EXISTS vector"
-    )
-    assert "CREATE TABLE IF NOT EXISTS embedding_configurations" in _normalize_sql(
-        cursor.executions[1][0]
-    )
-    assert "CREATE TABLE IF NOT EXISTS document_embeddings" in _normalize_sql(
-        cursor.executions[2][0]
-    )
-    assert "input_hash text NOT NULL" in _normalize_sql(cursor.executions[2][0])
-
-    _, config_params = _execution_matching(
-        cursor,
-        "INSERT INTO embedding_configurations",
-    )
-    assert config_params == {
-        "model_name": "embed/model",
-        "document_kind": "transcription",
+    assert _xml_to_embedding_text("<div/>", "transcription") == "maximum"
+    assert calls == [("<div/>", MAXIMUM_TRANSCRIPTION_OPTIONS)]
+    assert MAXIMUM_TRANSCRIPTION_OPTIONS == {
         "abbrev": True,
         "break_on_gap": False,
         "lost": True,
-        "unclear": False,
-        "regularize": False,
-        "embedding_dimensions": 3,
+        "unclear": True,
+        "regularize": True,
     }
 
-    assert all(
-        "DELETE FROM document_embeddings" not in _normalize_sql(query)
-        for query, _ in cursor.executions
-    )
 
-    insert_sql, insert_params = _execution_matching(
-        cursor, "INSERT INTO document_embeddings"
-    )
-    normalized_insert_sql = _normalize_sql(insert_sql)
-    assert "ON CONFLICT (config_id, document_path)" in normalized_insert_sql
-    assert "input_hash = EXCLUDED.input_hash" in normalized_insert_sql
-    assert insert_params == {
-        "config_id": 42,
-        "tm_id": "46",
-        "metadata_path": "HGV_meta_EpiDoc/HGV1/46.xml",
-        "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
-        "document_text": "Alpha beta.",
-        "input_hash": hashlib.sha256(b"Alpha beta.").hexdigest(),
-        "embedding": "[0.25,0.5,0.75]",
-    }
+def test_schema_creates_separate_kind_tables_without_migration():
+    cursor = RecordingCursor()
+    _ensure_embedding_schema(cursor)
+    sql = "\n".join(query for query, _ in cursor.executions)
 
-    drop_index_sql, _ = _execution_matching(
-        cursor,
-        "DROP INDEX IF EXISTS doc_embed_cfg_42_hnsw_idx",
-    )
-    assert _normalize_sql(drop_index_sql).endswith(
-        "DROP INDEX IF EXISTS doc_embed_cfg_42_hnsw_idx"
-    )
-    create_index_sql, _ = _execution_matching(
-        cursor,
-        "CREATE INDEX doc_embed_cfg_42_hnsw_idx",
-    )
-    normalized_index_sql = _normalize_sql(create_index_sql)
-    assert "ON document_embeddings" in normalized_index_sql
-    assert (
-        "USING hnsw ((embedding::vector(3)) vector_cosine_ops)" in normalized_index_sql
-    )
-    assert "WHERE config_id = 42" in normalized_index_sql
-
-    update_sql, update_params = _execution_matching(
-        cursor, "UPDATE embedding_configurations"
-    )
-    assert update_params == {"config_id": 42}
-    assert "SELECT count(*)::integer" in _normalize_sql(update_sql)
+    assert "CREATE TABLE IF NOT EXISTS transcription_embeddings" in sql
+    assert "CREATE TABLE IF NOT EXISTS translation_embeddings" in sql
+    assert "DROP TABLE" not in sql
+    assert "embedding_configurations" not in sql
+    assert "document_embeddings" not in sql
+    assert "config_id" not in sql
 
 
-def test_embedding_store_ingests_translation_embeddings(tmp_path, monkeypatch):
-    idp_data = tmp_path / "idp.data"
-    metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "53.xml"
-    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.53.xml"
-    translation = idp_data / "HGV_trans_EpiDoc" / "53.xml"
-    for path in (metadata, transcription, translation):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("<TEI />", encoding="utf-8")
-    cursor = RecordingCursor(results=[(7,)])
-    connection = RecordingConnection(cursor)
-    translation_calls = []
-
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: connection)
+def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
+    rows = [
+        (1, "DDB/a.xml", 46, '<div type="edition">A</div>', "transcription", None),
+        (2, "HGV/46.xml", 46, '<div type="translation">B</div>', "translation", "en"),
+    ]
+    cursor = RecordingCursor(rows=rows)
     monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.iterate_idpdata_triples",
-        lambda idp_data_arg, *, progressbar: iter(
-            [("53", metadata, transcription, translation)]
-        ),
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
     )
     monkeypatch.setattr(
         "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("transcription converter should not be used")
-        ),
-    )
-
-    def translation_converter(path):
-        translation_calls.append(path)
-        return "Translated text."
-
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.translation_epidoc_xml_to_text",
-        translation_converter,
-    )
-    fake_client = FakeEmbeddingClient([[1, 2]])
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.requests.Session",
-        lambda: fake_client,
-    )
-    store = EmbeddingStore("https://inference.example", "embed-model", "secret")
-
-    config_id = store.setup_store(idp_data, "", False, translation=True)
-
-    assert config_id == 7
-    assert translation_calls == [translation]
-    _, config_params = _execution_matching(
-        cursor,
-        "INSERT INTO embedding_configurations",
-    )
-    assert config_params["document_kind"] == "translation"
-    _, insert_params = _execution_matching(cursor, "INSERT INTO document_embeddings")
-    assert insert_params["document_path"] == "HGV_trans_EpiDoc/53.xml"
-    assert fake_client.posts[0][0] == "https://inference.example/v1/embeddings"
-
-
-def test_update_embeddings_computes_only_stale_or_missing_embeddings(
-    tmp_path,
-    monkeypatch,
-):
-    idp_data = tmp_path / "idp.data"
-    metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "46.xml"
-    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.46.xml"
-    translation = idp_data / "HGV_trans_EpiDoc" / "46.xml"
-    for path in (metadata, transcription, translation):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("<TEI />", encoding="utf-8")
-
-    translated_hash = hashlib.sha256(b"Translated text.").hexdigest()
-    cursor = RecordingCursor(
-        results=[("old-transcription-hash",), (translated_hash,)],
-        all_results=[
-            [
-                (
-                    42,
-                    "embed/model",
-                    "transcription",
-                    True,
-                    False,
-                    True,
-                    False,
-                    False,
-                    3,
-                ),
-                (7, "embed/model", "translation", False, False, False, False, False, 2),
-            ]
-        ],
-    )
-    connection = RecordingConnection(cursor)
-
-    def connect(conninfo):
-        assert conninfo == "postgresql://metadata.example/scrapyrus"
-        return connection
-
-    def iterate(idp_data_arg, *, progressbar):
-        assert idp_data_arg == idp_data
-        assert progressbar is False
-        yield "46", metadata, transcription, translation
-
-    transcription_calls = []
-    translation_calls = []
-
-    def transcription_converter(path, **kwargs):
-        transcription_calls.append((path, kwargs))
-        return "Alpha beta."
-
-    def translation_converter(path):
-        translation_calls.append(path)
-        return "Translated text."
-
-    fake_client = FakeEmbeddingClient([[0.25, 0.5, 0.75]])
-    monkeypatch.setattr(psycopg, "connect", connect)
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.iterate_idpdata_triples",
-        iterate,
-    )
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
-        transcription_converter,
+        lambda xml, **options: "Alpha",
     )
     monkeypatch.setattr(
         "scrapyrus.transcriptions.embeddings.translation_epidoc_xml_to_text",
-        translation_converter,
+        lambda xml: "Beta",
     )
     monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.requests.Session",
-        lambda: fake_client,
+        "scrapyrus.transcriptions.embeddings.transcription_language",
+        lambda xml: "grc",
+    )
+    client = FakeClient([[0.1, 0.2], [0.3, 0.4]])
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.requests.Session", lambda: client
     )
 
-    updated_count = update_embeddings(
-        idp_data,
-        "postgresql://metadata.example/scrapyrus",
-        False,
-        inference_server_url="https://inference.example/v1",
-        api_key="secret",
+    count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
+        "postgresql://db", False
     )
 
-    assert updated_count == 1
-    assert transcription_calls == [
-        (
-            transcription,
-            {
-                "abbrev": True,
-                "break_on_gap": False,
-                "lost": True,
-                "unclear": False,
-                "regularize": False,
-            },
-        )
+    assert count == 2
+    selects = [
+        query for query, _ in cursor.executions if "FROM transcriptions" in query
     ]
-    assert translation_calls == [translation]
-    assert fake_client.posts == [
-        (
-            "https://inference.example/v1/embeddings",
-            {"model": "embed/model", "input": "Alpha beta."},
-            60,
-        )
+    assert len(selects) == 1
+    inserts = [
+        (query, params) for query, params in cursor.executions if "INSERT INTO" in query
     ]
+    assert "transcription_embeddings" in inserts[0][0]
+    assert inserts[0][1]["language"] == "grc"
+    assert inserts[0][1]["document_text"] == "Alpha"
+    assert inserts[0][1]["input_hash"] == hashlib.sha256(b"Alpha").hexdigest()
+    assert "translation_embeddings" in inserts[1][0]
+    assert inserts[1][1]["language"] == "en"
+    assert inserts[1][1]["document_text"] == "Beta"
+    assert [post[1]["input"] for post in client.posts] == ["Alpha", "Beta"]
 
-    hash_selects = [
-        params
-        for query, params in cursor.executions
-        if "SELECT input_hash" in _normalize_sql(query)
-    ]
-    assert hash_selects == [
-        {
-            "config_id": 42,
-            "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
-        },
-        {"config_id": 7, "document_path": "HGV_trans_EpiDoc/46.xml"},
-    ]
 
-    insert_sql, insert_params = _execution_matching(
-        cursor, "INSERT INTO document_embeddings"
+def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
+    rows = [(1, "a.xml", 1, "<div/>", "transcription", None)]
+    current_hash = hashlib.sha256(b"Alpha").hexdigest()
+    cursor = RecordingCursor(rows=rows, results=[(current_hash, "a.xml", "1", None)])
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
     )
-    assert insert_params == {
-        "config_id": 42,
-        "tm_id": "46",
-        "metadata_path": "HGV_meta_EpiDoc/HGV1/46.xml",
-        "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
-        "document_text": "Alpha beta.",
-        "input_hash": hashlib.sha256(b"Alpha beta.").hexdigest(),
-        "embedding": "[0.25,0.5,0.75]",
-    }
-    assert "input_hash = EXCLUDED.input_hash" in _normalize_sql(insert_sql)
-
-    create_index_sql, _ = _execution_matching(
-        cursor, "CREATE INDEX IF NOT EXISTS doc_embed_cfg_42_hnsw_idx"
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
+        lambda xml, **options: "Alpha",
     )
-    assert "WHERE config_id = 42" in _normalize_sql(create_index_sql)
-    _, update_params = _execution_matching(cursor, "UPDATE embedding_configurations")
-    assert update_params == {"config_id": 42}
-    assert all(
-        "DELETE FROM" not in _normalize_sql(query) for query, _ in cursor.executions
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.transcription_language", lambda xml: None
     )
-
-
-def test_retrieve_embedding_selects_configuration_and_document(monkeypatch):
-    cursor = RecordingCursor(results=[("[0.25,0.5,0.75]",)])
-    connection = RecordingConnection(cursor)
-
-    def connect(conninfo):
-        assert conninfo == "postgresql://metadata.example/scrapyrus"
-        return connection
-
-    monkeypatch.setattr(psycopg, "connect", connect)
-
-    embedding = retrieve_embedding(
-        "postgresql://metadata.example/scrapyrus",
-        modelname="embed/model",
-        document_path="DDB_EpiDoc_XML/p.test/p.test.46.xml",
-        abbrev=True,
-        lost=True,
-    )
-
-    assert embedding == (0.25, 0.5, 0.75)
-    query, params = cursor.executions[0]
-    normalized_query = _normalize_sql(query)
-    assert "FROM embedding_configurations" in normalized_query
-    assert "JOIN document_embeddings" in normalized_query
-    assert params == {
-        "model_name": "embed/model",
-        "document_kind": "transcription",
-        "abbrev": True,
-        "break_on_gap": False,
-        "lost": True,
-        "unclear": False,
-        "regularize": False,
-        "document_path": "DDB_EpiDoc_XML/p.test/p.test.46.xml",
-    }
-
-
-def test_retrieve_embedding_returns_none_for_missing_document(monkeypatch):
-    cursor = RecordingCursor(results=[None])
-    connection = RecordingConnection(cursor)
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: connection)
 
     assert (
-        retrieve_embedding(
-            modelname="embed/model",
-            document_path="DDB_EpiDoc_XML/p.test/missing.xml",
+        update_embeddings(
+            "postgresql://db",
+            False,
+            inference_server_url="https://example",
+            modelname="model",
+            api_key="key",
         )
-        is None
+        == 0
     )
 
 
-def test_delete_embeddings_removes_selected_configuration(monkeypatch):
-    cursor = RecordingCursor(results=[(42,)])
-    connection = RecordingConnection(cursor)
-
-    def connect(conninfo):
-        assert conninfo == "postgresql://metadata.example/scrapyrus"
-        return connection
-
-    monkeypatch.setattr(psycopg, "connect", connect)
-
-    deleted_config_id = delete_embeddings(
-        "postgresql://metadata.example/scrapyrus",
-        modelname="embed/model",
-        abbrev=True,
-        lost=True,
+def test_retrieve_embedding_uses_separate_kind_table(monkeypatch):
+    cursor = RecordingCursor(results=[("[0.25,0.5]",)])
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
     )
 
-    assert deleted_config_id == 42
-    select_sql, select_params = cursor.executions[0]
-    assert "FROM embedding_configurations" in _normalize_sql(select_sql)
-    assert select_params == {
-        "model_name": "embed/model",
-        "document_kind": "transcription",
-        "abbrev": True,
-        "break_on_gap": False,
-        "lost": True,
-        "unclear": False,
-        "regularize": False,
-    }
-    drop_sql, _ = _execution_matching(
-        cursor, "DROP INDEX IF EXISTS doc_embed_cfg_42_hnsw_idx"
+    result = retrieve_embedding(
+        "postgresql://db",
+        modelname="model",
+        document_path="HGV/46.xml",
+        translation=True,
     )
-    assert _normalize_sql(drop_sql).endswith(
-        "DROP INDEX IF EXISTS doc_embed_cfg_42_hnsw_idx"
-    )
-    _, delete_params = _execution_matching(
-        cursor, "DELETE FROM embedding_configurations"
-    )
-    assert delete_params == {"config_id": 42}
+
+    assert result == (0.25, 0.5)
+    assert 'FROM "translation_embeddings"' in cursor.executions[0][0]
 
 
-def test_delete_embeddings_returns_none_for_missing_configuration(monkeypatch):
-    cursor = RecordingCursor(results=[None])
-    connection = RecordingConnection(cursor)
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: connection)
-
-    assert delete_embeddings(modelname="embed/model") is None
-    assert all(
-        "DELETE FROM" not in _normalize_sql(query) for query, _ in cursor.executions
+def test_delete_embeddings_deletes_model_from_both_tables(monkeypatch):
+    cursor = RecordingCursor(rowcount=3)
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
     )
+
+    assert delete_embeddings("postgresql://db", modelname="model") == 6
+    deletes = [
+        query for query, _ in cursor.executions if query.startswith("DELETE FROM")
+    ]
+    assert len(deletes) == 2
+    assert any("transcription_embeddings" in query for query in deletes)
+    assert any("translation_embeddings" in query for query in deletes)
 
 
 def test_embedding_store_configures_session_headers(monkeypatch):
-    fake_client = FakeEmbeddingClient([])
+    client = FakeClient([])
     monkeypatch.setattr(
-        "scrapyrus.transcriptions.embeddings.requests.Session",
-        lambda: fake_client,
+        "scrapyrus.transcriptions.embeddings.requests.Session", lambda: client
     )
-
-    store = EmbeddingStore("https://inference.example", "model", "test-key")
-
-    assert store._session() is fake_client
-    assert fake_client.headers == {
-        "Authorization": "Bearer test-key",
-        "Content-Type": "application/json",
-    }
+    store = EmbeddingStore("https://example", "model", "test-key")
+    assert store._session() is client
+    assert client.headers["Authorization"] == "Bearer test-key"

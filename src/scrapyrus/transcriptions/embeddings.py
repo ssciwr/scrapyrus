@@ -8,17 +8,35 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+from psycopg import sql
 import requests
 from tqdm import tqdm
 
-from scrapyrus.idpdata import iterate_idpdata_triples
 from scrapyrus.transcriptions.core import (
+    TRANSCRIPTIONS_TABLE,
     epidoc_xml_to_text,
+    transcription_language,
     translation_epidoc_xml_to_text,
 )
 
 
 EMBEDDING_REQUEST_TIMEOUT = 60
+TRANSCRIPTION_EMBEDDINGS_TABLE = "transcription_embeddings"
+TRANSLATION_EMBEDDINGS_TABLE = "translation_embeddings"
+EMBEDDING_TABLES = {
+    "transcription": TRANSCRIPTION_EMBEDDINGS_TABLE,
+    "translation": TRANSLATION_EMBEDDINGS_TABLE,
+}
+
+# The single transcription rendering used for embeddings.  This deliberately
+# lives here instead of being exposed as a collection configuration.
+MAXIMUM_TRANSCRIPTION_OPTIONS = {
+    "abbrev": True,
+    "break_on_gap": False,
+    "lost": True,
+    "unclear": True,
+    "regularize": True,
+}
 
 PGVECTOR_UNAVAILABLE_MESSAGE = (
     "PostgreSQL extension 'vector' is not available. Install pgvector on the "
@@ -32,41 +50,11 @@ class PgvectorUnavailableError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class EmbeddingConfiguration:
-    """Settings that define a reusable embedding collection."""
-
-    modelname: str
-    abbrev: bool = False
-    break_on_gap: bool = False
-    lost: bool = False
-    unclear: bool = False
-    regularize: bool = False
-    translation: bool = False
-
-    @property
-    def document_kind(self) -> str:
-        if self.translation:
-            return "translation"
-        return "transcription"
-
-
-@dataclass(frozen=True)
-class StoredEmbeddingConfiguration:
-    """A persisted embedding configuration selected from PostgreSQL."""
-
-    id: int
-    configuration: EmbeddingConfiguration
-    embedding_dimensions: int
-
-
-@dataclass(frozen=True)
 class _EmbeddingJob:
     ordinal: int
     store: "EmbeddingStore"
-    row: dict[str, str]
-    config_id: int | None = None
-    expected_dimensions: int | None = None
-    configuration: EmbeddingConfiguration | None = None
+    row: dict[str, Any]
+    table: str
 
 
 @dataclass(frozen=True)
@@ -82,14 +70,9 @@ class _SkippedEmbeddingDocument:
 
 
 class EmbeddingStore:
-    """Build a pgvector store for EpiDoc transcription or translation text."""
+    """Generate embeddings from transcription XML already stored in PostgreSQL."""
 
-    def __init__(
-        self,
-        inference_server_url: str,
-        modelname: str,
-        api_key: str,
-    ) -> None:
+    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
         self.inference_server_url = inference_server_url
         self.modelname = modelname
         self.headers = {
@@ -100,129 +83,96 @@ class EmbeddingStore:
 
     def setup_store(
         self,
-        idp_data: str | Path,
         conninfo: str = "",
         progressbar: bool = True,
         /,
         *,
-        abbrev: bool = False,
-        break_on_gap: bool = False,
-        lost: bool = False,
-        unclear: bool = False,
-        regularize: bool = False,
-        translation: bool = False,
-    ) -> int | None:
-        """Create and populate the pgvector store for these embedding settings."""
+        stale_only: bool = False,
+    ) -> int:
+        """Embed every transcription/translation XML row in PostgreSQL.
 
-        idp_data = Path(idp_data)
-        configuration = EmbeddingConfiguration(
-            self.modelname,
-            abbrev=abbrev,
-            break_on_gap=break_on_gap,
-            lost=lost,
-            unclear=unclear,
-            regularize=regularize,
-            translation=translation,
-        )
-        config_id = None
-        embedding_dimensions = None
+        Transcriptions always use the maximum text variant. Translations use
+        their complete plain-text rendering. Rows are stored in separate tables.
+        When ``stale_only`` is true, unchanged rows are not sent to the model.
+        """
+
         jobs: list[_EmbeddingJob] = []
-
+        seen_ids = {kind: set() for kind in EMBEDDING_TABLES}
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 _ensure_embedding_schema(cursor)
-
-                for (
-                    tm_id,
-                    metadata,
-                    transcription,
-                    translation_path,
-                ) in iterate_idpdata_triples(idp_data, progressbar=progressbar):
-                    document = translation_path if translation else transcription
-                    if document is None:
+                for source in _select_xml_rows(cursor):
+                    document_kind = str(source["type"])
+                    if document_kind not in EMBEDDING_TABLES:
                         continue
-
-                    document_text = self._document_text(
-                        document,
-                        abbrev=abbrev,
-                        break_on_gap=break_on_gap,
-                        lost=lost,
-                        unclear=unclear,
-                        regularize=regularize,
-                        translation=translation,
+                    xml_id = int(source["transcription_id"])
+                    document_text = _xml_to_embedding_text(
+                        str(source["xml_content"]), document_kind
                     )
-                    if document_text.strip() == "":
+                    if not document_text.strip():
                         continue
-
-                    jobs.append(
-                        _EmbeddingJob(
-                            ordinal=len(jobs),
-                            store=self,
-                            row={
-                                "tm_id": tm_id,
-                                "metadata_path": _relative_path(idp_data, metadata),
-                                "document_path": _relative_path(idp_data, document),
-                                "document_text": document_text,
-                                "input_hash": _input_hash(document_text),
-                            },
-                            configuration=configuration,
+                    seen_ids[document_kind].add(xml_id)
+                    row = {
+                        "xml_id": xml_id,
+                        "model_name": self.modelname,
+                        "source_path": str(source["source_path"]),
+                        "tm_id": str(source["tm_id"]),
+                        "language": (
+                            transcription_language(str(source["xml_content"]))
+                            if document_kind == "transcription"
+                            else source["language"]
+                        ),
+                        "document_text": document_text,
+                        "input_hash": _input_hash(document_text),
+                    }
+                    table = EMBEDDING_TABLES[document_kind]
+                    if stale_only:
+                        stored_row = _select_stored_source(
+                            cursor, table, xml_id, self.modelname
                         )
-                    )
+                        current_source = (
+                            row["input_hash"],
+                            row["source_path"],
+                            row["tm_id"],
+                            row["language"],
+                        )
+                        if stored_row == current_source:
+                            continue
+                    jobs.append(_EmbeddingJob(len(jobs), self, row, table))
 
-                embedded_documents = _embed_documents(
+                embedded = _embed_documents(
                     jobs,
                     progressbar=progressbar,
-                    progressbar_title="Embedding documents",
+                    progressbar_title="Embedding XML rows",
                 )
-                for embedded_document in embedded_documents:
-                    embedding = embedded_document.embedding
-                    if config_id is None:
-                        embedding_dimensions = len(embedding)
-                        config_id = _upsert_embedding_configuration(
-                            cursor,
-                            configuration,
-                            embedding_dimensions,
+                dimensions: dict[str, int] = {}
+                for document in embedded:
+                    dimension = len(document.embedding)
+                    previous = dimensions.setdefault(document.job.table, dimension)
+                    if previous != dimension:
+                        raise ValueError(
+                            f"Embedding model {self.modelname!r} returned vectors "
+                            "with inconsistent dimensions"
                         )
-
-                    _upsert_document(
+                    _upsert_embedding(
                         cursor,
-                        config_id,
+                        document.job.table,
                         {
-                            **embedded_document.job.row,
-                            "embedding": _vector_literal(embedding),
+                            **document.job.row,
+                            "embedding": _vector_literal(document.embedding),
                         },
                     )
 
-                if config_id is not None:
-                    if embedding_dimensions is None:
-                        raise RuntimeError("Embedding dimensions were not recorded")
-                    _recreate_embedding_index(cursor, config_id, embedding_dimensions)
-                    _refresh_configuration_document_count(cursor, config_id)
+                for kind, table in EMBEDDING_TABLES.items():
+                    _delete_missing_source_rows(
+                        cursor, table, self.modelname, seen_ids[kind]
+                    )
+                    if table in dimensions:
+                        _recreate_embedding_index(
+                            cursor, table, self.modelname, dimensions[table]
+                        )
 
-        return config_id
-
-    def _document_text(
-        self,
-        document: Path,
-        *,
-        abbrev: bool,
-        break_on_gap: bool,
-        lost: bool,
-        unclear: bool,
-        regularize: bool,
-        translation: bool,
-    ) -> str:
-        if translation:
-            return translation_epidoc_xml_to_text(document)
-
-        return epidoc_xml_to_text(
-            document,
-            abbrev=abbrev,
-            break_on_gap=break_on_gap,
-            lost=lost,
-            unclear=unclear,
-            regularize=regularize,
-        )
+        return len(embedded)
 
     def _session(self) -> requests.Session:
         session = requests.Session()
@@ -244,76 +194,261 @@ class EmbeddingStore:
             raise ValueError(
                 "Embedding response did not contain data[0].embedding"
             ) from error
-
         if not isinstance(embedding, list) or not embedding:
             raise ValueError("Embedding response did not contain a non-empty vector")
-
         vector = tuple(float(value) for value in embedding)
         if not all(math.isfinite(value) for value in vector):
             raise ValueError("Embedding response contained non-finite vector values")
         return vector
 
 
-def _embed_documents(
-    jobs: Sequence[_EmbeddingJob],
+def update_embeddings(
+    conninfo: str = "",
+    progressbar: bool = True,
+    /,
     *,
-    progressbar: bool,
-    progressbar_title: str,
-) -> list[_EmbeddedDocument]:
-    if not jobs:
-        return []
+    inference_server_url: str,
+    modelname: str,
+    api_key: str,
+) -> int:
+    """Compute missing or stale embeddings for one model from database XML."""
 
-    progress = None
-    if progressbar:
-        progress = tqdm(
-            total=len(jobs),
-            unit="request",
-            desc=progressbar_title,
+    return EmbeddingStore(inference_server_url, modelname, api_key).setup_store(
+        conninfo, progressbar, stale_only=True
+    )
+
+
+def delete_embeddings(conninfo: str = "", /, *, modelname: str) -> int:
+    """Delete one model's transcription and translation embeddings."""
+
+    deleted = 0
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            _ensure_embedding_schema(cursor)
+            for table in EMBEDDING_TABLES.values():
+                _drop_embedding_index(cursor, table, modelname)
+                cursor.execute(
+                    sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
+                        sql.Identifier(table)
+                    ),
+                    (modelname,),
+                )
+                deleted += max(cursor.rowcount, 0)
+    return deleted
+
+
+def retrieve_embedding(
+    conninfo: str = "",
+    /,
+    *,
+    modelname: str,
+    document_path: str | Path,
+    translation: bool = False,
+) -> tuple[float, ...] | None:
+    """Return an embedding selected by model, kind, and XML source path."""
+
+    table = EMBEDDING_TABLES["translation" if translation else "transcription"]
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql.SQL(
+                    "SELECT embedding::text FROM {} "
+                    "WHERE model_name = %s AND source_path = %s ORDER BY xml_id LIMIT 1"
+                ).format(sql.Identifier(table)),
+                (modelname, _document_path(document_path)),
+            )
+            row = cursor.fetchone()
+    return None if row is None else _parse_vector(_first_column(row))
+
+
+def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
+    if document_kind == "translation":
+        return translation_epidoc_xml_to_text(xml)
+    return epidoc_xml_to_text(xml, **MAXIMUM_TRANSCRIPTION_OPTIONS)
+
+
+def _select_xml_rows(cursor: Any) -> tuple[dict[str, Any], ...]:
+    cursor.execute(
+        f"""
+SELECT transcription_id, source_path, tm_id, xml_content::text, type, language
+FROM {TRANSCRIPTIONS_TABLE}
+ORDER BY transcription_id
+"""
+    )
+    keys = (
+        "transcription_id",
+        "source_path",
+        "tm_id",
+        "xml_content",
+        "type",
+        "language",
+    )
+    return tuple(
+        row if isinstance(row, dict) else dict(zip(keys, row, strict=True))
+        for row in cursor.fetchall()
+    )
+
+
+def _ensure_embedding_schema(cursor: Any) -> None:
+    try:
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except (psycopg.errors.FeatureNotSupported, psycopg.errors.UndefinedFile) as error:
+        if _is_missing_vector_extension_error(error):
+            raise PgvectorUnavailableError(PGVECTOR_UNAVAILABLE_MESSAGE) from error
+        raise
+    for table in EMBEDDING_TABLES.values():
+        cursor.execute(
+            f"""
+CREATE TABLE IF NOT EXISTS {table} (
+    xml_id bigint NOT NULL,
+    model_name text NOT NULL,
+    source_path text NOT NULL,
+    tm_id text NOT NULL,
+    language text,
+    document_text text NOT NULL,
+    input_hash text NOT NULL,
+    embedding vector NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (xml_id, model_name)
+)
+"""
         )
+
+
+def _is_missing_vector_extension_error(error: psycopg.Error) -> bool:
+    message = str(error)
+    return (
+        'extension "vector" is not available' in message or "vector.control" in message
+    )
+
+
+def _select_stored_source(
+    cursor: Any, table: str, xml_id: int, modelname: str
+) -> tuple[str, str, str, str | None] | None:
+    cursor.execute(
+        sql.SQL(
+            "SELECT input_hash, source_path, tm_id, language FROM {} "
+            "WHERE xml_id = %s AND model_name = %s"
+        ).format(sql.Identifier(table)),
+        (xml_id, modelname),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return (
+        str(_row_value(row, "input_hash", 0)),
+        str(_row_value(row, "source_path", 1)),
+        str(_row_value(row, "tm_id", 2)),
+        _row_value(row, "language", 3),
+    )
+
+
+def _upsert_embedding(cursor: Any, table: str, row: dict[str, Any]) -> None:
+    cursor.execute(
+        sql.SQL(
+            """
+INSERT INTO {} (
+    xml_id, model_name, source_path, tm_id, language,
+    document_text, input_hash, embedding
+) VALUES (
+    %(xml_id)s, %(model_name)s, %(source_path)s, %(tm_id)s, %(language)s,
+    %(document_text)s, %(input_hash)s, %(embedding)s::vector
+)
+ON CONFLICT (xml_id, model_name) DO UPDATE SET
+    source_path = EXCLUDED.source_path,
+    tm_id = EXCLUDED.tm_id,
+    language = EXCLUDED.language,
+    document_text = EXCLUDED.document_text,
+    input_hash = EXCLUDED.input_hash,
+    embedding = EXCLUDED.embedding,
+    updated_at = now()
+"""
+        ).format(sql.Identifier(table)),
+        row,
+    )
+
+
+def _delete_missing_source_rows(
+    cursor: Any, table: str, modelname: str, seen_ids: set[int]
+) -> None:
+    cursor.execute(
+        sql.SQL(
+            "DELETE FROM {} WHERE model_name = %s AND NOT (xml_id = ANY(%s))"
+        ).format(sql.Identifier(table)),
+        (modelname, list(sorted(seen_ids))),
+    )
+
+
+def _embedding_index_name(table: str, modelname: str) -> str:
+    digest = hashlib.sha256(modelname.encode("utf-8")).hexdigest()[:12]
+    return f"{table}_{digest}_hnsw_idx"
+
+
+def _drop_embedding_index(cursor: Any, table: str, modelname: str) -> None:
+    cursor.execute(
+        sql.SQL("DROP INDEX IF EXISTS {}").format(
+            sql.Identifier(_embedding_index_name(table, modelname))
+        )
+    )
+
+
+def _recreate_embedding_index(
+    cursor: Any, table: str, modelname: str, dimensions: int
+) -> None:
+    _drop_embedding_index(cursor, table, modelname)
+    cursor.execute(
+        sql.SQL(
+            "CREATE INDEX {} ON {} USING hnsw "
+            "((embedding::vector({})) vector_cosine_ops) WHERE model_name = {}"
+        ).format(
+            sql.Identifier(_embedding_index_name(table, modelname)),
+            sql.Identifier(table),
+            sql.Literal(dimensions),
+            sql.Literal(modelname),
+        )
+    )
+
+
+def _embed_documents(
+    jobs: Sequence[_EmbeddingJob], *, progressbar: bool, progressbar_title: str
+) -> list[_EmbeddedDocument]:
+    progress = (
+        tqdm(total=len(jobs), unit="request", desc=progressbar_title)
+        if progressbar
+        else None
+    )
     completed: list[_EmbeddedDocument] = []
     skipped: list[_SkippedEmbeddingDocument] = []
-
     try:
         for job in jobs:
             result = _embed_document(job, progress)
-            if isinstance(result, _SkippedEmbeddingDocument):
-                skipped.append(result)
-            else:
-                completed.append(result)
+            (
+                skipped if isinstance(result, _SkippedEmbeddingDocument) else completed
+            ).append(result)
     finally:
-        if progress is not None and hasattr(progress, "close"):
+        if progress is not None:
             progress.close()
-
-    for skipped_document in skipped:
-        print(skipped_document.message, flush=True)
+    for item in skipped:
+        print(item.message, flush=True)
     return completed
 
 
 def _embed_document(
-    job: _EmbeddingJob,
-    progress: Any | None,
+    job: _EmbeddingJob, progress: Any | None
 ) -> _EmbeddedDocument | _SkippedEmbeddingDocument:
     try:
         embedding = job.store._embed(job.row["document_text"])
     except Exception as error:
-        if _is_skippable_embedding_error(error):
-            result: _EmbeddedDocument | _SkippedEmbeddingDocument = (
-                _SkippedEmbeddingDocument(
-                    job,
-                    _skipped_embedding_message(job, error),
-                )
-            )
-        else:
+        if not _is_skippable_embedding_error(error):
             raise
-    else:
-        result = _EmbeddedDocument(
-            job,
-            embedding,
+        result: _EmbeddedDocument | _SkippedEmbeddingDocument = (
+            _SkippedEmbeddingDocument(job, _skipped_embedding_message(job, error))
         )
+    else:
+        result = _EmbeddedDocument(job, embedding)
     finally:
         if progress is not None:
             progress.update(1)
-
     return result
 
 
@@ -327,17 +462,10 @@ def _is_skippable_embedding_error(error: BaseException) -> bool:
 
 
 def _skipped_embedding_message(job: _EmbeddingJob, error: BaseException) -> str:
-    document_kind = (
-        job.configuration.document_kind if job.configuration is not None else "unknown"
-    )
     return (
-        "Skipping embedding document after context-length validation error: "
-        f"tm_id={job.row['tm_id']} "
-        f"metadata_path={job.row['metadata_path']} "
-        f"document_path={job.row['document_path']} "
-        f"model={job.store.modelname} "
-        f"document_kind={document_kind}: "
-        f"{_embedding_error_message(error)}"
+        "Skipping embedding XML row after context-length validation error: "
+        f"xml_id={job.row['xml_id']} source_path={job.row['source_path']} "
+        f"model={job.store.modelname}: {_embedding_error_message(error)}"
     )
 
 
@@ -346,9 +474,11 @@ def _embedding_error_message(error: BaseException) -> str:
     if isinstance(error, requests.HTTPError) and error.response is not None:
         response_message = _response_error_message(error.response)
         if response_message:
-            if message and response_message not in message:
-                return f"{message}: {response_message}"
-            return response_message
+            return (
+                f"{message}: {response_message}"
+                if message and response_message not in message
+                else response_message
+            )
     return message
 
 
@@ -357,7 +487,6 @@ def _response_error_message(response: Any) -> str | None:
         payload = response.json()
     except ValueError:
         payload = None
-
     if isinstance(payload, dict):
         error_payload = payload.get("error", payload)
         if isinstance(error_payload, dict):
@@ -366,597 +495,23 @@ def _response_error_message(response: Any) -> str | None:
                 for key in ("message", "type", "param", "code")
                 if error_payload.get(key) is not None
             ]
-            if parts:
-                return " ".join(parts)
-        elif isinstance(error_payload, str):
-            return error_payload
-        return str(payload)
-
+            return " ".join(parts) or None
+        return str(error_payload)
     text = getattr(response, "text", None)
-    if isinstance(text, str) and text.strip():
-        return text.strip()
-
-    return None
-
-
-def update_embeddings(
-    idp_data: str | Path,
-    conninfo: str = "",
-    progressbar: bool = True,
-    /,
-    *,
-    inference_server_url: str,
-    api_key: str,
-) -> int:
-    """Compute missing or stale embeddings for every stored configuration."""
-
-    idp_data = Path(idp_data)
-    stores: dict[str, EmbeddingStore] = {}
-    updated_config_ids: set[int] = set()
-    updated_count = 0
-    jobs: list[_EmbeddingJob] = []
-
-    with psycopg.connect(conninfo) as connection:
-        with connection.cursor() as cursor:
-            _ensure_embedding_schema(cursor)
-            stored_configurations = _list_embedding_configurations(cursor)
-            if not stored_configurations:
-                return 0
-
-            for (
-                tm_id,
-                metadata,
-                transcription,
-                translation_path,
-            ) in iterate_idpdata_triples(idp_data, progressbar=progressbar):
-                for stored in stored_configurations:
-                    configuration = stored.configuration
-                    document = (
-                        translation_path if configuration.translation else transcription
-                    )
-                    if document is None:
-                        continue
-
-                    document_text = _configuration_document_text(
-                        document,
-                        configuration,
-                    )
-                    if document_text.strip() == "":
-                        continue
-
-                    input_hash = _input_hash(document_text)
-                    document_path = _relative_path(idp_data, document)
-                    stored_hash = _select_document_input_hash(
-                        cursor,
-                        stored.id,
-                        document_path,
-                    )
-                    if stored_hash == input_hash:
-                        continue
-
-                    store = stores.get(configuration.modelname)
-                    if store is None:
-                        store = EmbeddingStore(
-                            inference_server_url,
-                            configuration.modelname,
-                            api_key,
-                        )
-                        stores[configuration.modelname] = store
-
-                    jobs.append(
-                        _EmbeddingJob(
-                            ordinal=len(jobs),
-                            store=store,
-                            row={
-                                "tm_id": tm_id,
-                                "metadata_path": _relative_path(idp_data, metadata),
-                                "document_path": document_path,
-                                "document_text": document_text,
-                                "input_hash": input_hash,
-                            },
-                            config_id=stored.id,
-                            expected_dimensions=stored.embedding_dimensions,
-                            configuration=configuration,
-                        )
-                    )
-
-            embedded_documents = _embed_documents(
-                jobs,
-                progressbar=progressbar,
-                progressbar_title="Updating embeddings",
-            )
-            for embedded_document in embedded_documents:
-                job = embedded_document.job
-                embedding = embedded_document.embedding
-                if job.config_id is None:
-                    raise RuntimeError(
-                        "Updated embedding job did not include config id"
-                    )
-                if job.expected_dimensions is None:
-                    raise RuntimeError(
-                        "Updated embedding job did not include expected dimensions"
-                    )
-                if job.configuration is None:
-                    raise RuntimeError(
-                        "Updated embedding job did not include configuration"
-                    )
-
-                if len(embedding) != job.expected_dimensions:
-                    raise ValueError(
-                        f"Embedding model {job.configuration.modelname!r} returned "
-                        f"{len(embedding)} dimensions for configuration "
-                        f"{job.config_id}; expected {job.expected_dimensions}"
-                    )
-
-                _upsert_document(
-                    cursor,
-                    job.config_id,
-                    {**job.row, "embedding": _vector_literal(embedding)},
-                )
-                updated_config_ids.add(job.config_id)
-                updated_count += 1
-
-            for stored in stored_configurations:
-                if stored.id in updated_config_ids:
-                    _create_embedding_index(
-                        cursor,
-                        stored.id,
-                        stored.embedding_dimensions,
-                        if_not_exists=True,
-                    )
-                    _refresh_configuration_document_count(cursor, stored.id)
-
-    return updated_count
-
-
-def delete_embeddings(
-    conninfo: str = "",
-    /,
-    *,
-    modelname: str,
-    abbrev: bool = False,
-    break_on_gap: bool = False,
-    lost: bool = False,
-    unclear: bool = False,
-    regularize: bool = False,
-    translation: bool = False,
-) -> int | None:
-    """Delete stored embeddings for one embedding configuration."""
-
-    configuration = EmbeddingConfiguration(
-        modelname,
-        abbrev=abbrev,
-        break_on_gap=break_on_gap,
-        lost=lost,
-        unclear=unclear,
-        regularize=regularize,
-        translation=translation,
-    )
-
-    with psycopg.connect(conninfo) as connection:
-        with connection.cursor() as cursor:
-            config_id = _select_embedding_configuration_id(cursor, configuration)
-            if config_id is None:
-                return None
-            _drop_embedding_index(cursor, config_id)
-            _delete_embedding_configuration(cursor, config_id)
-
-    return config_id
-
-
-def retrieve_embedding(
-    conninfo: str = "",
-    /,
-    *,
-    modelname: str,
-    document_path: str | Path,
-    abbrev: bool = False,
-    break_on_gap: bool = False,
-    lost: bool = False,
-    unclear: bool = False,
-    regularize: bool = False,
-    translation: bool = False,
-) -> tuple[float, ...] | None:
-    """Return a stored embedding for a document and embedding configuration."""
-
-    configuration = EmbeddingConfiguration(
-        modelname,
-        abbrev=abbrev,
-        break_on_gap=break_on_gap,
-        lost=lost,
-        unclear=unclear,
-        regularize=regularize,
-        translation=translation,
-    )
-    params = {
-        **_configuration_params(configuration),
-        "document_path": _document_path(document_path),
-    }
-
-    with psycopg.connect(conninfo) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-SELECT document_embeddings.embedding::text
-FROM embedding_configurations
-JOIN document_embeddings
-    ON document_embeddings.config_id = embedding_configurations.id
-WHERE embedding_configurations.model_name = %(model_name)s
-    AND embedding_configurations.document_kind = %(document_kind)s
-    AND embedding_configurations.abbrev = %(abbrev)s
-    AND embedding_configurations.break_on_gap = %(break_on_gap)s
-    AND embedding_configurations.lost = %(lost)s
-    AND embedding_configurations.unclear = %(unclear)s
-    AND embedding_configurations.regularize = %(regularize)s
-    AND document_embeddings.document_path = %(document_path)s
-""",
-                params,
-            )
-            row = cursor.fetchone()
-
-    if row is None:
-        return None
-    return _parse_vector(_first_column(row))
+    return text.strip() if isinstance(text, str) and text.strip() else None
 
 
 def _embeddings_url(inference_server_url: str) -> str:
     base_url = inference_server_url.rstrip("/")
-    if base_url.endswith("/v1"):
-        return f"{base_url}/embeddings"
-    return f"{base_url}/v1/embeddings"
-
-
-def _ensure_embedding_schema(cursor: Any) -> None:
-    try:
-        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    except (
-        psycopg.errors.FeatureNotSupported,
-        psycopg.errors.UndefinedFile,
-    ) as error:
-        if _is_missing_vector_extension_error(error):
-            raise PgvectorUnavailableError(PGVECTOR_UNAVAILABLE_MESSAGE) from error
-        raise
-    _create_embedding_configurations_table(cursor)
-    _create_document_embeddings_table(cursor)
-
-
-def _is_missing_vector_extension_error(error: psycopg.Error) -> bool:
-    message = str(error)
     return (
-        'extension "vector" is not available' in message or "vector.control" in message
-    )
-
-
-def _create_embedding_configurations_table(cursor: Any) -> None:
-    cursor.execute(
-        """
-CREATE TABLE IF NOT EXISTS embedding_configurations (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    model_name text NOT NULL,
-    document_kind text NOT NULL CHECK (
-        document_kind IN ('transcription', 'translation')
-    ),
-    abbrev boolean NOT NULL,
-    break_on_gap boolean NOT NULL,
-    lost boolean NOT NULL,
-    unclear boolean NOT NULL,
-    regularize boolean NOT NULL,
-    embedding_dimensions integer NOT NULL CHECK (embedding_dimensions > 0),
-    created_at timestamptz NOT NULL DEFAULT now(),
-    refreshed_at timestamptz NOT NULL DEFAULT now(),
-    document_count integer NOT NULL DEFAULT 0 CHECK (document_count >= 0),
-    UNIQUE (
-        model_name,
-        document_kind,
-        abbrev,
-        break_on_gap,
-        lost,
-        unclear,
-        regularize
-    )
-)
-"""
-    )
-
-
-def _create_document_embeddings_table(cursor: Any) -> None:
-    cursor.execute(
-        """
-CREATE TABLE IF NOT EXISTS document_embeddings (
-    config_id bigint NOT NULL REFERENCES embedding_configurations(id) ON DELETE CASCADE,
-    document_path text NOT NULL,
-    tm_id text NOT NULL,
-    metadata_path text NOT NULL,
-    document_text text NOT NULL,
-    input_hash text NOT NULL,
-    embedding vector NOT NULL,
-    PRIMARY KEY (config_id, document_path)
-)
-"""
-    )
-
-
-def _upsert_embedding_configuration(
-    cursor: Any,
-    configuration: EmbeddingConfiguration,
-    embedding_dimensions: int,
-) -> int:
-    cursor.execute(
-        """
-INSERT INTO embedding_configurations (
-    model_name,
-    document_kind,
-    abbrev,
-    break_on_gap,
-    lost,
-    unclear,
-    regularize,
-    embedding_dimensions
-)
-VALUES (
-    %(model_name)s,
-    %(document_kind)s,
-    %(abbrev)s,
-    %(break_on_gap)s,
-    %(lost)s,
-    %(unclear)s,
-    %(regularize)s,
-    %(embedding_dimensions)s
-)
-ON CONFLICT (
-    model_name,
-    document_kind,
-    abbrev,
-    break_on_gap,
-    lost,
-    unclear,
-    regularize
-)
-DO UPDATE SET
-    embedding_dimensions = EXCLUDED.embedding_dimensions
-WHERE embedding_configurations.embedding_dimensions = EXCLUDED.embedding_dimensions
-RETURNING id
-""",
-        {
-            **_configuration_params(configuration),
-            "embedding_dimensions": embedding_dimensions,
-        },
-    )
-    row = cursor.fetchone()
-    if row is None:
-        raise ValueError(
-            "Embedding configuration already exists with different dimensions; "
-            "delete it with `scrapyrus embeddings delete` before ingesting this "
-            "configuration again."
-        )
-    return int(_first_column(row))
-
-
-def _select_embedding_configuration_id(
-    cursor: Any,
-    configuration: EmbeddingConfiguration,
-) -> int | None:
-    cursor.execute(
-        """
-SELECT id
-FROM embedding_configurations
-WHERE model_name = %(model_name)s
-    AND document_kind = %(document_kind)s
-    AND abbrev = %(abbrev)s
-    AND break_on_gap = %(break_on_gap)s
-    AND lost = %(lost)s
-    AND unclear = %(unclear)s
-    AND regularize = %(regularize)s
-""",
-        _configuration_params(configuration),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    return int(_first_column(row))
-
-
-def _list_embedding_configurations(
-    cursor: Any,
-) -> tuple[StoredEmbeddingConfiguration, ...]:
-    cursor.execute(
-        """
-SELECT
-    id,
-    model_name,
-    document_kind,
-    abbrev,
-    break_on_gap,
-    lost,
-    unclear,
-    regularize,
-    embedding_dimensions
-FROM embedding_configurations
-ORDER BY id
-"""
-    )
-    return tuple(_stored_embedding_configuration(row) for row in cursor.fetchall())
-
-
-def _stored_embedding_configuration(row: Any) -> StoredEmbeddingConfiguration:
-    document_kind = _row_value(row, "document_kind", 2)
-    if document_kind not in {"transcription", "translation"}:
-        raise ValueError(f"Unknown embedding document kind: {document_kind!r}")
-
-    configuration = EmbeddingConfiguration(
-        _row_value(row, "model_name", 1),
-        abbrev=bool(_row_value(row, "abbrev", 3)),
-        break_on_gap=bool(_row_value(row, "break_on_gap", 4)),
-        lost=bool(_row_value(row, "lost", 5)),
-        unclear=bool(_row_value(row, "unclear", 6)),
-        regularize=bool(_row_value(row, "regularize", 7)),
-        translation=document_kind == "translation",
-    )
-    return StoredEmbeddingConfiguration(
-        int(_row_value(row, "id", 0)),
-        configuration,
-        int(_row_value(row, "embedding_dimensions", 8)),
-    )
-
-
-def _delete_embedding_configuration(cursor: Any, config_id: int) -> None:
-    cursor.execute(
-        """
-DELETE FROM embedding_configurations
-WHERE id = %(config_id)s
-""",
-        {"config_id": config_id},
-    )
-
-
-def _upsert_document(cursor: Any, config_id: int, row: dict[str, str]) -> None:
-    cursor.execute(
-        """
-INSERT INTO document_embeddings (
-    config_id,
-    document_path,
-    tm_id,
-    metadata_path,
-    document_text,
-    input_hash,
-    embedding
-)
-VALUES (
-    %(config_id)s,
-    %(document_path)s,
-    %(tm_id)s,
-    %(metadata_path)s,
-    %(document_text)s,
-    %(input_hash)s,
-    %(embedding)s::vector
-)
-ON CONFLICT (config_id, document_path)
-DO UPDATE SET
-    tm_id = EXCLUDED.tm_id,
-    metadata_path = EXCLUDED.metadata_path,
-    document_text = EXCLUDED.document_text,
-    input_hash = EXCLUDED.input_hash,
-    embedding = EXCLUDED.embedding
-""",
-        {"config_id": config_id, **row},
-    )
-
-
-def _select_document_input_hash(
-    cursor: Any,
-    config_id: int,
-    document_path: str,
-) -> str | None:
-    cursor.execute(
-        """
-SELECT input_hash
-FROM document_embeddings
-WHERE config_id = %(config_id)s
-    AND document_path = %(document_path)s
-""",
-        {"config_id": config_id, "document_path": document_path},
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    return _first_column(row)
-
-
-def _drop_embedding_index(cursor: Any, config_id: int) -> None:
-    index_name = _embedding_index_name(config_id)
-    cursor.execute(
-        f"""
-DROP INDEX IF EXISTS {index_name}
-"""
-    )
-
-
-def _create_embedding_index(
-    cursor: Any,
-    config_id: int,
-    embedding_dimensions: int,
-    *,
-    if_not_exists: bool = False,
-) -> None:
-    index_name = _embedding_index_name(config_id)
-    existence_clause = "IF NOT EXISTS " if if_not_exists else ""
-    cursor.execute(
-        f"""
-CREATE INDEX {existence_clause}{index_name}
-ON document_embeddings
-USING hnsw ((embedding::vector({embedding_dimensions})) vector_cosine_ops)
-WHERE config_id = {config_id}
-"""
-    )
-
-
-def _recreate_embedding_index(
-    cursor: Any,
-    config_id: int,
-    embedding_dimensions: int,
-) -> None:
-    _drop_embedding_index(cursor, config_id)
-    _create_embedding_index(cursor, config_id, embedding_dimensions)
-
-
-def _refresh_configuration_document_count(cursor: Any, config_id: int) -> None:
-    cursor.execute(
-        """
-UPDATE embedding_configurations
-SET
-    refreshed_at = now(),
-    document_count = (
-        SELECT count(*)::integer
-        FROM document_embeddings
-        WHERE config_id = %(config_id)s
-    )
-WHERE id = %(config_id)s
-""",
-        {"config_id": config_id},
-    )
-
-
-def _embedding_index_name(config_id: int) -> str:
-    if config_id < 1:
-        raise ValueError(f"Invalid embedding configuration id: {config_id!r}")
-    return f"doc_embed_cfg_{config_id}_hnsw_idx"
-
-
-def _configuration_params(configuration: EmbeddingConfiguration) -> dict[str, Any]:
-    return {
-        "model_name": configuration.modelname,
-        "document_kind": configuration.document_kind,
-        "abbrev": configuration.abbrev,
-        "break_on_gap": configuration.break_on_gap,
-        "lost": configuration.lost,
-        "unclear": configuration.unclear,
-        "regularize": configuration.regularize,
-    }
-
-
-def _configuration_document_text(
-    document: Path,
-    configuration: EmbeddingConfiguration,
-) -> str:
-    if configuration.translation:
-        return translation_epidoc_xml_to_text(document)
-
-    return epidoc_xml_to_text(
-        document,
-        abbrev=configuration.abbrev,
-        break_on_gap=configuration.break_on_gap,
-        lost=configuration.lost,
-        unclear=configuration.unclear,
-        regularize=configuration.regularize,
+        f"{base_url}/embeddings"
+        if base_url.endswith("/v1")
+        else f"{base_url}/v1/embeddings"
     )
 
 
 def _input_hash(document_text: str) -> str:
     return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
-
-
-def _relative_path(root: Path, path: Path) -> str:
-    return path.relative_to(root).as_posix()
 
 
 def _document_path(path: str | Path) -> str:
@@ -972,24 +527,15 @@ def _parse_vector(value: Any) -> tuple[float, ...]:
         text = value.strip()
         if not text.startswith("[") or not text.endswith("]"):
             raise ValueError(f"Could not parse vector value: {value!r}")
-        values = text[1:-1].strip()
-        if values == "":
-            return ()
-        return tuple(float(item) for item in values.split(","))
-
+        return tuple(float(item) for item in text[1:-1].split(",") if item)
     if isinstance(value, (list, tuple)):
         return tuple(float(item) for item in value)
-
     raise TypeError(f"Unsupported vector value: {value!r}")
 
 
 def _first_column(row: Any) -> Any:
-    if isinstance(row, dict):
-        return next(iter(row.values()))
-    return row[0]
+    return next(iter(row.values())) if isinstance(row, dict) else row[0]
 
 
 def _row_value(row: Any, key: str, index: int) -> Any:
-    if isinstance(row, dict):
-        return row[key]
-    return row[index]
+    return row[key] if isinstance(row, dict) else row[index]
