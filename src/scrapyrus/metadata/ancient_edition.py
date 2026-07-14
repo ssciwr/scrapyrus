@@ -63,6 +63,11 @@ ANCIENT_EDITIONS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS ancient_editions (
     perseus_author_urn text
 );"""
 
+ANCIENT_EDITIONS_INDEX_SQL = """CREATE INDEX IF NOT EXISTS ancient_editions_tm_id_idx ON ancient_editions (tm_id);
+CREATE INDEX IF NOT EXISTS ancient_editions_tm_title_id_idx ON ancient_editions (tm_title_id);
+CREATE INDEX IF NOT EXISTS ancient_editions_author_idx ON ancient_editions (author);
+CREATE INDEX IF NOT EXISTS ancient_editions_perseus_author_urn_idx ON ancient_editions (perseus_author_urn);"""
+
 ANCIENT_EDITIONS_DESCRIPTION = """The ancient_editions table contains one row for each ancient work or
 author-work attribution cited in an ancient-edition bibliography entry. It
 links papyrus records to ancient titles, authors, Trismegistos author-work IDs,
@@ -163,6 +168,9 @@ class AncientEditionMetadataTable(MetadataTable):
     name = "ancient_editions"
     order_by = ("ancient_edition_id",)
     schema_sql = ANCIENT_EDITIONS_SCHEMA_SQL
+
+    def index_sql(self) -> str:
+        return ANCIENT_EDITIONS_INDEX_SQL
 
     def description(self) -> str:
         return ANCIENT_EDITIONS_DESCRIPTION

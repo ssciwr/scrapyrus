@@ -45,6 +45,10 @@ KEYWORDS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS keywords (
     uncertain boolean NOT NULL
 );"""
 
+KEYWORDS_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS keywords_tm_id_idx ON keywords (tm_id);"
+)
+
 KEYWORDS_DESCRIPTION = """The keywords table contains one row for each normalized keyword term assigned
 to a papyrus record. It records the keyword vocabulary scheme, term type,
 cleaned keyword text, and whether the assignment was marked uncertain in the
@@ -124,6 +128,9 @@ class KeywordMetadataTable(MetadataTable):
     name = "keywords"
     order_by = ("keyword_id",)
     schema_sql = KEYWORDS_SCHEMA_SQL
+
+    def index_sql(self) -> str:
+        return KEYWORDS_INDEX_SQL
 
     def description(self) -> str:
         return KEYWORDS_DESCRIPTION

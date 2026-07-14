@@ -128,6 +128,38 @@ def test_metadata_table_columns_match_model_fields():
     assert ancient_editions.columns == tuple(AncientEditionModel.model_fields)
 
 
+def test_builtin_metadata_tables_define_requested_indexes():
+    expected_index_columns = {
+        "papyri": (
+            "tm_id",
+            "material",
+            "dclp_id",
+            "hgv_id",
+            "ldab_id",
+            "mp3_id",
+            "current_location",
+        ),
+        "principal_editions": ("tm_id", "biblio_id", "author"),
+        "keywords": ("tm_id",),
+        "orig_dates": ("tm_id", "not_before_year", "not_after_year"),
+        "orig_places": ("tm_id", "pleiades_place_id", "place_name"),
+        "ancient_editions": (
+            "tm_id",
+            "tm_title_id",
+            "author",
+            "perseus_author_urn",
+        ),
+    }
+
+    for table_type in MetadataTable.registered_tables():
+        table = table_type()
+        assert table.index_sql().splitlines() == [
+            f"CREATE INDEX IF NOT EXISTS {table.name}_{column}_idx "
+            f"ON {table.name} ({column});"
+            for column in expected_index_columns[table.name]
+        ]
+
+
 def test_builtin_metadata_tables_expose_llm_catalog_text():
     for table_type in MetadataTable.registered_tables():
         table = table_type()

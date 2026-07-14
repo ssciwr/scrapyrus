@@ -53,6 +53,10 @@ PRINCIPAL_EDITIONS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS principal_editions
     page text
 );"""
 
+PRINCIPAL_EDITIONS_INDEX_SQL = """CREATE INDEX IF NOT EXISTS principal_editions_tm_id_idx ON principal_editions (tm_id);
+CREATE INDEX IF NOT EXISTS principal_editions_biblio_id_idx ON principal_editions (biblio_id);
+CREATE INDEX IF NOT EXISTS principal_editions_author_idx ON principal_editions (author);"""
+
 PRINCIPAL_EDITIONS_DESCRIPTION = """The principal_editions table contains one row for each principal modern
 bibliographic edition cited for a papyrus record. It links editions to
 documents by tm_id and stores papyri.info bibliography IDs plus citation parts
@@ -174,6 +178,9 @@ class PrincipalEditionMetadataTable(MetadataTable):
     name = "principal_editions"
     order_by = ("principal_edition_id",)
     schema_sql = PRINCIPAL_EDITIONS_SCHEMA_SQL
+
+    def index_sql(self) -> str:
+        return PRINCIPAL_EDITIONS_INDEX_SQL
 
     def description(self) -> str:
         return PRINCIPAL_EDITIONS_DESCRIPTION

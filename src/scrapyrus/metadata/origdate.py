@@ -65,6 +65,10 @@ ORIG_DATES_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS orig_dates (
     alternative boolean NOT NULL
 );"""
 
+ORIG_DATES_INDEX_SQL = """CREATE INDEX IF NOT EXISTS orig_dates_tm_id_idx ON orig_dates (tm_id);
+CREATE INDEX IF NOT EXISTS orig_dates_not_before_year_idx ON orig_dates (not_before_year);
+CREATE INDEX IF NOT EXISTS orig_dates_not_after_year_idx ON orig_dates (not_after_year);"""
+
 ORIG_DATES_DESCRIPTION = """The orig_dates table contains one row for each original-date element with a
 machine-readable date or date range. It stores the source date text, parsed
 not-before and not-after bounds, certainty and precision markers, and whether
@@ -174,6 +178,9 @@ class OrigDateMetadataTable(MetadataTable):
     name = "orig_dates"
     order_by = ("date_id",)
     schema_sql = ORIG_DATES_SCHEMA_SQL
+
+    def index_sql(self) -> str:
+        return ORIG_DATES_INDEX_SQL
 
     def description(self) -> str:
         return ORIG_DATES_DESCRIPTION

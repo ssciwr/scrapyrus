@@ -46,7 +46,13 @@ PAPYRI_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS papyri (
     current_location text
 );"""
 
-PAPYRI_INDEX_SQL = "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);"
+PAPYRI_INDEX_SQL = """CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);
+CREATE INDEX IF NOT EXISTS papyri_material_idx ON papyri (material);
+CREATE INDEX IF NOT EXISTS papyri_dclp_id_idx ON papyri (dclp_id);
+CREATE INDEX IF NOT EXISTS papyri_hgv_id_idx ON papyri (hgv_id);
+CREATE INDEX IF NOT EXISTS papyri_ldab_id_idx ON papyri (ldab_id);
+CREATE INDEX IF NOT EXISTS papyri_mp3_id_idx ON papyri (mp3_id);
+CREATE INDEX IF NOT EXISTS papyri_current_location_idx ON papyri (current_location);"""
 
 PAPYRI_DESCRIPTION = """The papyri table contains one row for each idp.data metadata XML record.
 It is the central table for papyrus records, with source provenance, the

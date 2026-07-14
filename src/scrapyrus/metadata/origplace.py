@@ -69,6 +69,10 @@ ORIG_PLACES_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS orig_places (
     granularity text NOT NULL
 );"""
 
+ORIG_PLACES_INDEX_SQL = """CREATE INDEX IF NOT EXISTS orig_places_tm_id_idx ON orig_places (tm_id);
+CREATE INDEX IF NOT EXISTS orig_places_pleiades_place_id_idx ON orig_places (pleiades_place_id);
+CREATE INDEX IF NOT EXISTS orig_places_place_name_idx ON orig_places (place_name);"""
+
 ORIG_PLACES_DESCRIPTION = """The orig_places table contains one row for each extracted ancient place
 associated with a papyrus record's origin or provenance. It stores the full
 source place expression, normalized place name, Trismegistos and Pleiades place
@@ -168,6 +172,9 @@ class OrigPlaceMetadataTable(MetadataTable):
     name = "orig_places"
     order_by = ("place_id",)
     schema_sql = ORIG_PLACES_SCHEMA_SQL
+
+    def index_sql(self) -> str:
+        return ORIG_PLACES_INDEX_SQL
 
     def description(self) -> str:
         return ORIG_PLACES_DESCRIPTION

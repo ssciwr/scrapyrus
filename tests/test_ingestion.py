@@ -413,9 +413,13 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "author": "Homerus",
         "perseus_author_urn": "urn:cts:greekLit:tlg0012",
     }
-    assert _normalize_sql(cursor.executions[17][0]) == (
-        "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);"
-    )
+    index_sql = _normalize_sql(cursor.executions[17][0])
+    assert index_sql.count("CREATE INDEX") == 21
+    assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);" in index_sql
+    assert (
+        "CREATE INDEX IF NOT EXISTS ancient_editions_perseus_author_urn_idx "
+        "ON ancient_editions (perseus_author_urn);"
+    ) in index_sql
     assert cursor.executions[17][1] is None
 
 
