@@ -32,6 +32,8 @@ TRANSCRIPTION_COLUMNS = (
     "xml_content",
     "type",
     "language",
+    "lemma_text",
+    "lemma_vector",
 )
 TRANSCRIPTIONS_SCHEMA_SQL = f"""CREATE TABLE {TRANSCRIPTIONS_TABLE} (
     transcription_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -40,6 +42,9 @@ TRANSCRIPTIONS_SCHEMA_SQL = f"""CREATE TABLE {TRANSCRIPTIONS_TABLE} (
     xml_content xml NOT NULL,
     type text NOT NULL CHECK (type IN ('transcription', 'translation')),
     language text,
+    lemma_text text,
+    lemma_vector tsvector GENERATED ALWAYS AS
+        (to_tsvector('simple', lemma_text)) STORED,
     CHECK (type = 'translation' OR language IS NULL)
 );
 CREATE INDEX {TRANSCRIPTIONS_TABLE}_tm_id_idx

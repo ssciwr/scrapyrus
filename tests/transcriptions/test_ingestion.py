@@ -124,6 +124,11 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
     assert "xml_content xml NOT NULL" in schema
     assert "type IN ('transcription', 'translation')" in schema
     assert "language text" in schema
+    assert "lemma_text text" in schema
+    assert (
+        "lemma_vector tsvector GENERATED ALWAYS AS "
+        "(to_tsvector('simple', lemma_text)) STORED"
+    ) in schema
     rows = [execution[1] for execution in cursor.executions[2:]]
     assert [(row["type"], row["language"]) for row in rows] == [
         ("transcription", None),
@@ -178,6 +183,8 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
             '<div type="edition"><ab>Text</ab></div>',
             "transcription",
             None,
+            None,
+            None,
         ),
         (
             2,
@@ -186,6 +193,8 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
             '<div type="translation" xml:lang="en"><p>Text.</p></div>',
             "translation",
             "en",
+            None,
+            None,
         ),
     ]
     cursor = RecordingCursor(rows)

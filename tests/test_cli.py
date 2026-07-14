@@ -250,6 +250,27 @@ def test_transcriptions_dump_subcommand_triggers_csv_dump(tmp_path, monkeypatch)
     assert calls == [(output_dir, "postgresql://database.example/scrapyrus")]
 
 
+def test_lemmatization_subcommand_triggers_lemmatization(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.lemmatize_transcriptions",
+        lambda database_url, *, progressbar: calls.append((database_url, progressbar)),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "lemmatization",
+            "--database-url",
+            "postgresql://database.example/scrapyrus",
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("postgresql://database.example/scrapyrus", False)]
+
+
 def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypatch):
     calls = []
 

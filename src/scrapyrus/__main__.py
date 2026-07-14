@@ -20,6 +20,7 @@ from scrapyrus.transcriptions.embeddings import (
     update_embeddings,
 )
 from scrapyrus.transcriptions.evaluation import evaluate_embeddings
+from scrapyrus.transcriptions.lemmatization import lemmatize_transcriptions
 
 
 idp_data = click.option(
@@ -265,6 +266,20 @@ def dump_transcription_xml(database_url: str, output_dir: Path) -> None:
     """Dump transcription and translation XML as CSV."""
 
     dump_transcriptions(output_dir, database_url)
+
+
+@main.command("lemmatization")
+@database_url
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while lemmatizing supported transcriptions.",
+)
+def lemmatization(database_url: str, progress: bool) -> None:
+    """Lemmatize Greek, Latin, and Coptic transcription rows."""
+
+    lemmatize_transcriptions(database_url, progressbar=progress)
 
 
 @main.group("embeddings")
