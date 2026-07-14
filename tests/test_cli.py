@@ -396,6 +396,71 @@ def test_embeddings_delete_removes_model_from_both_tables(monkeypatch):
     assert calls == [("postgresql://db", {"modelname": "model"})]
 
 
+def test_embeddings_dump_writes_selected_table(tmp_path, monkeypatch):
+    calls = []
+    output = tmp_path / "embeddings.dump"
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_embeddings",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "dump",
+            "--database-url",
+            "postgresql://db",
+            "--model-name",
+            "model",
+            "--kind",
+            "translations",
+            str(output),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            (output, "postgresql://db"),
+            {"modelname": "model", "document_kind": "translations"},
+        )
+    ]
+
+
+def test_embeddings_import_reads_selected_table(tmp_path, monkeypatch):
+    calls = []
+    source = tmp_path / "embeddings.dump"
+    source.write_bytes(b"dump")
+    monkeypatch.setattr(
+        "scrapyrus.__main__.import_embeddings",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "import",
+            "--database-url",
+            "postgresql://db",
+            "--model-name",
+            "model",
+            "--kind",
+            "transcription",
+            str(source),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            (source, "postgresql://db"),
+            {"modelname": "model", "document_kind": "transcription"},
+        )
+    ]
+
+
 def test_embeddings_update_requires_model_and_uses_database(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -434,7 +499,7 @@ def test_embeddings_update_requires_model_and_uses_database(monkeypatch):
 def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(
-        "scrapyrus.__main__.evaluate_embeddings_model",
+        "scrapyrus.__main__.evaluate_embeddings",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
     output = tmp_path / "evaluation.md"
@@ -445,13 +510,9 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
             "evaluate",
             "--database-url",
             "postgresql://db",
-            "--model-name",
-            "model",
             "--output",
             str(output),
         ),
     )
     assert result.exit_code == 0
-    assert calls == [
-        (("postgresql://db",), {"modelname": "model", "output_file": output})
-    ]
+    assert calls == [(("postgresql://db",), {"output_file": output})]

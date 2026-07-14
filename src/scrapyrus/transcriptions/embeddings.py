@@ -26,6 +26,23 @@ EMBEDDING_TABLES = {
     "transcription": TRANSCRIPTION_EMBEDDINGS_TABLE,
     "translation": TRANSLATION_EMBEDDINGS_TABLE,
 }
+EMBEDDING_KIND_ALIASES = {
+    "transcription": "transcription",
+    "translation": "translation",
+    "transcriptions": "transcription",
+    "translations": "translation",
+}
+EMBEDDING_DUMP_COLUMNS = (
+    "xml_id",
+    "model_name",
+    "source_path",
+    "tm_id",
+    "language",
+    "document_text",
+    "input_hash",
+    "embedding",
+    "updated_at",
+)
 
 # The single transcription rendering used for embeddings.  This deliberately
 # lives here instead of being exposed as a collection configuration.
@@ -215,6 +232,121 @@ def delete_embeddings(conninfo: str = "", /, *, modelname: str) -> int:
     return deleted
 
 
+def dump_embeddings(
+    target: str | Path,
+    conninfo: str = "",
+    /,
+    *,
+    modelname: str,
+    document_kind: str = "transcription",
+) -> int:
+    """Dump one model's embedding rows in PostgreSQL binary COPY format."""
+
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    table = _embedding_table(document_kind)
+    columns = _embedding_columns_sql()
+
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            _ensure_embedding_schema(cursor)
+            cursor.execute(
+                sql.SQL("SELECT count(*) FROM {} WHERE model_name = %s").format(
+                    sql.Identifier(table)
+                ),
+                (modelname,),
+            )
+            row_count = int(_first_column(cursor.fetchone()))
+            with target.open("wb") as output:
+                with cursor.copy(
+                    sql.SQL(
+                        "COPY (SELECT {columns} FROM {table} "
+                        "WHERE model_name = {modelname} ORDER BY xml_id) "
+                        "TO STDOUT WITH (FORMAT binary)"
+                    ).format(
+                        columns=columns,
+                        table=sql.Identifier(table),
+                        modelname=sql.Literal(modelname),
+                    )
+                ) as copy:
+                    for chunk in copy:
+                        output.write(chunk)
+    return row_count
+
+
+def import_embeddings(
+    source: str | Path,
+    conninfo: str = "",
+    /,
+    *,
+    modelname: str,
+    document_kind: str = "transcription",
+) -> int:
+    """Import one model's embedding rows from PostgreSQL binary COPY format."""
+
+    source = Path(source)
+    table = _embedding_table(document_kind)
+    temporary_table = f"{table}_import"
+    columns = _embedding_columns_sql()
+
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            _ensure_embedding_schema(cursor)
+            cursor.execute(
+                sql.SQL(
+                    "CREATE TEMP TABLE {} "
+                    "(LIKE {} INCLUDING DEFAULTS INCLUDING CONSTRAINTS) "
+                    "ON COMMIT DROP"
+                ).format(sql.Identifier(temporary_table), sql.Identifier(table))
+            )
+            with source.open("rb") as input_file:
+                with cursor.copy(
+                    sql.SQL("COPY {} ({}) FROM STDIN WITH (FORMAT binary)").format(
+                        sql.Identifier(temporary_table),
+                        columns,
+                    )
+                ) as copy:
+                    while True:
+                        chunk = input_file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        copy.write(chunk)
+
+            imported_models = _imported_model_names(cursor, temporary_table)
+            unexpected_models = [
+                imported_model
+                for imported_model in imported_models
+                if imported_model != modelname
+            ]
+            if unexpected_models:
+                raise ValueError(
+                    "Imported embeddings contain model names other than "
+                    f"{modelname!r}: {', '.join(unexpected_models)}"
+                )
+
+            row_count, dimensions = _imported_embedding_stats(cursor, temporary_table)
+            _drop_embedding_index(cursor, table, modelname)
+            cursor.execute(
+                sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
+                    sql.Identifier(table)
+                ),
+                (modelname,),
+            )
+            cursor.execute(
+                sql.SQL(
+                    "INSERT INTO {table} ({columns}) "
+                    "SELECT {columns} FROM {temporary_table} ORDER BY xml_id"
+                ).format(
+                    table=sql.Identifier(table),
+                    columns=columns,
+                    temporary_table=sql.Identifier(temporary_table),
+                )
+            )
+            if dimensions is not None:
+                _recreate_embedding_index(cursor, table, modelname, dimensions)
+    return row_count
+
+
 def retrieve_embedding(
     conninfo: str = "",
     /,
@@ -243,6 +375,24 @@ def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
     if document_kind == "translation":
         return translation_epidoc_xml_to_text(xml)
     return epidoc_xml_to_text(xml, **MAXIMUM_TRANSCRIPTION_OPTIONS)
+
+
+def _embedding_table(document_kind: str) -> str:
+    try:
+        normalized_kind = EMBEDDING_KIND_ALIASES[document_kind]
+    except KeyError as error:
+        choices = ", ".join(EMBEDDING_KIND_ALIASES)
+        raise ValueError(
+            f"Unknown embedding document kind {document_kind!r}. "
+            f"Expected one of: {choices}"
+        ) from error
+    return EMBEDDING_TABLES[normalized_kind]
+
+
+def _embedding_columns_sql() -> sql.Composed:
+    return sql.SQL(", ").join(
+        sql.Identifier(column) for column in EMBEDDING_DUMP_COLUMNS
+    )
 
 
 def _select_xml_rows(
@@ -407,6 +557,37 @@ def _recreate_embedding_index(
             sql.Literal(modelname),
         )
     )
+
+
+def _imported_model_names(cursor: Any, temporary_table: str) -> list[str]:
+    cursor.execute(
+        sql.SQL(
+            "SELECT model_name FROM {} GROUP BY model_name ORDER BY model_name"
+        ).format(sql.Identifier(temporary_table))
+    )
+    return [str(_first_column(row)) for row in cursor.fetchall()]
+
+
+def _imported_embedding_stats(
+    cursor: Any, temporary_table: str
+) -> tuple[int, int | None]:
+    cursor.execute(
+        sql.SQL(
+            "SELECT count(*), min(vector_dims(embedding)), max(vector_dims(embedding)) "
+            "FROM {}"
+        ).format(sql.Identifier(temporary_table))
+    )
+    row = cursor.fetchone()
+    row_count = int(_row_value(row, "count", 0))
+    minimum_dimensions = _row_value(row, "min", 1)
+    maximum_dimensions = _row_value(row, "max", 2)
+    if row_count == 0:
+        return 0, None
+    if minimum_dimensions != maximum_dimensions:
+        raise ValueError(
+            "Imported embeddings contain vectors with inconsistent dimensions"
+        )
+    return row_count, int(minimum_dimensions)
 
 
 def _embed_documents(

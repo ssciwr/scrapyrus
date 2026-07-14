@@ -10,12 +10,15 @@ from scrapyrus.images import (
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
 from scrapyrus.transcriptions.core import dump_transcriptions, ingest_transcriptions
 from scrapyrus.transcriptions.embeddings import (
+    EMBEDDING_KIND_ALIASES,
     EmbeddingStore,
     PgvectorUnavailableError,
     delete_embeddings,
+    dump_embeddings,
+    import_embeddings,
     update_embeddings,
 )
-from scrapyrus.transcriptions.evaluation import evaluate_embeddings_model
+from scrapyrus.transcriptions.evaluation import evaluate_embeddings
 
 
 idp_data = click.option(
@@ -73,6 +76,22 @@ def _embedding_model_options():
 
 def embedding_model_options(function):
     return _apply_options(function, _embedding_model_options())
+
+
+def embedding_kind_options(function):
+    return _apply_options(
+        function,
+        [
+            click.option(
+                "--kind",
+                "document_kind",
+                type=click.Choice(tuple(EMBEDDING_KIND_ALIASES)),
+                default="transcription",
+                show_default=True,
+                help="Embedding table to use.",
+            )
+        ],
+    )
 
 
 @click.group()
@@ -312,6 +331,57 @@ def delete_embedding_model(
     delete_embeddings(database_url, modelname=model_name)
 
 
+@embeddings.command("dump")
+@database_url
+@embedding_model_options
+@embedding_kind_options
+@click.argument("output_file", type=click.Path(path_type=Path, dir_okay=False))
+def dump_embedding_rows(
+    database_url: str,
+    model_name: str,
+    document_kind: str,
+    output_file: Path,
+) -> None:
+    """Dump one model's embeddings in PostgreSQL binary COPY format."""
+
+    try:
+        dump_embeddings(
+            output_file,
+            database_url,
+            modelname=model_name,
+            document_kind=document_kind,
+        )
+    except PgvectorUnavailableError as error:
+        raise click.ClickException(str(error)) from error
+
+
+@embeddings.command("import")
+@database_url
+@embedding_model_options
+@embedding_kind_options
+@click.argument(
+    "input_file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True, readable=True),
+)
+def import_embedding_rows(
+    database_url: str,
+    model_name: str,
+    document_kind: str,
+    input_file: Path,
+) -> None:
+    """Import one model's embeddings from PostgreSQL binary COPY format."""
+
+    try:
+        import_embeddings(
+            input_file,
+            database_url,
+            modelname=model_name,
+            document_kind=document_kind,
+        )
+    except (PgvectorUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+
 @embeddings.command("update")
 @database_url
 @embedding_client_options
@@ -345,7 +415,6 @@ def update_embedding_rows(
 
 @embeddings.command("evaluate")
 @database_url
-@embedding_model_options
 @click.option(
     "--output",
     "output_file",
@@ -356,14 +425,12 @@ def update_embedding_rows(
 )
 def evaluate_embedding_model(
     database_url: str,
-    model_name: str,
     output_file: Path,
 ) -> None:
     """Evaluate transcription-to-translation embedding retrieval."""
 
-    evaluate_embeddings_model(
+    evaluate_embeddings(
         database_url,
-        modelname=model_name,
         output_file=output_file,
     )
 

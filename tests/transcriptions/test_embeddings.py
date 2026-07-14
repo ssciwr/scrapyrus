@@ -5,10 +5,12 @@ import psycopg
 from scrapyrus.transcriptions.embeddings import (
     MAXIMUM_TRANSCRIPTION_OPTIONS,
     EmbeddingStore,
+    dump_embeddings,
     _ensure_embedding_schema,
     _select_xml_rows,
     _xml_to_embedding_text,
     delete_embeddings,
+    import_embeddings,
     retrieve_embedding,
     update_embeddings,
 )
@@ -18,12 +20,46 @@ def _sql_text(query):
     return query if isinstance(query, str) else query.as_string()
 
 
+class RecordingCopy:
+    def __init__(self, chunks, writes):
+        self.chunks = list(chunks)
+        self.writes = writes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def __iter__(self):
+        return iter(self.chunks)
+
+    def write(self, chunk):
+        self.writes.append(chunk)
+
+
 class RecordingCursor:
-    def __init__(self, *, rows=(), results=(), rowcount=0):
+    def __init__(
+        self,
+        *,
+        rows=(),
+        fetchall_results=None,
+        results=(),
+        rowcount=0,
+        copy_chunks=(),
+    ):
         self.rows = list(rows)
+        self.fetchall_results = (
+            [list(result) for result in fetchall_results]
+            if fetchall_results is not None
+            else []
+        )
         self.results = list(results)
         self.executions = []
         self.rowcount = rowcount
+        self.copy_chunks = list(copy_chunks)
+        self.copy_writes = []
+        self.copies = []
 
     def __enter__(self):
         return self
@@ -34,7 +70,13 @@ class RecordingCursor:
     def execute(self, query, params=None):
         self.executions.append((_sql_text(query), params))
 
+    def copy(self, query):
+        self.copies.append(_sql_text(query))
+        return RecordingCopy(self.copy_chunks, self.copy_writes)
+
     def fetchall(self):
+        if self.fetchall_results:
+            return self.fetchall_results.pop(0)
         return self.rows
 
     def fetchone(self):
@@ -220,6 +262,98 @@ def test_delete_embeddings_deletes_model_from_both_tables(monkeypatch):
     assert len(deletes) == 2
     assert any("transcription_embeddings" in query for query in deletes)
     assert any("translation_embeddings" in query for query in deletes)
+
+
+def test_dump_embeddings_writes_filtered_binary_copy(tmp_path, monkeypatch):
+    output = tmp_path / "nested" / "translation-embeddings.dump"
+    cursor = RecordingCursor(
+        results=[(2,)],
+        copy_chunks=[b"PGCOPY\n", b"binary-data"],
+    )
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+
+    count = dump_embeddings(
+        output,
+        "postgresql://db",
+        modelname="model",
+        document_kind="translations",
+    )
+
+    assert count == 2
+    assert output.read_bytes() == b"PGCOPY\nbinary-data"
+    assert len(cursor.copies) == 1
+    assert 'FROM "translation_embeddings"' in cursor.copies[0]
+    assert "WHERE model_name = 'model'" in cursor.copies[0]
+    assert "TO STDOUT WITH (FORMAT binary)" in cursor.copies[0]
+
+
+def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "transcription-embeddings.dump"
+    source.write_bytes(b"PGCOPY\nbinary-data")
+    cursor = RecordingCursor(
+        fetchall_results=[[("model",)]],
+        results=[(2, 3, 3)],
+    )
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+
+    count = import_embeddings(
+        source,
+        "postgresql://db",
+        modelname="model",
+        document_kind="transcription",
+    )
+
+    assert count == 2
+    assert cursor.copy_writes == [b"PGCOPY\nbinary-data"]
+    assert any(
+        'CREATE TEMP TABLE "transcription_embeddings_import"' in query
+        and 'LIKE "transcription_embeddings"' in query
+        for query, _ in cursor.executions
+    )
+    deletes = [
+        (query, params)
+        for query, params in cursor.executions
+        if query.startswith("DELETE FROM")
+    ]
+    assert deletes == [
+        ('DELETE FROM "transcription_embeddings" WHERE model_name = %s', ("model",))
+    ]
+    assert any(
+        query.startswith('INSERT INTO "transcription_embeddings"')
+        for query, _ in cursor.executions
+    )
+    assert any(
+        "USING hnsw" in query and "vector(3)" in query for query, _ in cursor.executions
+    )
+
+
+def test_import_embeddings_rejects_unexpected_model_names(tmp_path, monkeypatch):
+    source = tmp_path / "translation-embeddings.dump"
+    source.write_bytes(b"PGCOPY\nbinary-data")
+    cursor = RecordingCursor(fetchall_results=[[("other-model",)]])
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+
+    try:
+        import_embeddings(
+            source,
+            "postgresql://db",
+            modelname="model",
+            document_kind="translation",
+        )
+    except ValueError as error:
+        assert "other than 'model'" in str(error)
+    else:
+        raise AssertionError("Expected import_embeddings to reject mismatched models")
+
+    assert not any(query.startswith("DELETE FROM") for query, _ in cursor.executions)
 
 
 def test_embedding_store_initializes_provider(monkeypatch):
