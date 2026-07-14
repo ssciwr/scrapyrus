@@ -421,15 +421,15 @@ def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
 def chunk_embedding_text(document_text: str, chunk_size: int = 500) -> tuple[str, ...]:
     """Split text into deterministic word chunks with a ten-percent overlap.
 
-    Documents no longer than 150 percent of ``chunk_size`` remain untouched.
-    Chunked text has whitespace normalized between words; unchunked text is
-    returned exactly as supplied.
+    Documents no longer than ``chunk_size`` remain untouched. Chunked text has
+    whitespace normalized between words; unchunked text is returned exactly as
+    supplied.
     """
 
     if chunk_size < 1:
         raise ValueError("chunk_size must be at least 1")
     words = document_text.split()
-    if len(words) * 2 <= chunk_size * 3:
+    if len(words) <= chunk_size:
         return (document_text,)
 
     overlap = chunk_size // 10

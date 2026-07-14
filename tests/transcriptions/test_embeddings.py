@@ -144,10 +144,19 @@ def test_schema_creates_separate_kind_tables_without_migration():
     assert "PRIMARY KEY (xml_id, model_name, chunk_index)" in sql
 
 
-def test_chunking_keeps_documents_within_fifty_percent_of_target_unchanged():
-    document = "  " + " ".join(f"word-{index}" for index in range(15)) + "\n"
+def test_chunking_keeps_documents_within_target_unchanged():
+    document = "  " + " ".join(f"word-{index}" for index in range(10)) + "\n"
 
     assert chunk_embedding_text(document, 10) == (document,)
+
+
+def test_chunking_treats_chunk_size_as_a_maximum():
+    document = " ".join(f"word-{index}" for index in range(11))
+
+    chunks = chunk_embedding_text(document, 10)
+
+    assert len(chunks) == 2
+    assert all(len(chunk.split()) <= 10 for chunk in chunks)
 
 
 def test_chunking_is_deterministic_and_overlaps_by_ten_percent():
