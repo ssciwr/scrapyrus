@@ -10,6 +10,7 @@ from scrapyrus.transcriptions.core import (
 )
 from scrapyrus.transcriptions.embeddings import (
     EmbeddingStore,
+    chunk_embedding_text,
     delete_embeddings,
     dump_embeddings,
     import_embeddings,
@@ -17,6 +18,7 @@ from scrapyrus.transcriptions.embeddings import (
     update_embeddings,
 )
 from scrapyrus.transcriptions.evaluation import (
+    ChunkEmbeddingEvaluation,
     EmbeddingEvaluation,
     EmbeddingsEvaluation,
     LanguageEmbeddingEvaluation,
@@ -33,12 +35,14 @@ from scrapyrus.transcriptions.llms import (
 __all__ = [
     "available_translation_languages",
     "EmbeddingStore",
+    "ChunkEmbeddingEvaluation",
     "EmbeddingEvaluation",
     "EmbeddingsEvaluation",
     "LanguageEmbeddingEvaluation",
     "LLMProviderBase",
     "MistralProvider",
     "VLLMProvider",
+    "chunk_embedding_text",
     "delete_embeddings",
     "dump_embeddings",
     "dump_transcriptions",

@@ -292,6 +292,13 @@ def embeddings() -> None:
     help="Seed used to make --sample selection deterministic.",
 )
 @click.option(
+    "--chunk-size",
+    type=click.IntRange(min=1),
+    default=500,
+    show_default=True,
+    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
+)
+@click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
@@ -304,6 +311,7 @@ def ingest_embeddings(
     api_key: str,
     sample: int | None,
     seed: int,
+    chunk_size: int,
     progress: bool,
 ) -> None:
     """Embed transcription and translation XML rows in PostgreSQL."""
@@ -315,6 +323,7 @@ def ingest_embeddings(
             progress,
             sample=sample,
             seed=seed,
+            chunk_size=chunk_size,
         )
     except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
         raise click.ClickException(str(error)) from error
@@ -388,6 +397,13 @@ def import_embedding_rows(
 @embedding_client_options
 @embedding_model_options
 @click.option(
+    "--chunk-size",
+    type=click.IntRange(min=1),
+    default=500,
+    show_default=True,
+    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
+)
+@click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
@@ -398,6 +414,7 @@ def update_embedding_rows(
     inference_server_url: str,
     model_name: str,
     api_key: str,
+    chunk_size: int,
     progress: bool,
 ) -> None:
     """Compute missing or stale embeddings for one model."""
@@ -409,6 +426,7 @@ def update_embedding_rows(
             inference_server_url=inference_server_url,
             modelname=model_name,
             api_key=api_key,
+            chunk_size=chunk_size,
         )
     except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
         raise click.ClickException(str(error)) from error

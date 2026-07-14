@@ -280,7 +280,12 @@ def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypat
     assert result.exit_code == 0
     assert calls == [
         ("init", "https://inference.example/v1", "model", "secret"),
-        ("setup", "postgresql://db", False, {"sample": None, "seed": 0}),
+        (
+            "setup",
+            "postgresql://db",
+            False,
+            {"sample": None, "seed": 0, "chunk_size": 500},
+        ),
     ]
 
 
@@ -308,7 +313,11 @@ def test_embeddings_ingest_uses_envvars(monkeypatch):
     assert result.exit_code == 0
     assert calls == [
         ("https://inference.example", "model", "secret"),
-        ("postgresql://db", True, {"sample": None, "seed": 0}),
+        (
+            "postgresql://db",
+            True,
+            {"sample": None, "seed": 0, "chunk_size": 500},
+        ),
     ]
 
 
@@ -340,12 +349,19 @@ def test_embeddings_ingest_passes_sample_size(monkeypatch):
             "12",
             "--seed",
             "8675309",
+            "--chunk-size",
+            "750",
             "--no-progress",
         ),
     )
 
     assert result.exit_code == 0
-    assert calls == [(("postgresql://db", False), {"sample": 12, "seed": 8675309})]
+    assert calls == [
+        (
+            ("postgresql://db", False),
+            {"sample": 12, "seed": 8675309, "chunk_size": 750},
+        )
+    ]
 
 
 def test_embeddings_ingest_reports_missing_pgvector(monkeypatch):
@@ -525,6 +541,7 @@ def test_embeddings_update_requires_model_and_uses_database(monkeypatch):
                 "inference_server_url": "https://example",
                 "modelname": "model",
                 "api_key": "secret",
+                "chunk_size": 500,
             },
         )
     ]

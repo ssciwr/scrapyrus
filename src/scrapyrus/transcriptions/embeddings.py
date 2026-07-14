@@ -35,6 +35,7 @@ EMBEDDING_KIND_ALIASES = {
 EMBEDDING_DUMP_COLUMNS = (
     "xml_id",
     "model_name",
+    "chunk_index",
     "source_path",
     "tm_id",
     "language",
@@ -113,6 +114,7 @@ class EmbeddingStore:
         stale_only: bool = False,
         sample: int | None = None,
         seed: int = 0,
+        chunk_size: int = 500,
     ) -> int:
         """Embed transcription/translation XML rows in PostgreSQL.
 
@@ -122,7 +124,11 @@ class EmbeddingStore:
         When ``sample`` is set, deterministically select that many ``tm_id``
         records using ``seed`` from those which have both a transcription and
         a translation, and embed all XML rows belonging to those records.
+        Text size and overlap are measured in whitespace-delimited words.
         """
+
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be at least 1")
 
         jobs: list[_EmbeddingJob] = []
         seen_ids = {kind: set() for kind in EMBEDDING_TABLES}
@@ -145,24 +151,37 @@ class EmbeddingStore:
                     )
                     if not document_text.strip():
                         continue
-                    seen_ids[document_kind].add(xml_id)
-                    row = {
-                        "xml_id": xml_id,
-                        "model_name": self.modelname,
-                        "source_path": str(source["source_path"]),
-                        "tm_id": str(source["tm_id"]),
-                        "language": (
-                            transcription_language(str(source["xml_content"]))
-                            if document_kind == "transcription"
-                            else source["language"]
-                        ),
-                        "document_text": document_text,
-                        "input_hash": _input_hash(document_text),
-                    }
                     table = EMBEDDING_TABLES[document_kind]
-                    if stale_only:
+                    seen_ids[document_kind].add(xml_id)
+                    chunks = chunk_embedding_text(document_text, chunk_size)
+                    _delete_extra_chunks(
+                        cursor, table, xml_id, self.modelname, len(chunks)
+                    )
+                    language = (
+                        transcription_language(str(source["xml_content"]))
+                        if document_kind == "transcription"
+                        else source["language"]
+                    )
+                    for chunk_index, chunk in enumerate(chunks):
+                        row = {
+                            "xml_id": xml_id,
+                            "model_name": self.modelname,
+                            "chunk_index": chunk_index,
+                            "source_path": str(source["source_path"]),
+                            "tm_id": str(source["tm_id"]),
+                            "language": language,
+                            "document_text": chunk,
+                            "input_hash": _input_hash(chunk),
+                        }
+                        if not stale_only:
+                            jobs.append(_EmbeddingJob(len(jobs), self, row, table))
+                            continue
                         stored_row = _select_stored_source(
-                            cursor, table, xml_id, self.modelname
+                            cursor,
+                            table,
+                            xml_id,
+                            self.modelname,
+                            chunk_index,
                         )
                         current_source = (
                             row["input_hash"],
@@ -172,7 +191,7 @@ class EmbeddingStore:
                         )
                         if stored_row == current_source:
                             continue
-                    jobs.append(_EmbeddingJob(len(jobs), self, row, table))
+                        jobs.append(_EmbeddingJob(len(jobs), self, row, table))
 
                 embedded = _embed_documents(
                     jobs,
@@ -220,11 +239,12 @@ def update_embeddings(
     inference_server_url: str,
     modelname: str,
     api_key: str,
+    chunk_size: int = 500,
 ) -> int:
     """Compute missing or stale embeddings for one model from database XML."""
 
     return EmbeddingStore(inference_server_url, modelname, api_key).setup_store(
-        conninfo, progressbar, stale_only=True
+        conninfo, progressbar, stale_only=True, chunk_size=chunk_size
     )
 
 
@@ -276,7 +296,8 @@ def dump_embeddings(
                 with cursor.copy(
                     sql.SQL(
                         "COPY (SELECT {columns} FROM {table} "
-                        "WHERE model_name = {modelname} ORDER BY xml_id) "
+                        "WHERE model_name = {modelname} "
+                        "ORDER BY xml_id, chunk_index) "
                         "TO STDOUT WITH (FORMAT binary)"
                     ).format(
                         columns=columns,
@@ -350,7 +371,8 @@ def import_embeddings(
             cursor.execute(
                 sql.SQL(
                     "INSERT INTO {table} ({columns}) "
-                    "SELECT {columns} FROM {temporary_table} ORDER BY xml_id"
+                    "SELECT {columns} FROM {temporary_table} "
+                    "ORDER BY xml_id, chunk_index"
                 ).format(
                     table=sql.Identifier(table),
                     columns=columns,
@@ -378,7 +400,8 @@ def retrieve_embedding(
             cursor.execute(
                 sql.SQL(
                     "SELECT embedding::text FROM {} "
-                    "WHERE model_name = %s AND source_path = %s ORDER BY xml_id LIMIT 1"
+                    "WHERE model_name = %s AND source_path = %s "
+                    "ORDER BY xml_id, chunk_index LIMIT 1"
                 ).format(sql.Identifier(table)),
                 (modelname, _document_path(document_path)),
             )
@@ -390,6 +413,31 @@ def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
     if document_kind == "translation":
         return translation_epidoc_xml_to_text(xml)
     return epidoc_xml_to_text(xml, **MAXIMUM_TRANSCRIPTION_OPTIONS)
+
+
+def chunk_embedding_text(document_text: str, chunk_size: int = 500) -> tuple[str, ...]:
+    """Split text into deterministic word chunks with a ten-percent overlap.
+
+    Documents no longer than 150 percent of ``chunk_size`` remain untouched.
+    Chunked text has whitespace normalized between words; unchunked text is
+    returned exactly as supplied.
+    """
+
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be at least 1")
+    words = document_text.split()
+    if len(words) * 2 <= chunk_size * 3:
+        return (document_text,)
+
+    overlap = chunk_size // 10
+    step = chunk_size - overlap
+    chunks: list[str] = []
+    start = 0
+    while True:
+        chunks.append(" ".join(words[start : start + chunk_size]))
+        if start + chunk_size >= len(words):
+            return tuple(chunks)
+        start += step
 
 
 def _embedding_table(document_kind: str) -> str:
@@ -467,6 +515,7 @@ def _ensure_embedding_schema(cursor: Any) -> None:
 CREATE TABLE IF NOT EXISTS {table} (
     xml_id bigint NOT NULL,
     model_name text NOT NULL,
+    chunk_index integer NOT NULL DEFAULT 0,
     source_path text NOT NULL,
     tm_id text NOT NULL,
     language text,
@@ -474,8 +523,39 @@ CREATE TABLE IF NOT EXISTS {table} (
     input_hash text NOT NULL,
     embedding vector NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (xml_id, model_name)
+    PRIMARY KEY (xml_id, model_name, chunk_index)
 )
+"""
+        )
+        cursor.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+            "chunk_index integer NOT NULL DEFAULT 0"
+        )
+        cursor.execute(
+            f"""
+DO $$
+DECLARE current_primary_key text;
+BEGIN
+    SELECT constraint_name INTO current_primary_key
+    FROM information_schema.table_constraints
+    WHERE table_schema = current_schema()
+      AND table_name = '{table}'
+      AND constraint_type = 'PRIMARY KEY';
+
+    IF current_primary_key IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.key_column_usage
+        WHERE table_schema = current_schema()
+          AND table_name = '{table}'
+          AND constraint_name = current_primary_key
+          AND column_name = 'chunk_index'
+    ) THEN
+        EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I',
+                       '{table}', current_primary_key);
+        ALTER TABLE {table}
+            ADD PRIMARY KEY (xml_id, model_name, chunk_index);
+    END IF;
+END $$
 """
         )
 
@@ -488,14 +568,14 @@ def _is_missing_vector_extension_error(error: psycopg.Error) -> bool:
 
 
 def _select_stored_source(
-    cursor: Any, table: str, xml_id: int, modelname: str
+    cursor: Any, table: str, xml_id: int, modelname: str, chunk_index: int
 ) -> tuple[str, str, str, str | None] | None:
     cursor.execute(
         sql.SQL(
             "SELECT input_hash, source_path, tm_id, language FROM {} "
-            "WHERE xml_id = %s AND model_name = %s"
+            "WHERE xml_id = %s AND model_name = %s AND chunk_index = %s"
         ).format(sql.Identifier(table)),
-        (xml_id, modelname),
+        (xml_id, modelname, chunk_index),
     )
     row = cursor.fetchone()
     if row is None:
@@ -513,13 +593,13 @@ def _upsert_embedding(cursor: Any, table: str, row: dict[str, Any]) -> None:
         sql.SQL(
             """
 INSERT INTO {} (
-    xml_id, model_name, source_path, tm_id, language,
+    xml_id, model_name, chunk_index, source_path, tm_id, language,
     document_text, input_hash, embedding
 ) VALUES (
-    %(xml_id)s, %(model_name)s, %(source_path)s, %(tm_id)s, %(language)s,
+    %(xml_id)s, %(model_name)s, %(chunk_index)s, %(source_path)s, %(tm_id)s, %(language)s,
     %(document_text)s, %(input_hash)s, %(embedding)s::vector
 )
-ON CONFLICT (xml_id, model_name) DO UPDATE SET
+ON CONFLICT (xml_id, model_name, chunk_index) DO UPDATE SET
     source_path = EXCLUDED.source_path,
     tm_id = EXCLUDED.tm_id,
     language = EXCLUDED.language,
@@ -541,6 +621,17 @@ def _delete_missing_source_rows(
             "DELETE FROM {} WHERE model_name = %s AND NOT (xml_id = ANY(%s))"
         ).format(sql.Identifier(table)),
         (modelname, list(sorted(seen_ids))),
+    )
+
+
+def _delete_extra_chunks(
+    cursor: Any, table: str, xml_id: int, modelname: str, chunk_count: int
+) -> None:
+    cursor.execute(
+        sql.SQL(
+            "DELETE FROM {} WHERE xml_id = %s AND model_name = %s AND chunk_index >= %s"
+        ).format(sql.Identifier(table)),
+        (xml_id, modelname, chunk_count),
     )
 
 
