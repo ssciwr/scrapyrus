@@ -200,6 +200,10 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
         "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
         lambda *args: provider,
     )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.tqdm",
+        lambda *args, **kwargs: pytest.fail("progress bar should be disabled"),
+    )
 
     count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
         "postgresql://db", False
@@ -221,6 +225,62 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     assert inserts[1][1]["language"] == "en"
     assert inserts[1][1]["document_text"] == "Beta"
     assert provider.inputs == ["Alpha", "Beta"]
+
+
+def test_setup_store_reports_xml_preparation_progress(monkeypatch):
+    rows = [
+        (1, "DDB/a.xml", 46, "<div/>", "transcription", None),
+        (2, "HGV/46.xml", 46, "<div/>", "translation", "en"),
+    ]
+    cursor = RecordingCursor(rows=rows)
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
+        lambda xml, **options: "Alpha",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.translation_epidoc_xml_to_text",
+        lambda xml: "Beta",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.transcription_language",
+        lambda xml: "grc",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: FakeProvider([[0.1], [0.2]]),
+    )
+    progress_calls = []
+
+    class FakeProgress:
+        def __init__(self, iterable):
+            self.iterable = iterable
+
+        def __iter__(self):
+            return iter(self.iterable)
+
+        def update(self, amount):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_tqdm(iterable=(), *, total, unit, desc):
+        progress_calls.append((iterable, total, unit, desc))
+        return FakeProgress(iterable)
+
+    monkeypatch.setattr("scrapyrus.transcriptions.embeddings.tqdm", fake_tqdm)
+
+    EmbeddingStore("https://example/v1", "model", "key").setup_store(
+        "postgresql://db", True
+    )
+
+    prepared_rows, total, unit, description = progress_calls[0]
+    assert len(prepared_rows) == 2
+    assert (total, unit, description) == (2, "row", "Preparing XML rows")
+    assert progress_calls[1][1:] == (2, "request", "Embedding XML rows")
 
 
 def test_setup_store_embeds_chunks_with_indices(monkeypatch):

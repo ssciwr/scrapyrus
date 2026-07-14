@@ -141,7 +141,17 @@ class EmbeddingStore:
                     raise TranscriptionsUnavailableError(
                         TRANSCRIPTIONS_UNAVAILABLE_MESSAGE
                     ) from error
-                for source in sources:
+                source_rows = (
+                    tqdm(
+                        sources,
+                        total=len(sources),
+                        unit="row",
+                        desc="Preparing XML rows",
+                    )
+                    if progressbar
+                    else sources
+                )
+                for source in source_rows:
                     document_kind = str(source["type"])
                     if document_kind not in EMBEDDING_TABLES:
                         continue
