@@ -1,10 +1,12 @@
 import hashlib
 
 import psycopg
+import pytest
 
 from scrapyrus.transcriptions.embeddings import (
     MAXIMUM_TRANSCRIPTION_OPTIONS,
     EmbeddingStore,
+    TranscriptionsUnavailableError,
     dump_embeddings,
     _ensure_embedding_schema,
     _select_xml_rows,
@@ -185,6 +187,29 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     assert inserts[1][1]["language"] == "en"
     assert inserts[1][1]["document_text"] == "Beta"
     assert provider.inputs == ["Alpha", "Beta"]
+
+
+def test_setup_store_reports_missing_transcriptions_table(monkeypatch):
+    class MissingTranscriptionsCursor(RecordingCursor):
+        def execute(self, query, params=None):
+            super().execute(query, params)
+            if "FROM transcriptions" in _sql_text(query):
+                raise psycopg.errors.UndefinedTable(
+                    'relation "transcriptions" does not exist'
+                )
+
+    cursor = MissingTranscriptionsCursor()
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: FakeProvider([]),
+    )
+
+    store = EmbeddingStore("https://example/v1", "model", "key")
+    with pytest.raises(TranscriptionsUnavailableError, match="transcriptions ingest"):
+        store.setup_store("postgresql://db", False)
 
 
 def test_select_xml_rows_samples_deterministically_with_seed():

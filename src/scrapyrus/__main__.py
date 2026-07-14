@@ -13,6 +13,7 @@ from scrapyrus.transcriptions.embeddings import (
     EMBEDDING_KIND_ALIASES,
     EmbeddingStore,
     PgvectorUnavailableError,
+    TranscriptionsUnavailableError,
     delete_embeddings,
     dump_embeddings,
     import_embeddings,
@@ -315,7 +316,7 @@ def ingest_embeddings(
             sample=sample,
             seed=seed,
         )
-    except PgvectorUnavailableError as error:
+    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
         raise click.ClickException(str(error)) from error
 
 
@@ -409,7 +410,7 @@ def update_embedding_rows(
             modelname=model_name,
             api_key=api_key,
         )
-    except PgvectorUnavailableError as error:
+    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
         raise click.ClickException(str(error)) from error
 
 

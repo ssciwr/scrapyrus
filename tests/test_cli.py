@@ -5,7 +5,10 @@ from click.testing import CliRunner
 
 from scrapyrus.__main__ import main
 from scrapyrus.images import DEFAULT_BROKEN_IMAGE_FILE
-from scrapyrus.transcriptions.embeddings import PgvectorUnavailableError
+from scrapyrus.transcriptions.embeddings import (
+    PgvectorUnavailableError,
+    TranscriptionsUnavailableError,
+)
 
 
 def test_images_subcommand_triggers_image_scrape(tmp_path, monkeypatch):
@@ -373,6 +376,37 @@ def test_embeddings_ingest_reports_missing_pgvector(monkeypatch):
     )
     assert result.exit_code == 1
     assert "extension 'vector' is not available" in result.output
+
+
+def test_embeddings_ingest_reports_missing_transcriptions(monkeypatch):
+    class Store:
+        def __init__(self, *args):
+            pass
+
+        def setup_store(self, *args, **kwargs):
+            raise TranscriptionsUnavailableError(
+                "Run 'scrapyrus transcriptions ingest' first."
+            )
+
+    monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "ingest",
+            "--database-url",
+            "postgresql://db",
+            "--inference-server-url",
+            "https://example",
+            "--model-name",
+            "model",
+            "--api-key",
+            "secret",
+        ),
+    )
+
+    assert result.exit_code == 1
+    assert result.output == ("Error: Run 'scrapyrus transcriptions ingest' first.\n")
 
 
 def test_embeddings_delete_removes_model_from_both_tables(monkeypatch):

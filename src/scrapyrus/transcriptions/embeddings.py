@@ -59,10 +59,19 @@ PGVECTOR_UNAVAILABLE_MESSAGE = (
     "database server before using embeddings, or use a pgvector-enabled "
     "PostgreSQL image such as pgvector/pgvector:pg16."
 )
+TRANSCRIPTIONS_UNAVAILABLE_MESSAGE = (
+    f"PostgreSQL table '{TRANSCRIPTIONS_TABLE}' does not exist. Run "
+    "'scrapyrus transcriptions ingest' against this database before using "
+    "embeddings."
+)
 
 
 class PgvectorUnavailableError(RuntimeError):
     """Raised when the PostgreSQL server does not provide pgvector."""
+
+
+class TranscriptionsUnavailableError(RuntimeError):
+    """Raised when transcription XML has not been ingested into PostgreSQL."""
 
 
 @dataclass(frozen=True)
@@ -120,7 +129,13 @@ class EmbeddingStore:
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 _ensure_embedding_schema(cursor)
-                for source in _select_xml_rows(cursor, sample=sample, seed=seed):
+                try:
+                    sources = _select_xml_rows(cursor, sample=sample, seed=seed)
+                except psycopg.errors.UndefinedTable as error:
+                    raise TranscriptionsUnavailableError(
+                        TRANSCRIPTIONS_UNAVAILABLE_MESSAGE
+                    ) from error
+                for source in sources:
                     document_kind = str(source["type"])
                     if document_kind not in EMBEDDING_TABLES:
                         continue

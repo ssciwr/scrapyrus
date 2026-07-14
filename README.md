@@ -47,7 +47,14 @@ container. Start it as a one-off shell when you need to run the CLI:
 ```
 docker compose run --build --rm scrapyrus bash
 scrapyrus metadata ingest
+scrapyrus transcriptions ingest
+scrapyrus embeddings ingest \
+    --inference-server-url <url> --model-name <model> --api-key <key>
 ```
+
+Embedding ingestion reads the XML rows created by `transcriptions ingest`, so
+both commands must target the same PostgreSQL database and must run in that
+order.
 
 The `scrapyrus` service is intentionally not started by the default `up`
 command. Some Snap-packaged Docker installations fail to stop idle long-lived
