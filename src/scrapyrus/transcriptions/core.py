@@ -24,6 +24,15 @@ _XSLT_DIR = Path(__file__).with_name("xslt")
 _EPIDOC_TO_TEXT_STYLESHEET = _XSLT_DIR / "epidoc-to-text.xsl"
 _TRANSLATION_EPIDOC_TO_TEXT_STYLESHEET = _XSLT_DIR / "translation-epidoc-to-text.xsl"
 
+# The single transcription rendering used for stored text and embeddings.
+MAXIMUM_TRANSCRIPTION_OPTIONS = {
+    "abbrev": True,
+    "break_on_gap": False,
+    "lost": True,
+    "unclear": True,
+    "regularize": True,
+}
+
 TRANSCRIPTIONS_TABLE = "transcriptions"
 TRANSCRIPTION_COLUMNS = (
     "transcription_id",
@@ -32,6 +41,8 @@ TRANSCRIPTION_COLUMNS = (
     "xml_content",
     "type",
     "language",
+    "text",
+    "text_vector",
     "lemma_text",
     "lemma_vector",
 )
@@ -42,6 +53,9 @@ TRANSCRIPTIONS_SCHEMA_SQL = f"""CREATE TABLE {TRANSCRIPTIONS_TABLE} (
     xml_content xml NOT NULL,
     type text NOT NULL CHECK (type IN ('transcription', 'translation')),
     language text,
+    text text NOT NULL,
+    text_vector tsvector GENERATED ALWAYS AS
+        (to_tsvector('simple', text)) STORED,
     lemma_text text,
     lemma_vector tsvector GENERATED ALWAYS AS
         (to_tsvector('simple', lemma_text)) STORED,
@@ -117,8 +131,15 @@ def ingest_transcriptions(
     idp_data = Path(idp_data)
     insert_sql = f"""
 INSERT INTO {TRANSCRIPTIONS_TABLE}
-    (source_path, tm_id, xml_content, type, language)
-VALUES (%(source_path)s, %(tm_id)s, %(xml_content)s, %(type)s, %(language)s)
+    (source_path, tm_id, xml_content, type, language, text)
+VALUES (
+    %(source_path)s,
+    %(tm_id)s,
+    %(xml_content)s,
+    %(type)s,
+    %(language)s,
+    %(text)s
+)
 """
 
     with psycopg.connect(conninfo, **connect_kwargs) as connection:
@@ -221,6 +242,7 @@ def _transcription_row(
         "xml_content": xml_content,
         "type": document_type,
         "language": language,
+        "text": _xml_to_stored_text(xml_content, document_type),
     }
 
 
@@ -303,6 +325,12 @@ def translation_epidoc_xml_to_text(
         if language is not None:
             stylesheet.set_parameter("language", proc.make_string_value(language))
         return stylesheet.transform_to_string(xdm_node=document)
+
+
+def _xml_to_stored_text(xml_content: str, document_type: str) -> str:
+    if document_type == "translation":
+        return translation_epidoc_xml_to_text(xml_content)
+    return epidoc_xml_to_text(xml_content, **MAXIMUM_TRANSCRIPTION_OPTIONS)
 
 
 def available_translation_languages(epidoc_xml: str | bytes | Path) -> list[str]:

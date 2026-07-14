@@ -12,6 +12,7 @@ import requests
 from tqdm import tqdm
 
 from scrapyrus.transcriptions.core import (
+    MAXIMUM_TRANSCRIPTION_OPTIONS,
     TRANSCRIPTIONS_TABLE,
     epidoc_xml_to_text,
     transcription_language,
@@ -43,16 +44,6 @@ EMBEDDING_DUMP_COLUMNS = (
     "embedding",
     "updated_at",
 )
-
-# The single transcription rendering used for embeddings.  This deliberately
-# lives here instead of being exposed as a collection configuration.
-MAXIMUM_TRANSCRIPTION_OPTIONS = {
-    "abbrev": True,
-    "break_on_gap": False,
-    "lost": True,
-    "unclear": True,
-    "regularize": True,
-}
 
 PGVECTOR_UNAVAILABLE_MESSAGE = (
     "PostgreSQL extension 'vector' is not available. Install pgvector on the "

@@ -84,24 +84,28 @@ def test_lemmatize_transcriptions_updates_only_supported_rows(monkeypatch):
             "xml_content": "greek transcription",
             "type": "transcription",
             "language": None,
+            "text": "maximum greek text",
         },
         {
             "transcription_id": 2,
             "xml_content": "latin translation",
             "type": "translation",
             "language": "la",
+            "text": "complete latin translation",
         },
         {
             "transcription_id": 3,
             "xml_content": "english translation",
             "type": "translation",
             "language": "en",
+            "text": "complete english translation",
         },
         {
             "transcription_id": 4,
             "xml_content": "second greek transcription",
             "type": "transcription",
             "language": None,
+            "text": "second maximum greek text",
         },
     ]
     connection = RecordingConnection(rows)
@@ -115,14 +119,6 @@ def test_lemmatize_transcriptions_updates_only_supported_rows(monkeypatch):
     monkeypatch.setattr(
         "scrapyrus.transcriptions.lemmatization.transcription_language",
         lambda xml: "grc",
-    )
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.lemmatization.epidoc_xml_to_text",
-        lambda xml: f"text from {xml}",
-    )
-    monkeypatch.setattr(
-        "scrapyrus.transcriptions.lemmatization.translation_epidoc_xml_to_text",
-        lambda xml: f"translation from {xml}",
     )
     factory_calls = []
     analyses = []
@@ -142,9 +138,9 @@ def test_lemmatize_transcriptions_updates_only_supported_rows(monkeypatch):
     assert connect_calls[0][1]["application_name"] == "scrapyrus-test"
     assert factory_calls == ["grc", "lat"]
     assert analyses == [
-        ("grc", "text from greek transcription"),
-        ("lat", "translation from latin translation"),
-        ("grc", "text from second greek transcription"),
+        ("grc", "maximum greek text"),
+        ("lat", "complete latin translation"),
+        ("grc", "second maximum greek text"),
     ]
     assert "WHERE lemma_text IS NULL" in connection.executions[0][0]
     updates = [params for _, params in connection.executions[1:]]

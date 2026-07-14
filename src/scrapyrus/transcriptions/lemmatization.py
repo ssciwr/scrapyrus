@@ -7,9 +7,7 @@ from tqdm import tqdm
 
 from scrapyrus.transcriptions.core import (
     TRANSCRIPTIONS_TABLE,
-    epidoc_xml_to_text,
     transcription_language,
-    translation_epidoc_xml_to_text,
 )
 
 
@@ -75,7 +73,7 @@ def lemmatize_transcriptions(
     pipelines: dict[str, _Pipeline] = {}
 
     select_sql = f"""
-SELECT transcription_id, xml_content::text, type, language
+SELECT transcription_id, xml_content::text, type, language, text
 FROM {TRANSCRIPTIONS_TABLE}
 WHERE lemma_text IS NULL
 ORDER BY transcription_id
@@ -106,16 +104,11 @@ WHERE transcription_id = %(transcription_id)s
             if language is None:
                 continue
 
-            if row["type"] == "translation":
-                text = translation_epidoc_xml_to_text(xml_content)
-            else:
-                text = epidoc_xml_to_text(xml_content)
-
             pipeline = pipelines.get(language)
             if pipeline is None:
                 pipeline = pipeline_factory(language)
                 pipelines[language] = pipeline
-            lemma_text = lemmatize_text(text, pipeline)
+            lemma_text = lemmatize_text(str(row["text"]), pipeline)
             with connection.cursor() as cursor:
                 cursor.execute(
                     update_sql,

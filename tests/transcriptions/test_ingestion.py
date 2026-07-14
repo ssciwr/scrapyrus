@@ -102,6 +102,24 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
         "scrapyrus.transcriptions.core.iterate_idpdata_triples",
         iterate,
     )
+    text_calls = []
+
+    def transcription_text(xml, **options):
+        text_calls.append(("transcription", options))
+        return "Maximum transcription text"
+
+    def translation_text(xml):
+        text_calls.append(("translation", {}))
+        return "Complete translation text"
+
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.core.epidoc_xml_to_text",
+        transcription_text,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.core.translation_epidoc_xml_to_text",
+        translation_text,
+    )
 
     ingest_transcriptions(
         idp_data,
@@ -124,6 +142,10 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
     assert "xml_content xml NOT NULL" in schema
     assert "type IN ('transcription', 'translation')" in schema
     assert "language text" in schema
+    assert "text text NOT NULL" in schema
+    assert (
+        "text_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', text)) STORED"
+    ) in schema
     assert "lemma_text text" in schema
     assert (
         "lemma_vector tsvector GENERATED ALWAYS AS "
@@ -138,6 +160,23 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
     assert rows[0]["tm_id"] == 46
     assert rows[1]["source_path"] == "HGV_trans_EpiDoc/46.xml"
     assert 'xmlns="http://www.tei-c.org/ns/1.0"' in rows[0]["xml_content"]
+    assert [row["text"] for row in rows] == [
+        "Maximum transcription text",
+        "Complete translation text",
+    ]
+    assert text_calls == [
+        (
+            "transcription",
+            {
+                "abbrev": True,
+                "break_on_gap": False,
+                "lost": True,
+                "unclear": True,
+                "regularize": True,
+            },
+        ),
+        ("translation", {}),
+    ]
 
 
 def test_ingest_transcriptions_extracts_embedded_dclp_translation(
@@ -183,6 +222,8 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
             '<div type="edition"><ab>Text</ab></div>',
             "transcription",
             None,
+            "Text",
+            "'text':1",
             None,
             None,
         ),
@@ -193,6 +234,8 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
             '<div type="translation" xml:lang="en"><p>Text.</p></div>',
             "translation",
             "en",
+            "Text.",
+            "'text':1",
             None,
             None,
         ),
