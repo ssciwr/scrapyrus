@@ -62,12 +62,16 @@ def test_evaluation_uses_separate_embedding_tables_and_stored_language(
     assert evaluation.embedding_dimensions == 3
     assert evaluation.evaluated_count == 1
     assert evaluation.recall_at[1] == 1.0
+    assert evaluation.mrr == 1.0
     assert evaluation.language_results["greek"].recall_at[1] == 1.0
+    assert evaluation.language_results["greek"].mrr == 1.0
     sql = "\n".join(query for query, _ in cursor.executions)
     assert "transcription_embeddings" in sql
     assert "translation_embeddings" in sql
     assert "embedding_configurations" not in sql
-    assert output.read_text().startswith("# Embedding Evaluation: `model`")
+    report = output.read_text()
+    assert report.startswith("# Embedding Evaluation: `model`")
+    assert "| MRR | 1.0000 | 1 | 100.00% |" in report
 
 
 def test_markdown_renders_collection_counts():
@@ -78,13 +82,60 @@ def test_markdown_renders_collection_counts():
         embedding_dimensions=2,
         evaluated_count=2,
         recall_hits={1: 1},
-        language_results={"greek": LanguageEmbeddingEvaluation("greek", 2, {1: 1})},
+        reciprocal_rank_sum=1.5,
+        language_results={
+            "greek": LanguageEmbeddingEvaluation("greek", 2, {1: 1}, 1.5)
+        },
     )
 
     report = result.to_markdown()
     assert "- Transcription documents: 4" in report
     assert "- Translation documents: 3" in report
     assert "| recall@1 | 1 | 2 | 50.00% |" in report
+    assert "| MRR | 1.5000 | 2 | 75.00% |" in report
+
+
+def test_evaluation_calculates_mean_reciprocal_rank(monkeypatch):
+    cursor = Cursor()
+    cursor.fetchall_results = [
+        [
+            ("1", "ddb/1.xml", "grc", "[1,0,0]"),
+            ("2", "ddb/2.xml", "grc", "[0,1,0]"),
+        ],
+        [("2", "hgv/2.xml"), ("1", "hgv/1.xml")],
+        [("2", "hgv/2.xml"), ("1", "hgv/1.xml")],
+    ]
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+
+    evaluation = evaluate_embeddings_model("postgresql://db", modelname="sample")
+
+    assert evaluation.reciprocal_rank_sum == 1.5
+    assert evaluation.mrr == 0.75
+    assert evaluation.recall_at[1] == 0.5
+    assert evaluation.recall_at[2] == 1.0
+    assert evaluation.language_results["greek"].mrr == 0.75
+
+
+def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window(monkeypatch):
+    cursor = Cursor()
+    cursor.fetchone_results = [(1, 3), (6, 3), (6,)]
+    cursor.fetchall_results = [
+        [("1", "ddb/1.xml", "grc", "[1,0,0]")],
+        [
+            ("2", "hgv/2.xml"),
+            ("3", "hgv/3.xml"),
+            ("4", "hgv/4.xml"),
+            ("5", "hgv/5.xml"),
+            ("6", "hgv/6.xml"),
+        ],
+    ]
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+
+    evaluation = evaluate_embeddings_model("postgresql://db", modelname="sample")
+
+    assert evaluation.recall_at[5] == 0.0
+    assert evaluation.mrr == 1 / 6
+    assert "row_number()" in cursor.executions[-1][0]
 
 
 def test_evaluation_accepts_partial_embedding_collections(monkeypatch):

@@ -53,6 +53,7 @@ class LanguageEmbeddingEvaluation:
     language: str
     evaluated_count: int
     recall_hits: dict[int, int]
+    reciprocal_rank_sum: float
 
     @property
     def recall_at(self) -> dict[int, float]:
@@ -60,6 +61,14 @@ class LanguageEmbeddingEvaluation:
             rank: hits / self.evaluated_count if self.evaluated_count else 0.0
             for rank, hits in sorted(self.recall_hits.items())
         }
+
+    @property
+    def mrr(self) -> float:
+        return (
+            self.reciprocal_rank_sum / self.evaluated_count
+            if self.evaluated_count
+            else 0.0
+        )
 
 
 @dataclass(frozen=True)
@@ -70,6 +79,7 @@ class EmbeddingEvaluation:
     embedding_dimensions: int
     evaluated_count: int
     recall_hits: dict[int, int]
+    reciprocal_rank_sum: float
     language_results: dict[str, LanguageEmbeddingEvaluation]
 
     @property
@@ -78,6 +88,14 @@ class EmbeddingEvaluation:
             rank: hits / self.evaluated_count if self.evaluated_count else 0.0
             for rank, hits in sorted(self.recall_hits.items())
         }
+
+    @property
+    def mrr(self) -> float:
+        return (
+            self.reciprocal_rank_sum / self.evaluated_count
+            if self.evaluated_count
+            else 0.0
+        )
 
     def to_markdown(self) -> str:
         lines = [
@@ -93,20 +111,23 @@ class EmbeddingEvaluation:
             "",
             "## Metrics",
             "",
-            "| Metric | Hits | Queries | Score |",
+            "| Metric | Total | Queries | Score |",
             "| --- | ---: | ---: | ---: |",
         ]
         for rank, hits in sorted(self.recall_hits.items()):
             lines.append(
                 f"| recall@{rank} | {hits} | {self.evaluated_count} | {self.recall_at[rank]:.2%} |"
             )
+        lines.append(
+            f"| MRR | {self.reciprocal_rank_sum:.4f} | {self.evaluated_count} | {self.mrr:.2%} |"
+        )
         if self.language_results:
             lines.extend(
                 [
                     "",
                     "## Metrics by Language",
                     "",
-                    "| Language | Metric | Hits | Queries | Score |",
+                    "| Language | Metric | Total | Queries | Score |",
                     "| --- | --- | ---: | ---: | ---: |",
                 ]
             )
@@ -118,6 +139,10 @@ class EmbeddingEvaluation:
                         f"| {result.language} | recall@{rank} | {hits} | "
                         f"{result.evaluated_count} | {result.recall_at[rank]:.2%} |"
                     )
+                lines.append(
+                    f"| {result.language} | MRR | {result.reciprocal_rank_sum:.4f} | "
+                    f"{result.evaluated_count} | {result.mrr:.2%} |"
+                )
         return "\n".join(lines) + "\n"
 
 
@@ -153,17 +178,27 @@ def evaluate_embeddings_model(
                     "No documents have both transcription and translation embeddings for the selected model"
                 )
             hits = {rank: 0 for rank in RECALL_RANKS}
+            reciprocal_rank_sum = 0.0
             language_counts: dict[str, int] = {}
             language_hits: dict[str, dict[int, int]] = {}
+            language_reciprocal_rank_sums: dict[str, float] = {}
             for query in queries:
                 language = _language_label(query.language)
                 language_counts[language] = language_counts.get(language, 0) + 1
                 query_hits = language_hits.setdefault(
                     language, {rank: 0 for rank in RECALL_RANKS}
                 )
+                language_reciprocal_rank_sums.setdefault(language, 0.0)
                 candidates = _select_nearest_translations(
                     cursor, modelname, query.embedding, max(RECALL_RANKS)
                 )
+                reciprocal_rank = _candidate_reciprocal_rank(candidates, query.tm_id)
+                if reciprocal_rank == 0.0:
+                    reciprocal_rank = _select_translation_reciprocal_rank(
+                        cursor, modelname, query.embedding, query.tm_id
+                    )
+                reciprocal_rank_sum += reciprocal_rank
+                language_reciprocal_rank_sums[language] += reciprocal_rank
                 for rank in RECALL_RANKS:
                     if any(
                         candidate.tm_id == query.tm_id
@@ -179,9 +214,13 @@ def evaluate_embeddings_model(
         int(transcription_dimensions),
         len(queries),
         hits,
+        reciprocal_rank_sum,
         {
             language: LanguageEmbeddingEvaluation(
-                language, language_counts[language], language_hits[language]
+                language,
+                language_counts[language],
+                language_hits[language],
+                language_reciprocal_rank_sums[language],
             )
             for language in sorted(language_counts)
         },
@@ -259,6 +298,42 @@ LIMIT %(limit)s
         )
         for row in cursor.fetchall()
     )
+
+
+def _candidate_reciprocal_rank(
+    candidates: tuple[_TranslationCandidate, ...], tm_id: str
+) -> float:
+    for rank, candidate in enumerate(candidates, start=1):
+        if candidate.tm_id == tm_id:
+            return 1.0 / rank
+    return 0.0
+
+
+def _select_translation_reciprocal_rank(
+    cursor: Any, modelname: str, embedding: str, tm_id: str
+) -> float:
+    cursor.execute(
+        f"""
+SELECT ranked.rank
+FROM (
+    SELECT tm_id,
+           row_number() OVER (
+               ORDER BY embedding <=> %(embedding)s::vector, tm_id, source_path
+           ) AS rank
+    FROM {TRANSLATION_EMBEDDINGS_TABLE}
+    WHERE model_name = %(model_name)s
+) AS ranked
+WHERE ranked.tm_id = %(tm_id)s
+ORDER BY ranked.rank
+LIMIT 1
+""",
+        {"model_name": modelname, "embedding": embedding, "tm_id": tm_id},
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return 0.0
+    rank = int(_row_value(row, "rank", 0))
+    return 1.0 / rank if rank else 0.0
 
 
 def _language_label(language: str | None) -> str:
