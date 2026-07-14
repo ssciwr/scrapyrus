@@ -445,6 +445,21 @@ def update_embedding_rows(
 @embeddings.command("evaluate")
 @database_url
 @click.option(
+    "--sample",
+    type=click.IntRange(min=1),
+    help=(
+        "Randomly select this many records that have both a transcription "
+        "and a translation."
+    ),
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Seed used to make --sample selection deterministic.",
+)
+@click.option(
     "--output",
     "output_file",
     type=click.Path(path_type=Path, dir_okay=False),
@@ -460,6 +475,8 @@ def update_embedding_rows(
 )
 def evaluate_embedding_model(
     database_url: str,
+    sample: int | None,
+    seed: int,
     output_file: Path,
     progress: bool,
 ) -> None:
@@ -469,6 +486,8 @@ def evaluate_embedding_model(
         database_url,
         output_file=output_file,
         progressbar=progress,
+        sample=sample,
+        seed=seed,
     )
 
 

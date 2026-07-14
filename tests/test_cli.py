@@ -602,6 +602,50 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
     assert calls == [
         (
             ("postgresql://db",),
-            {"output_file": output, "progressbar": True},
+            {
+                "output_file": output,
+                "progressbar": True,
+                "sample": None,
+                "seed": 0,
+            },
+        )
+    ]
+
+
+def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.evaluate_embeddings",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    output = tmp_path / "evaluation.md"
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "evaluate",
+            "--database-url",
+            "postgresql://db",
+            "--sample",
+            "12",
+            "--seed",
+            "8675309",
+            "--output",
+            str(output),
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            ("postgresql://db",),
+            {
+                "output_file": output,
+                "progressbar": False,
+                "sample": 12,
+                "seed": 8675309,
+            },
         )
     ]
