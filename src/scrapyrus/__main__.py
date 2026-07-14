@@ -15,7 +15,7 @@ from scrapyrus.transcriptions.embeddings import (
     delete_embeddings,
     update_embeddings,
 )
-from scrapyrus.transcriptions.evaluation import evaluate_embeddings_model
+from scrapyrus.transcriptions.evaluation import evaluate_embeddings
 
 
 idp_data = click.option(
@@ -345,7 +345,6 @@ def update_embedding_rows(
 
 @embeddings.command("evaluate")
 @database_url
-@embedding_model_options
 @click.option(
     "--output",
     "output_file",
@@ -356,14 +355,12 @@ def update_embedding_rows(
 )
 def evaluate_embedding_model(
     database_url: str,
-    model_name: str,
     output_file: Path,
 ) -> None:
     """Evaluate transcription-to-translation embedding retrieval."""
 
-    evaluate_embeddings_model(
+    evaluate_embeddings(
         database_url,
-        modelname=model_name,
         output_file=output_file,
     )
 

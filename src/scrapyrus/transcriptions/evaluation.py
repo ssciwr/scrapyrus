@@ -79,11 +79,13 @@ class EmbeddingEvaluation:
             for rank, hits in sorted(self.recall_hits.items())
         }
 
-    def to_markdown(self) -> str:
+    def to_markdown(self, *, heading_level: int = 1) -> str:
+        heading = "#" * heading_level
+        subheading = "#" * (heading_level + 1)
         lines = [
-            f"# Embedding Evaluation: {_markdown_code(self.modelname)}",
+            f"{heading} Embedding Evaluation: {_markdown_code(self.modelname)}",
             "",
-            "## Scope",
+            f"{subheading} Scope",
             "",
             f"- Model: {_markdown_code(self.modelname)}",
             f"- Transcription documents: {self.transcription_count}",
@@ -91,7 +93,7 @@ class EmbeddingEvaluation:
             f"- Paired documents evaluated: {self.evaluated_count}",
             "- Ranking: transcription embedding against translation embeddings by cosine distance.",
             "",
-            "## Metrics",
+            f"{subheading} Metrics",
             "",
             "| Metric | Hits | Queries | Score |",
             "| --- | ---: | ---: | ---: |",
@@ -104,7 +106,7 @@ class EmbeddingEvaluation:
             lines.extend(
                 [
                     "",
-                    "## Metrics by Language",
+                    f"{subheading} Metrics by Language",
                     "",
                     "| Language | Metric | Hits | Queries | Score |",
                     "| --- | --- | ---: | ---: | ---: |",
@@ -121,6 +123,59 @@ class EmbeddingEvaluation:
         return "\n".join(lines) + "\n"
 
 
+@dataclass(frozen=True)
+class EmbeddingsEvaluation:
+    results: tuple[EmbeddingEvaluation, ...]
+
+    def to_markdown(self) -> str:
+        lines = [
+            "# Embedding Evaluations",
+            "",
+            "## Summary",
+            "",
+            "| Model | Transcriptions | Translations | Paired | Dimensions | "
+            + " | ".join(f"recall@{rank}" for rank in RECALL_RANKS)
+            + " |",
+            "| --- | ---: | ---: | ---: | ---: | "
+            + " | ".join("---:" for _ in RECALL_RANKS)
+            + " |",
+        ]
+        for result in self.results:
+            lines.append(
+                f"| {_markdown_code(result.modelname)} | {result.transcription_count} | "
+                f"{result.translation_count} | {result.evaluated_count} | "
+                f"{result.embedding_dimensions} | "
+                + " | ".join(f"{result.recall_at[rank]:.2%}" for rank in RECALL_RANKS)
+                + " |"
+            )
+        for result in self.results:
+            lines.extend(["", result.to_markdown(heading_level=2).rstrip()])
+        return "\n".join(lines) + "\n"
+
+
+def evaluate_embeddings(
+    conninfo: str = "", /, *, output_file: str | Path | None = None
+) -> EmbeddingsEvaluation:
+    """Evaluate transcription-to-translation retrieval for every stored model."""
+
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            modelnames = _select_embedding_modelnames(cursor)
+            if not modelnames:
+                raise ValueError(
+                    "No models have both transcription and translation embeddings"
+                )
+            results = tuple(
+                _evaluate_embeddings_model(cursor, modelname)
+                for modelname in modelnames
+            )
+
+    evaluation = EmbeddingsEvaluation(results)
+    if output_file is not None:
+        Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
+    return evaluation
+
+
 def evaluate_embeddings_model(
     conninfo: str = "", /, *, modelname: str, output_file: str | Path | None = None
 ) -> EmbeddingEvaluation:
@@ -128,51 +183,52 @@ def evaluate_embeddings_model(
 
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
-            transcription_count, transcription_dimensions = _collection_stats(
-                cursor, TRANSCRIPTION_EMBEDDINGS_TABLE, modelname
-            )
-            translation_count, translation_dimensions = _collection_stats(
-                cursor, TRANSLATION_EMBEDDINGS_TABLE, modelname
-            )
-            if not transcription_count:
-                raise ValueError(
-                    f"No transcription embeddings found for model {modelname!r}"
-                )
-            if not translation_count:
-                raise ValueError(
-                    f"No translation embeddings found for model {modelname!r}"
-                )
-            if transcription_dimensions != translation_dimensions:
-                raise ValueError(
-                    f"Transcription embeddings have {transcription_dimensions} dimensions, "
-                    f"but translation embeddings have {translation_dimensions}"
-                )
-            queries = _select_translation_retrieval_queries(cursor, modelname)
-            if not queries:
-                raise ValueError(
-                    "No documents have both transcription and translation embeddings for the selected model"
-                )
-            hits = {rank: 0 for rank in RECALL_RANKS}
-            language_counts: dict[str, int] = {}
-            language_hits: dict[str, dict[int, int]] = {}
-            for query in queries:
-                language = _language_label(query.language)
-                language_counts[language] = language_counts.get(language, 0) + 1
-                query_hits = language_hits.setdefault(
-                    language, {rank: 0 for rank in RECALL_RANKS}
-                )
-                candidates = _select_nearest_translations(
-                    cursor, modelname, query.embedding, max(RECALL_RANKS)
-                )
-                for rank in RECALL_RANKS:
-                    if any(
-                        candidate.tm_id == query.tm_id
-                        for candidate in candidates[:rank]
-                    ):
-                        hits[rank] += 1
-                        query_hits[rank] += 1
+            evaluation = _evaluate_embeddings_model(cursor, modelname)
 
-    evaluation = EmbeddingEvaluation(
+    if output_file is not None:
+        Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
+    return evaluation
+
+
+def _evaluate_embeddings_model(cursor: Any, modelname: str) -> EmbeddingEvaluation:
+    transcription_count, transcription_dimensions = _collection_stats(
+        cursor, TRANSCRIPTION_EMBEDDINGS_TABLE, modelname
+    )
+    translation_count, translation_dimensions = _collection_stats(
+        cursor, TRANSLATION_EMBEDDINGS_TABLE, modelname
+    )
+    if not transcription_count:
+        raise ValueError(f"No transcription embeddings found for model {modelname!r}")
+    if not translation_count:
+        raise ValueError(f"No translation embeddings found for model {modelname!r}")
+    if transcription_dimensions != translation_dimensions:
+        raise ValueError(
+            f"Transcription embeddings have {transcription_dimensions} dimensions, "
+            f"but translation embeddings have {translation_dimensions}"
+        )
+    queries = _select_translation_retrieval_queries(cursor, modelname)
+    if not queries:
+        raise ValueError(
+            "No documents have both transcription and translation embeddings for the selected model"
+        )
+    hits = {rank: 0 for rank in RECALL_RANKS}
+    language_counts: dict[str, int] = {}
+    language_hits: dict[str, dict[int, int]] = {}
+    for query in queries:
+        language = _language_label(query.language)
+        language_counts[language] = language_counts.get(language, 0) + 1
+        query_hits = language_hits.setdefault(
+            language, {rank: 0 for rank in RECALL_RANKS}
+        )
+        candidates = _select_nearest_translations(
+            cursor, modelname, query.embedding, max(RECALL_RANKS)
+        )
+        for rank in RECALL_RANKS:
+            if any(candidate.tm_id == query.tm_id for candidate in candidates[:rank]):
+                hits[rank] += 1
+                query_hits[rank] += 1
+
+    return EmbeddingEvaluation(
         modelname,
         transcription_count,
         translation_count,
@@ -186,9 +242,22 @@ def evaluate_embeddings_model(
             for language in sorted(language_counts)
         },
     )
-    if output_file is not None:
-        Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
-    return evaluation
+
+
+def _select_embedding_modelnames(cursor: Any) -> tuple[str, ...]:
+    cursor.execute(
+        f"""
+SELECT transcriptions.model_name
+FROM {TRANSCRIPTION_EMBEDDINGS_TABLE} AS transcriptions
+WHERE EXISTS (
+    SELECT 1 FROM {TRANSLATION_EMBEDDINGS_TABLE} AS translations
+    WHERE translations.model_name = transcriptions.model_name
+)
+GROUP BY transcriptions.model_name
+ORDER BY transcriptions.model_name
+"""
+    )
+    return tuple(str(_row_value(row, "model_name", 0)) for row in cursor.fetchall())
 
 
 def _collection_stats(
