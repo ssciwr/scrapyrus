@@ -56,6 +56,8 @@ TRANSCRIPTIONS_UNAVAILABLE_MESSAGE = (
     "'scrapyrus transcriptions ingest' against this database before using "
     "embeddings."
 )
+HNSW_VECTOR_MAX_DIMENSIONS = 2_000
+HNSW_HALFVEC_MAX_DIMENSIONS = 4_000
 
 
 class PgvectorUnavailableError(RuntimeError):
@@ -653,14 +655,24 @@ def _recreate_embedding_index(
     cursor: Any, table: str, modelname: str, dimensions: int
 ) -> None:
     _drop_embedding_index(cursor, table, modelname)
+    if dimensions <= HNSW_VECTOR_MAX_DIMENSIONS:
+        index_type = "vector"
+        operator_class = "vector_cosine_ops"
+    elif dimensions <= HNSW_HALFVEC_MAX_DIMENSIONS:
+        index_type = "halfvec"
+        operator_class = "halfvec_cosine_ops"
+    else:
+        return
     cursor.execute(
         sql.SQL(
             "CREATE INDEX {} ON {} USING hnsw "
-            "((embedding::vector({})) vector_cosine_ops) WHERE model_name = {}"
+            "((embedding::{}({})) {}) WHERE model_name = {}"
         ).format(
             sql.Identifier(_embedding_index_name(table, modelname)),
             sql.Identifier(table),
+            sql.SQL(index_type),
             sql.Literal(dimensions),
+            sql.SQL(operator_class),
             sql.Literal(modelname),
         )
     )

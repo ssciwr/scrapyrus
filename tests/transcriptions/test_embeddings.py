@@ -9,6 +9,7 @@ from scrapyrus.transcriptions.embeddings import (
     TranscriptionsUnavailableError,
     chunk_embedding_text,
     dump_embeddings,
+    _recreate_embedding_index,
     _ensure_embedding_schema,
     _select_xml_rows,
     _xml_to_embedding_text,
@@ -486,6 +487,28 @@ def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
     assert any(
         "USING hnsw" in query and "vector(3)" in query for query, _ in cursor.executions
     )
+
+
+def test_high_dimensional_embeddings_use_halfvec_hnsw_index():
+    cursor = RecordingCursor()
+
+    _recreate_embedding_index(cursor, "transcription_embeddings", "model", 2560)
+
+    assert len(cursor.executions) == 2
+    query, params = cursor.executions[-1]
+    assert params is None
+    assert "USING hnsw" in query
+    assert "embedding::halfvec(2560)" in query
+    assert "halfvec_cosine_ops" in query
+
+
+def test_embeddings_above_hnsw_dimension_limits_are_stored_without_index():
+    cursor = RecordingCursor()
+
+    _recreate_embedding_index(cursor, "transcription_embeddings", "model", 4001)
+
+    assert len(cursor.executions) == 1
+    assert cursor.executions[0][0].startswith("DROP INDEX IF EXISTS")
 
 
 def test_import_embeddings_rejects_unexpected_model_names(tmp_path, monkeypatch):
