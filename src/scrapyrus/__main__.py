@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import click
 
@@ -345,14 +346,23 @@ def delete_embedding_model(
 @database_url
 @embedding_model_options
 @embedding_kind_options
-@click.argument("output_file", type=click.Path(path_type=Path, dir_okay=False))
+@click.argument(
+    "output_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    required=False,
+)
 def dump_embedding_rows(
     database_url: str,
     model_name: str,
     document_kind: str,
-    output_file: Path,
+    output_file: Path | None,
 ) -> None:
     """Dump one model's embeddings in PostgreSQL binary COPY format."""
+
+    if output_file is None:
+        canonical_kind = EMBEDDING_KIND_ALIASES[document_kind]
+        filename_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model_name).strip("-")
+        output_file = Path(f"{canonical_kind}-embeddings-{filename_model}.dump")
 
     try:
         dump_embeddings(

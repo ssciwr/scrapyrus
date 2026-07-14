@@ -478,6 +478,39 @@ def test_embeddings_dump_writes_selected_table(tmp_path, monkeypatch):
     ]
 
 
+def test_embeddings_dump_uses_parameterized_default_filename(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_embeddings",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "dump",
+            "--database-url",
+            "postgresql://db",
+            "--model-name",
+            "provider/model name",
+            "--kind",
+            "translations",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            (
+                Path("translation-embeddings-provider-model-name.dump"),
+                "postgresql://db",
+            ),
+            {"modelname": "provider/model name", "document_kind": "translations"},
+        )
+    ]
+
+
 def test_embeddings_import_reads_selected_table(tmp_path, monkeypatch):
     calls = []
     source = tmp_path / "embeddings.dump"
