@@ -18,7 +18,9 @@ from scrapyrus.transcriptions.embeddings import (
 )
 from scrapyrus.transcriptions.evaluation import (
     EmbeddingEvaluation,
+    EmbeddingsEvaluation,
     LanguageEmbeddingEvaluation,
+    evaluate_embeddings,
     evaluate_embeddings_model,
 )
 from scrapyrus.transcriptions.llms import (
@@ -32,6 +34,7 @@ __all__ = [
     "available_translation_languages",
     "EmbeddingStore",
     "EmbeddingEvaluation",
+    "EmbeddingsEvaluation",
     "LanguageEmbeddingEvaluation",
     "LLMProviderBase",
     "MistralProvider",
@@ -40,6 +43,7 @@ __all__ = [
     "dump_embeddings",
     "dump_transcriptions",
     "epidoc_xml_to_text",
+    "evaluate_embeddings",
     "evaluate_embeddings_model",
     "import_embeddings",
     "ingest_transcriptions",

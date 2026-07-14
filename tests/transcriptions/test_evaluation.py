@@ -3,6 +3,7 @@ import psycopg
 from scrapyrus.transcriptions.evaluation import (
     EmbeddingEvaluation,
     LanguageEmbeddingEvaluation,
+    evaluate_embeddings,
     evaluate_embeddings_model,
 )
 
@@ -102,3 +103,30 @@ def test_evaluation_accepts_partial_embedding_collections(monkeypatch):
     assert evaluation.translation_count == 1
     assert evaluation.evaluated_count == 1
     assert evaluation.recall_at[5] == 1.0
+
+
+def test_evaluation_runs_for_all_models_with_embeddings(tmp_path, monkeypatch):
+    cursor = Cursor()
+    cursor.fetchone_results = [(1, 2), (1, 2), (1, 2), (1, 2)]
+    cursor.fetchall_results = [
+        [("alpha",), ("beta",)],
+        [("1", "ddb/1.xml", "grc", "[1,0]")],
+        [("1", "hgv/1.xml")],
+        [("2", "ddb/2.xml", "la", "[0,1]")],
+        [("3", "hgv/3.xml"), ("2", "hgv/2.xml")],
+    ]
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+    output = tmp_path / "report.md"
+
+    evaluation = evaluate_embeddings("postgresql://db", output_file=output)
+
+    assert [result.modelname for result in evaluation.results] == ["alpha", "beta"]
+    assert evaluation.results[0].recall_at[1] == 1.0
+    assert evaluation.results[1].recall_at[1] == 0.0
+    assert evaluation.results[1].recall_at[2] == 1.0
+    sql = "\n".join(query for query, _ in cursor.executions)
+    assert "GROUP BY transcriptions.model_name" in sql
+    report = output.read_text()
+    assert report.startswith("# Embedding Evaluations")
+    assert "| `alpha` | 1 | 1 | 1 | 2 | 100.00%" in report
+    assert "## Embedding Evaluation: `beta`" in report
