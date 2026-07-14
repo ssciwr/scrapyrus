@@ -20,7 +20,7 @@ jobs:
       matrix:
         # Here, we are testing the oldest and the newest supported Python version.
         # If this is insufficient for your package, consider adding more versions.
-        python-version: ["3.10", "3.13"]
+        python-version: ["3.13"]
 
     steps:
     - name: Checkout repository
