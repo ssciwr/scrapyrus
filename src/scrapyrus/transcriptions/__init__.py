@@ -10,6 +10,7 @@ from scrapyrus.transcriptions.core import (
 )
 from scrapyrus.transcriptions.embeddings import (
     EmbeddingStore,
+    chunk_embedding_text,
     delete_embeddings,
     dump_embeddings,
     import_embeddings,
@@ -17,6 +18,7 @@ from scrapyrus.transcriptions.embeddings import (
     update_embeddings,
 )
 from scrapyrus.transcriptions.evaluation import (
+    ChunkEmbeddingEvaluation,
     EmbeddingEvaluation,
     EmbeddingsEvaluation,
     LanguageEmbeddingEvaluation,
@@ -35,6 +37,7 @@ __all__ = [
     "available_translation_languages",
     "BM25SearchHit",
     "EmbeddingStore",
+    "ChunkEmbeddingEvaluation",
     "EmbeddingEvaluation",
     "EmbeddingsEvaluation",
     "LanguageEmbeddingEvaluation",
@@ -43,6 +46,7 @@ __all__ = [
     "MetadataFilter",
     "VLLMProvider",
     "bm25_search",
+    "chunk_embedding_text",
     "delete_embeddings",
     "dump_embeddings",
     "dump_transcriptions",

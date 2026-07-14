@@ -7,6 +7,7 @@ from scrapyrus.transcriptions.embeddings import (
     MAXIMUM_TRANSCRIPTION_OPTIONS,
     EmbeddingStore,
     TranscriptionsUnavailableError,
+    chunk_embedding_text,
     dump_embeddings,
     _ensure_embedding_schema,
     _select_xml_rows,
@@ -138,6 +139,39 @@ def test_schema_creates_separate_kind_tables_without_migration():
     assert "embedding_configurations" not in sql
     assert "document_embeddings" not in sql
     assert "config_id" not in sql
+    assert "chunk_index integer NOT NULL DEFAULT 0" in sql
+    assert "PRIMARY KEY (xml_id, model_name, chunk_index)" in sql
+
+
+def test_chunking_keeps_documents_within_fifty_percent_of_target_unchanged():
+    document = "  " + " ".join(f"word-{index}" for index in range(15)) + "\n"
+
+    assert chunk_embedding_text(document, 10) == (document,)
+
+
+def test_chunking_is_deterministic_and_overlaps_by_ten_percent():
+    document = " ".join(f"word-{index}" for index in range(16))
+
+    expected = (
+        " ".join(f"word-{index}" for index in range(10)),
+        " ".join(f"word-{index}" for index in range(9, 16)),
+    )
+    assert chunk_embedding_text(document, 10) == expected
+    assert chunk_embedding_text(document, 10) == expected
+
+
+def test_chunking_does_not_add_a_chunk_containing_only_overlap():
+    document = " ".join(f"word-{index}" for index in range(19))
+
+    chunks = chunk_embedding_text(document, 10)
+
+    assert len(chunks) == 2
+    assert chunks[-1].split() == [f"word-{index}" for index in range(9, 19)]
+
+
+def test_chunking_rejects_non_positive_chunk_size():
+    with pytest.raises(ValueError, match="at least 1"):
+        chunk_embedding_text("text", 0)
 
 
 def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
@@ -166,6 +200,10 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
         "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
         lambda *args: provider,
     )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.tqdm",
+        lambda *args, **kwargs: pytest.fail("progress bar should be disabled"),
+    )
 
     count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
         "postgresql://db", False
@@ -187,6 +225,97 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     assert inserts[1][1]["language"] == "en"
     assert inserts[1][1]["document_text"] == "Beta"
     assert provider.inputs == ["Alpha", "Beta"]
+
+
+def test_setup_store_reports_xml_preparation_progress(monkeypatch):
+    rows = [
+        (1, "DDB/a.xml", 46, "<div/>", "transcription", None),
+        (2, "HGV/46.xml", 46, "<div/>", "translation", "en"),
+    ]
+    cursor = RecordingCursor(rows=rows)
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
+        lambda xml, **options: "Alpha",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.translation_epidoc_xml_to_text",
+        lambda xml: "Beta",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.transcription_language",
+        lambda xml: "grc",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: FakeProvider([[0.1], [0.2]]),
+    )
+    progress_calls = []
+
+    class FakeProgress:
+        def __init__(self, iterable):
+            self.iterable = iterable
+
+        def __iter__(self):
+            return iter(self.iterable)
+
+        def update(self, amount):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_tqdm(iterable=(), *, total, unit, desc):
+        progress_calls.append((iterable, total, unit, desc))
+        return FakeProgress(iterable)
+
+    monkeypatch.setattr("scrapyrus.transcriptions.embeddings.tqdm", fake_tqdm)
+
+    EmbeddingStore("https://example/v1", "model", "key").setup_store(
+        "postgresql://db", True
+    )
+
+    prepared_rows, total, unit, description = progress_calls[0]
+    assert len(prepared_rows) == 2
+    assert (total, unit, description) == (2, "row", "Preparing XML rows")
+    assert progress_calls[1][1:] == (2, "request", "Embedding XML rows")
+
+
+def test_setup_store_embeds_chunks_with_indices(monkeypatch):
+    rows = [(1, "DDB/a.xml", 46, "<div/>", "transcription", None)]
+    cursor = RecordingCursor(rows=rows)
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    document = " ".join(f"word-{index}" for index in range(16))
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.epidoc_xml_to_text",
+        lambda xml, **options: document,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.transcription_language",
+        lambda xml: "grc",
+    )
+    provider = FakeProvider([[0.1, 0.2], [0.3, 0.4]])
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: provider,
+    )
+
+    count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
+        "postgresql://db", False, chunk_size=10
+    )
+
+    inserts = [params for query, params in cursor.executions if "INSERT INTO" in query]
+    assert count == 2
+    assert [params["chunk_index"] for params in inserts] == [0, 1]
+    assert provider.inputs == list(chunk_embedding_text(document, 10))
+    assert any(
+        "chunk_index >= %s" in query and params == (1, "model", 2)
+        for query, params in cursor.executions
+    )
 
 
 def test_setup_store_reports_missing_transcriptions_table(monkeypatch):
@@ -311,6 +440,7 @@ def test_dump_embeddings_writes_filtered_binary_copy(tmp_path, monkeypatch):
     assert len(cursor.copies) == 1
     assert 'FROM "translation_embeddings"' in cursor.copies[0]
     assert "WHERE model_name = 'model'" in cursor.copies[0]
+    assert '"chunk_index"' in cursor.copies[0]
     assert "TO STDOUT WITH (FORMAT binary)" in cursor.copies[0]
 
 

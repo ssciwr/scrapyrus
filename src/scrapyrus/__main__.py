@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import click
 
@@ -307,6 +308,13 @@ def embeddings() -> None:
     help="Seed used to make --sample selection deterministic.",
 )
 @click.option(
+    "--chunk-size",
+    type=click.IntRange(min=1),
+    default=500,
+    show_default=True,
+    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
+)
+@click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
@@ -319,6 +327,7 @@ def ingest_embeddings(
     api_key: str,
     sample: int | None,
     seed: int,
+    chunk_size: int,
     progress: bool,
 ) -> None:
     """Embed transcription and translation XML rows in PostgreSQL."""
@@ -330,6 +339,7 @@ def ingest_embeddings(
             progress,
             sample=sample,
             seed=seed,
+            chunk_size=chunk_size,
         )
     except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
         raise click.ClickException(str(error)) from error
@@ -351,14 +361,23 @@ def delete_embedding_model(
 @database_url
 @embedding_model_options
 @embedding_kind_options
-@click.argument("output_file", type=click.Path(path_type=Path, dir_okay=False))
+@click.argument(
+    "output_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    required=False,
+)
 def dump_embedding_rows(
     database_url: str,
     model_name: str,
     document_kind: str,
-    output_file: Path,
+    output_file: Path | None,
 ) -> None:
     """Dump one model's embeddings in PostgreSQL binary COPY format."""
+
+    if output_file is None:
+        canonical_kind = EMBEDDING_KIND_ALIASES[document_kind]
+        filename_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model_name).strip("-")
+        output_file = Path(f"{canonical_kind}-embeddings-{filename_model}.dump")
 
     try:
         dump_embeddings(
@@ -403,6 +422,13 @@ def import_embedding_rows(
 @embedding_client_options
 @embedding_model_options
 @click.option(
+    "--chunk-size",
+    type=click.IntRange(min=1),
+    default=500,
+    show_default=True,
+    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
+)
+@click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
@@ -413,6 +439,7 @@ def update_embedding_rows(
     inference_server_url: str,
     model_name: str,
     api_key: str,
+    chunk_size: int,
     progress: bool,
 ) -> None:
     """Compute missing or stale embeddings for one model."""
@@ -424,6 +451,7 @@ def update_embedding_rows(
             inference_server_url=inference_server_url,
             modelname=model_name,
             api_key=api_key,
+            chunk_size=chunk_size,
         )
     except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
         raise click.ClickException(str(error)) from error
@@ -432,6 +460,21 @@ def update_embedding_rows(
 @embeddings.command("evaluate")
 @database_url
 @click.option(
+    "--sample",
+    type=click.IntRange(min=1),
+    help=(
+        "Randomly select this many records that have both a transcription "
+        "and a translation."
+    ),
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Seed used to make --sample selection deterministic.",
+)
+@click.option(
     "--output",
     "output_file",
     type=click.Path(path_type=Path, dir_okay=False),
@@ -439,15 +482,27 @@ def update_embedding_rows(
     show_default=True,
     help="Markdown file to write evaluation findings to.",
 )
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show progress bars while evaluating embedding retrieval.",
+)
 def evaluate_embedding_model(
     database_url: str,
+    sample: int | None,
+    seed: int,
     output_file: Path,
+    progress: bool,
 ) -> None:
     """Evaluate transcription-to-translation embedding retrieval."""
 
     evaluate_embeddings(
         database_url,
         output_file=output_file,
+        progressbar=progress,
+        sample=sample,
+        seed=seed,
     )
 
 
