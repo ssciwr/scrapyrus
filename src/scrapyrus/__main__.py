@@ -442,15 +442,23 @@ def update_embedding_rows(
     show_default=True,
     help="Markdown file to write evaluation findings to.",
 )
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show progress bars while evaluating embedding retrieval.",
+)
 def evaluate_embedding_model(
     database_url: str,
     output_file: Path,
+    progress: bool,
 ) -> None:
     """Evaluate transcription-to-translation embedding retrieval."""
 
     evaluate_embeddings(
         database_url,
         output_file=output_file,
+        progressbar=progress,
     )
 
 

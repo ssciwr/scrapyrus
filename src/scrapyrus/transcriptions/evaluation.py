@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+from tqdm import tqdm
 
 from scrapyrus.transcriptions.embeddings import (
     TRANSCRIPTION_EMBEDDINGS_TABLE,
@@ -235,7 +236,11 @@ class EmbeddingsEvaluation:
 
 
 def evaluate_embeddings(
-    conninfo: str = "", /, *, output_file: str | Path | None = None
+    conninfo: str = "",
+    /,
+    *,
+    output_file: str | Path | None = None,
+    progressbar: bool = True,
 ) -> EmbeddingsEvaluation:
     """Evaluate transcription-to-translation retrieval for every stored model."""
 
@@ -247,7 +252,7 @@ def evaluate_embeddings(
                     "No models have both transcription and translation embeddings"
                 )
             results = tuple(
-                _evaluate_embeddings_model(cursor, modelname)
+                _evaluate_embeddings_model(cursor, modelname, progressbar=progressbar)
                 for modelname in modelnames
             )
 
@@ -258,20 +263,29 @@ def evaluate_embeddings(
 
 
 def evaluate_embeddings_model(
-    conninfo: str = "", /, *, modelname: str, output_file: str | Path | None = None
+    conninfo: str = "",
+    /,
+    *,
+    modelname: str,
+    output_file: str | Path | None = None,
+    progressbar: bool = True,
 ) -> EmbeddingEvaluation:
     """Evaluate transcription-to-translation retrieval for one stored model."""
 
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
-            evaluation = _evaluate_embeddings_model(cursor, modelname)
+            evaluation = _evaluate_embeddings_model(
+                cursor, modelname, progressbar=progressbar
+            )
 
     if output_file is not None:
         Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
     return evaluation
 
 
-def _evaluate_embeddings_model(cursor: Any, modelname: str) -> EmbeddingEvaluation:
+def _evaluate_embeddings_model(
+    cursor: Any, modelname: str, *, progressbar: bool
+) -> EmbeddingEvaluation:
     transcription_stats = _collection_stats(
         cursor, TRANSCRIPTION_EMBEDDINGS_TABLE, modelname
     )
@@ -300,7 +314,17 @@ def _evaluate_embeddings_model(cursor: Any, modelname: str) -> EmbeddingEvaluati
     chunk_counts: dict[str, int] = {}
     chunk_hits: dict[str, dict[int, int]] = {}
     chunk_reciprocal_rank_sums: dict[str, float] = {}
-    for query in queries:
+    query_iterator = (
+        tqdm(
+            queries,
+            total=len(queries),
+            unit="document",
+            desc=f"Evaluating {modelname}",
+        )
+        if progressbar
+        else queries
+    )
+    for query in query_iterator:
         language = _language_label(query.language)
         chunk_group = _chunk_group(query.chunk_count)
         language_counts[language] = language_counts.get(language, 0) + 1

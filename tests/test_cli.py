@@ -566,4 +566,9 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
         ),
     )
     assert result.exit_code == 0
-    assert calls == [(("postgresql://db",), {"output_file": output})]
+    assert calls == [
+        (
+            ("postgresql://db",),
+            {"output_file": output, "progressbar": True},
+        )
+    ]

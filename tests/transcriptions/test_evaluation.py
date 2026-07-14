@@ -89,6 +89,35 @@ def test_evaluation_uses_separate_embedding_tables_and_stored_language(
     assert "| 2-3 chunks | MRR | 1.0000 | 1 | 100.00% |" in report
 
 
+def test_evaluation_shows_progress_for_retrieval_queries(monkeypatch):
+    cursor = Cursor()
+    progress = {}
+
+    def fake_tqdm(iterable, *, total, unit, desc):
+        progress.update(iterable=iterable, total=total, unit=unit, desc=desc)
+        return iterable
+
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+    monkeypatch.setattr("scrapyrus.transcriptions.evaluation.tqdm", fake_tqdm)
+
+    evaluate_embeddings_model("postgresql://db", modelname="sample")
+
+    assert progress["total"] == 1
+    assert progress["unit"] == "document"
+    assert progress["desc"] == "Evaluating sample"
+
+
+def test_evaluation_can_disable_progress(monkeypatch):
+    cursor = Cursor()
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.evaluation.tqdm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()),
+    )
+
+    evaluate_embeddings_model("postgresql://db", modelname="sample", progressbar=False)
+
+
 def test_markdown_renders_collection_counts():
     result = EmbeddingEvaluation(
         modelname="model",
