@@ -6,6 +6,8 @@ from scrapyrus.transcriptions.llms import (
     LLM_REQUEST_TIMEOUT,
     LLMProviderBase,
     MistralProvider,
+    OPENAI_EMBEDDING_CONTEXT_LENGTH,
+    OpenAIProvider,
     VLLMProvider,
     initialize_llm_provider,
 )
@@ -183,6 +185,90 @@ def test_mistral_embedding_methods_use_embedding_endpoint(monkeypatch):
         "scrapyrus.transcriptions.llms.requests.Session", lambda: client
     )
     provider = MistralProvider("https://api.mistral.ai/v1", "mistral-embed", "key")
+
+    assert provider.embed("document") == (0.25, -0.5, 1.0)
+    assert provider.embedding_length() == 3
+    assert len(client.requests) == 1
+
+
+def test_openai_initialize_detects_api_hostname_and_normalizes_url():
+    provider = OpenAIProvider.initialize(
+        "https://api.openai.com", "text-embedding-3-small", "secret"
+    )
+
+    assert isinstance(provider, OpenAIProvider)
+    assert provider.inference_server_url == "https://api.openai.com/v1"
+    assert provider.modelname == "text-embedding-3-small"
+    assert provider.api_key == "secret"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/openai.com",
+        "https://api.openai.com.example.com/v1",
+        "not-a-url",
+    ],
+)
+def test_openai_initialize_declines_other_hostnames(url):
+    assert OpenAIProvider.initialize(url, "model", "key") is None
+
+
+def test_openai_token_count_uses_embedding_usage(monkeypatch):
+    client = FakeClient(
+        posts=[
+            FakeResponse(
+                {
+                    "data": [{"embedding": [0.25, -0.5, 1]}],
+                    "usage": {"prompt_tokens": 3, "total_tokens": 3},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.llms.requests.Session", lambda: client
+    )
+    provider = OpenAIProvider(
+        "https://api.openai.com/v1/", "text-embedding-3-small", "secret"
+    )
+
+    assert provider.token_count("some text") == 3
+    assert client.headers["Authorization"] == "Bearer secret"
+    assert client.requests == [
+        (
+            "POST",
+            "https://api.openai.com/v1/embeddings",
+            {"model": "text-embedding-3-small", "input": "some text"},
+            LLM_REQUEST_TIMEOUT,
+        )
+    ]
+
+
+def test_openai_context_length_uses_embedding_api_limit():
+    provider = OpenAIProvider(
+        "https://api.openai.com/v1", "text-embedding-3-small", "key"
+    )
+
+    assert provider.context_length() == OPENAI_EMBEDDING_CONTEXT_LENGTH
+
+
+def test_openai_embedding_methods_use_embedding_endpoint(monkeypatch):
+    client = FakeClient(
+        posts=[
+            FakeResponse(
+                {
+                    "data": [{"embedding": [0.25, -0.5, 1]}],
+                    "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.llms.requests.Session", lambda: client
+    )
+    provider = OpenAIProvider(
+        "https://api.openai.com/v1", "text-embedding-3-small", "key"
+    )
 
     assert provider.embed("document") == (0.25, -0.5, 1.0)
     assert provider.embedding_length() == 3

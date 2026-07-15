@@ -28,6 +28,7 @@ from scrapyrus.transcriptions.evaluation import (
 from scrapyrus.transcriptions.llms import (
     LLMProviderBase,
     MistralProvider,
+    OpenAIProvider,
     VLLMProvider,
     initialize_llm_provider,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "LLMProviderBase",
     "MistralProvider",
     "MetadataFilter",
+    "OpenAIProvider",
     "VLLMProvider",
     "bm25_search",
     "chunk_embedding_text",

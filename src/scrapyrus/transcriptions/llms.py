@@ -8,6 +8,7 @@ import requests
 
 
 LLM_REQUEST_TIMEOUT = 60
+OPENAI_EMBEDDING_CONTEXT_LENGTH = 8_192
 
 
 class LLMProviderBase:
@@ -197,6 +198,72 @@ class MistralProvider(LLMProviderBase):
         return vector, token_count
 
 
+class OpenAIProvider(LLMProviderBase):
+    """Provider for OpenAI's hosted API."""
+
+    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
+        super().__init__(_openai_base_url(inference_server_url), modelname, api_key)
+        self._embedding_length: int | None = None
+
+    @classmethod
+    def initialize(
+        cls, inference_server_url: str, modelname: str, api_key: str
+    ) -> OpenAIProvider | None:
+        """Detect OpenAI from its API hostname."""
+
+        hostname = urlparse(inference_server_url).hostname
+        if hostname is None or hostname.rstrip(".").lower() != "api.openai.com":
+            return None
+        return cls(inference_server_url, modelname, api_key)
+
+    def token_count(self, text: str) -> int:
+        _, token_count = self._embed(text)
+        return token_count
+
+    def context_length(self) -> int:
+        return OPENAI_EMBEDDING_CONTEXT_LENGTH
+
+    def embedding_length(self) -> int:
+        if self._embedding_length is None:
+            self.embed("test")
+        assert self._embedding_length is not None
+        return self._embedding_length
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        vector, _ = self._embed(text)
+        return vector
+
+    def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        payload = self._post_json(
+            "/embeddings", {"model": self.modelname, "input": text}
+        )
+        try:
+            embedding = payload["data"][0]["embedding"]
+            token_count = payload["usage"]["prompt_tokens"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise ValueError(
+                "Embedding response did not contain data[0].embedding and "
+                "usage.prompt_tokens"
+            ) from error
+        if not isinstance(embedding, list) or not embedding:
+            raise ValueError("Embedding response did not contain a non-empty vector")
+        if (
+            not isinstance(token_count, int)
+            or isinstance(token_count, bool)
+            or token_count < 0
+        ):
+            raise ValueError(
+                "Embedding response did not contain a valid usage.prompt_tokens"
+            )
+        vector = tuple(float(value) for value in embedding)
+        if not all(math.isfinite(value) for value in vector):
+            raise ValueError("Embedding response contained non-finite vector values")
+        if self._embedding_length is not None and self._embedding_length != len(vector):
+            raise ValueError("Embedding response changed vector length")
+        self._embedding_length = len(vector)
+        return vector, token_count
+
+
 class VLLMProvider(LLMProviderBase):
     """Provider for a vLLM OpenAI-compatible inference server."""
 
@@ -283,5 +350,10 @@ def _vllm_base_url(inference_server_url: str) -> str:
 
 
 def _mistral_base_url(inference_server_url: str) -> str:
+    base_url = inference_server_url.rstrip("/")
+    return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
+
+
+def _openai_base_url(inference_server_url: str) -> str:
     base_url = inference_server_url.rstrip("/")
     return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
