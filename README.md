@@ -29,67 +29,27 @@ Having done so, the test suite can be run using `pytest`:
 python -m pytest
 ```
 
-## Docker Compose
+## PostgreSQL configuration
 
-The repository includes a Docker Compose setup with PostgreSQL and a profiled
-`scrapyrus` execution container. The PostgreSQL service uses a pgvector-enabled
-image because `scrapyrus embeddings` commands require the `vector` extension:
-
-```
-docker compose up -d postgres
-```
-
-PostgreSQL data is stored in `./postgres-data` by default. To use another host
-directory, copy `.env.example` to `.env` and change `POSTGRES_DATA_DIR`:
+All database-backed `scrapyrus` commands use `SCRAPYRUS_DATABASE_URL` for the
+PostgreSQL connection URL. Set it once in the shell before running ingestion,
+dumping, lemmatization, embedding, or evaluation commands:
 
 ```
-POSTGRES_DATA_DIR=/path/to/postgres-data
-```
+export SCRAPYRUS_DATABASE_URL=postgresql://scrapyrus:secret@localhost:5432/scrapyrus
 
-Stop the Compose stack before changing this setting. An empty target directory
-creates a new database; data in the previous directory or Docker volume is not
-migrated automatically.
-
-The `scrapyrus` container mounts this repository at `/workspace` and sets
-`SCRAPYRUS_DATABASE_URL` to the PostgreSQL service. It also mounts the local
-`./exchange` directory at `/exchange` for moving data between the host and the
-container. Start it as a one-off shell when you need to run the CLI:
-
-```
-docker compose run --build --rm scrapyrus bash
 scrapyrus metadata ingest
 scrapyrus transcriptions ingest
 scrapyrus embeddings ingest \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
-Embedding ingestion reads the XML rows created by `transcriptions ingest`, so
-both commands must target the same PostgreSQL database and must run in that
-order.
+The database must already exist and be reachable. Embedding commands additionally
+require the PostgreSQL `vector` extension. Embedding ingestion reads the XML rows
+created by `transcriptions ingest`, so those commands must run in that order.
 
-The `scrapyrus` service is intentionally not started by the default `up`
-command. Some Snap-packaged Docker installations fail to stop idle long-lived
-containers during rebuilds with `cannot stop container: ... permission denied`;
-using one-off `run --rm` containers avoids that host-side recreate path.
-
-If `idp.data` is somewhere else inside the mounted workspace, pass it explicitly:
-
-```
-scrapyrus --idp-data /workspace/idp.data metadata ingest
-```
-
-To export the metadata database tables as CSV files:
-
-```
-scrapyrus metadata dump
-```
-
-If an older checkout already started the Compose stack with the stock PostgreSQL
-image, recreate the database service after updating:
-
-```
-docker compose up -d --force-recreate postgres
-```
+The `--database-url` option can override `SCRAPYRUS_DATABASE_URL` for a single
+command.
 
 ## Acknowledgments
 

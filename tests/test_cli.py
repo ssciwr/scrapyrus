@@ -3,7 +3,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from scrapyrus.__main__ import main
+from scrapyrus.__main__ import DATABASE_URL_ENVVAR, main
 from scrapyrus.images import DEFAULT_BROKEN_IMAGE_FILE
 from scrapyrus.transcriptions.embeddings import (
     PgvectorUnavailableError,
@@ -112,6 +112,36 @@ def test_images_subcommand_uses_defaults(monkeypatch):
             Path("idp.data"),
         )
     ]
+
+
+def test_database_commands_use_shared_database_url_envvar():
+    command_paths = (
+        ("metadata", "ingest"),
+        ("metadata", "dump"),
+        ("transcriptions", "ingest"),
+        ("transcriptions", "dump"),
+        ("lemmatization",),
+        ("embeddings", "ingest"),
+        ("embeddings", "delete"),
+        ("embeddings", "dump"),
+        ("embeddings", "import"),
+        ("embeddings", "update"),
+        ("embeddings", "evaluate"),
+    )
+
+    for command_path in command_paths:
+        command = main
+        for command_name in command_path:
+            command = command.commands[command_name]
+
+        database_options = [
+            parameter
+            for parameter in command.params
+            if parameter.name == "database_url"
+        ]
+        assert len(database_options) == 1, " ".join(command_path)
+        assert database_options[0].envvar == DATABASE_URL_ENVVAR
+        assert database_options[0].required
 
 
 def test_metadata_ingest_subcommand_triggers_metadata_ingest(tmp_path, monkeypatch):

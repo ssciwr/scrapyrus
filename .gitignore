@@ -10,7 +10,7 @@ sosol
 # Ignore default output directories that we have used for some scrapers
 images
 
-# Host/container data exchange directory for Docker Compose.
+# Ignore the local data exchange directory.
 exchange/
 
 exploration.ipynb
@@ -132,7 +132,7 @@ ENV/
 env.bak/
 venv.bak/
 
-# Local PostgreSQL data used by Docker Compose
+# Ignore local PostgreSQL data.
 postgres-data/
 
 # Spyder project settings
