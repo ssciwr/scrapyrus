@@ -132,6 +132,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local PostgreSQL data used by Docker Compose
+postgres-data/
+
 # Spyder project settings
 .spyderproject
 .spyproject

@@ -11,7 +11,7 @@ services:
       timeout: 5s
       retries: 12
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_DIR:-./postgres-data}:/var/lib/postgresql/data
 
   scrapyrus:
     build: .
@@ -31,6 +31,3 @@ services:
     volumes:
       - .:/workspace
       - ./exchange:/exchange
-
-volumes:
-  postgres-data:

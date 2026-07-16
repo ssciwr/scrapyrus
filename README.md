@@ -39,6 +39,17 @@ image because `scrapyrus embeddings` commands require the `vector` extension:
 docker compose up -d postgres
 ```
 
+PostgreSQL data is stored in `./postgres-data` by default. To use another host
+directory, copy `.env.example` to `.env` and change `POSTGRES_DATA_DIR`:
+
+```
+POSTGRES_DATA_DIR=/path/to/postgres-data
+```
+
+Stop the Compose stack before changing this setting. An empty target directory
+creates a new database; data in the previous directory or Docker volume is not
+migrated automatically.
+
 The `scrapyrus` container mounts this repository at `/workspace` and sets
 `SCRAPYRUS_DATABASE_URL` to the PostgreSQL service. It also mounts the local
 `./exchange` directory at `/exchange` for moving data between the host and the
