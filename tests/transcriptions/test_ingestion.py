@@ -213,6 +213,48 @@ def test_ingest_transcriptions_extracts_embedded_dclp_translation(
     ]
 
 
+def test_ingest_transcriptions_omits_rows_with_blank_text(tmp_path, monkeypatch):
+    idp_data = tmp_path / "idp.data"
+    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.46.xml"
+    translation = idp_data / "HGV_trans_EpiDoc" / "46.xml"
+    transcription.parent.mkdir(parents=True)
+    translation.parent.mkdir(parents=True)
+    transcription.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><div type="edition">'
+        "<ab/></div></TEI>",
+        encoding="utf-8",
+    )
+    translation.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        '<div type="translation" xml:lang="en"><p/></div></TEI>',
+        encoding="utf-8",
+    )
+    cursor = RecordingCursor()
+    monkeypatch.setattr(
+        psycopg,
+        "connect",
+        lambda conninfo, **kwargs: RecordingConnection(cursor),
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.core.iterate_idpdata_triples",
+        lambda root, *, progressbar: iter(
+            [("46", idp_data / "metadata.xml", transcription, translation)]
+        ),
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.core.epidoc_xml_to_text",
+        lambda xml, **options: " \n\t",
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.core.translation_epidoc_xml_to_text",
+        lambda xml: "",
+    )
+
+    ingest_transcriptions(idp_data, progressbar=False)
+
+    assert len(cursor.executions) == 2
+
+
 def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
     rows = [
         (

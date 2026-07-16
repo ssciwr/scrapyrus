@@ -162,16 +162,15 @@ VALUES (
                         _report_xml_failure(transcription)
                         raise
                     if snippet is not None:
-                        cursor.execute(
-                            insert_sql,
-                            _transcription_row(
-                                idp_data,
-                                transcription,
-                                tm_id,
-                                snippet,
-                                "transcription",
-                            ),
+                        row = _transcription_row(
+                            idp_data,
+                            transcription,
+                            tm_id,
+                            snippet,
+                            "transcription",
                         )
+                        if row["text"].strip():
+                            cursor.execute(insert_sql, row)
 
                 translation_sources = []
                 if metadata.is_relative_to(idp_data / "DCLP"):
@@ -186,17 +185,16 @@ VALUES (
                         _report_xml_failure(translation_source)
                         raise
                     for language, snippet in snippets:
-                        cursor.execute(
-                            insert_sql,
-                            _transcription_row(
-                                idp_data,
-                                translation_source,
-                                tm_id,
-                                snippet,
-                                "translation",
-                                language,
-                            ),
+                        row = _transcription_row(
+                            idp_data,
+                            translation_source,
+                            tm_id,
+                            snippet,
+                            "translation",
+                            language,
                         )
+                        if row["text"].strip():
+                            cursor.execute(insert_sql, row)
 
 
 def dump_transcriptions(
