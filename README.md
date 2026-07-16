@@ -90,6 +90,15 @@ otherwise, pass `--no-owner` to the restore script to make the target connection
 user own the restored objects and omit source privileges. Keep the source
 database until the restored database has been verified.
 
+Depending on the setup, it might worth to run pg_restore inside the postgres
+Docker container:
+
+```
+docker exec -i papyri-prod-postgres-1 sh -c \
+  'pg_restore --verbose --clean --if-exists --no-owner \
+  --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"' \
+  < scrapyrus.dump
+```
 ## Acknowledgments
 
 This repository was set up using the [SSC Cookiecutter for Python Packages](https://github.com/ssciwr/cookiecutter-python-package).
