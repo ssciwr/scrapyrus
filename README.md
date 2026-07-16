@@ -31,8 +31,9 @@ python -m pytest
 
 ## PostgreSQL configuration
 
-All database-backed `scrapyrus` commands use `SCRAPYRUS_DATABASE_URL` for the
-PostgreSQL connection URL. Set it once in the shell before running ingestion,
+Database-backed `scrapyrus` commands use PostgreSQL's standard connection
+defaults when no connection URL is supplied. To use a connection URL instead,
+set `SCRAPYRUS_DATABASE_URL` once in the shell before running ingestion,
 dumping, lemmatization, embedding, or evaluation commands:
 
 ```
@@ -49,7 +50,28 @@ require the PostgreSQL `vector` extension. Embedding ingestion reads the XML row
 created by `transcriptions ingest`, so those commands must run in that order.
 
 The `--database-url` option can override `SCRAPYRUS_DATABASE_URL` for a single
-command.
+command. If neither is supplied, standard PostgreSQL parameters such as the
+`PGHOST`, `PGPORT`, `PGDATABASE`, and `PGUSER` environment variables apply.
+
+For local development, a pgvector-enabled PostgreSQL server can be started on
+port 5432 with Docker:
+
+```
+docker run --name scrapyrus-postgres \
+    --detach \
+    --publish 5432:5432 \
+    --env POSTGRES_DB=scrapyrus \
+    --env POSTGRES_USER=scrapyrus \
+    --env POSTGRES_PASSWORD=scrapyrus \
+    pgvector/pgvector:pg16
+
+export SCRAPYRUS_DATABASE_URL=postgresql://scrapyrus:scrapyrus@localhost:5432/scrapyrus
+scrapyrus metadata ingest
+```
+
+This container does not use persistent storage, so removing it also removes its
+database data. Stop and remove it with `docker stop scrapyrus-postgres` followed
+by `docker rm scrapyrus-postgres`.
 
 ### Moving the database
 

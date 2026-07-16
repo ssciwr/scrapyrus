@@ -32,12 +32,16 @@ idp_data = click.option(
     help="Path to the idp.data repository clone to work with",
 )
 DATABASE_URL_ENVVAR = "SCRAPYRUS_DATABASE_URL"
+DEFAULT_DATABASE_URL = ""
 
 database_url = click.option(
     "--database-url",
     envvar=DATABASE_URL_ENVVAR,
-    required=True,
-    help=f"PostgreSQL connection URL. Defaults to {DATABASE_URL_ENVVAR}.",
+    default=DEFAULT_DATABASE_URL,
+    help=(
+        "PostgreSQL connection URL. Defaults to "
+        f"{DATABASE_URL_ENVVAR}, then PostgreSQL connection defaults."
+    ),
 )
 
 

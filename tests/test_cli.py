@@ -3,7 +3,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from scrapyrus.__main__ import DATABASE_URL_ENVVAR, main
+from scrapyrus.__main__ import DATABASE_URL_ENVVAR, DEFAULT_DATABASE_URL, main
 from scrapyrus.images import DEFAULT_BROKEN_IMAGE_FILE
 from scrapyrus.transcriptions.embeddings import (
     PgvectorUnavailableError,
@@ -114,7 +114,7 @@ def test_images_subcommand_uses_defaults(monkeypatch):
     ]
 
 
-def test_database_commands_use_shared_database_url_envvar():
+def test_database_commands_use_shared_database_url_default_and_envvar():
     command_paths = (
         ("metadata", "ingest"),
         ("metadata", "dump"),
@@ -141,7 +141,40 @@ def test_database_commands_use_shared_database_url_envvar():
         ]
         assert len(database_options) == 1, " ".join(command_path)
         assert database_options[0].envvar == DATABASE_URL_ENVVAR
-        assert database_options[0].required
+        assert database_options[0].default == DEFAULT_DATABASE_URL
+        assert not database_options[0].required
+
+
+def test_metadata_ingest_subcommand_uses_postgresql_connection_defaults(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.ingest_metadata",
+        lambda idp_data, database_url, *, progressbar: calls.append(
+            (idp_data, database_url, progressbar)
+        ),
+    )
+
+    result = CliRunner().invoke(main, ("metadata", "ingest"))
+
+    assert result.exit_code == 0
+    assert calls == [(Path("idp.data"), DEFAULT_DATABASE_URL, True)]
+
+
+def test_transcriptions_ingest_subcommand_uses_postgresql_connection_defaults(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.ingest_transcriptions",
+        lambda idp_data, database_url, *, progressbar: calls.append(
+            (idp_data, database_url, progressbar)
+        ),
+    )
+
+    result = CliRunner().invoke(main, ("transcriptions", "ingest"))
+
+    assert result.exit_code == 0
+    assert calls == [(Path("idp.data"), DEFAULT_DATABASE_URL, True)]
 
 
 def test_metadata_ingest_subcommand_triggers_metadata_ingest(tmp_path, monkeypatch):
