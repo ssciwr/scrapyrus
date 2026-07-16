@@ -30,6 +30,7 @@ from scrapyrus.transcriptions.llms import (
     MistralProvider,
     OpenAIProvider,
     VLLMProvider,
+    VoyageAIProvider,
     initialize_llm_provider,
 )
 from scrapyrus.transcriptions.search import BM25SearchHit, MetadataFilter, bm25_search
@@ -47,6 +48,7 @@ __all__ = [
     "MetadataFilter",
     "OpenAIProvider",
     "VLLMProvider",
+    "VoyageAIProvider",
     "bm25_search",
     "chunk_embedding_text",
     "delete_embeddings",

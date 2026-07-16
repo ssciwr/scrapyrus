@@ -8,7 +8,9 @@ from scrapyrus.transcriptions.llms import (
     MistralProvider,
     OPENAI_EMBEDDING_CONTEXT_LENGTH,
     OpenAIProvider,
+    VOYAGEAI_EMBEDDING_CONTEXT_LENGTH,
     VLLMProvider,
+    VoyageAIProvider,
     initialize_llm_provider,
 )
 
@@ -269,6 +271,86 @@ def test_openai_embedding_methods_use_embedding_endpoint(monkeypatch):
     provider = OpenAIProvider(
         "https://api.openai.com/v1", "text-embedding-3-small", "key"
     )
+
+    assert provider.embed("document") == (0.25, -0.5, 1.0)
+    assert provider.embedding_length() == 3
+    assert len(client.requests) == 1
+
+
+def test_voyageai_initialize_detects_api_hostname_and_normalizes_url():
+    provider = VoyageAIProvider.initialize(
+        "https://api.voyageai.com", "voyage-3-large", "secret"
+    )
+
+    assert isinstance(provider, VoyageAIProvider)
+    assert provider.inference_server_url == "https://api.voyageai.com/v1"
+    assert provider.modelname == "voyage-3-large"
+    assert provider.api_key == "secret"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/voyageai.com",
+        "https://api.voyageai.com.example.com/v1",
+        "not-a-url",
+    ],
+)
+def test_voyageai_initialize_declines_other_hostnames(url):
+    assert VoyageAIProvider.initialize(url, "model", "key") is None
+
+
+def test_voyageai_token_count_uses_embedding_usage(monkeypatch):
+    client = FakeClient(
+        posts=[
+            FakeResponse(
+                {
+                    "data": [{"embedding": [0.25, -0.5, 1]}],
+                    "usage": {"total_tokens": 3},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.llms.requests.Session", lambda: client
+    )
+    provider = VoyageAIProvider(
+        "https://api.voyageai.com/v1/", "voyage-3-large", "secret"
+    )
+
+    assert provider.token_count("some text") == 3
+    assert client.headers["Authorization"] == "Bearer secret"
+    assert client.requests == [
+        (
+            "POST",
+            "https://api.voyageai.com/v1/embeddings",
+            {"model": "voyage-3-large", "input": "some text"},
+            LLM_REQUEST_TIMEOUT,
+        )
+    ]
+
+
+def test_voyageai_context_length_uses_embedding_api_limit():
+    provider = VoyageAIProvider("https://api.voyageai.com/v1", "voyage-3-large", "key")
+
+    assert provider.context_length() == VOYAGEAI_EMBEDDING_CONTEXT_LENGTH
+
+
+def test_voyageai_embedding_methods_use_embedding_endpoint(monkeypatch):
+    client = FakeClient(
+        posts=[
+            FakeResponse(
+                {
+                    "data": [{"embedding": [0.25, -0.5, 1]}],
+                    "usage": {"total_tokens": 1},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.llms.requests.Session", lambda: client
+    )
+    provider = VoyageAIProvider("https://api.voyageai.com/v1", "voyage-3-large", "key")
 
     assert provider.embed("document") == (0.25, -0.5, 1.0)
     assert provider.embedding_length() == 3
