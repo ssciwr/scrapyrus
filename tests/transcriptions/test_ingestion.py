@@ -266,8 +266,8 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
             None,
             "Text",
             "'text':1",
-            None,
-            None,
+            "lemma",
+            "'lemma':1",
         ),
         (
             2,
@@ -278,8 +278,8 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
             "en",
             "Text.",
             "'text':1",
-            None,
-            None,
+            "lemmatized translation",
+            "'lemmatized':1 'translation':2",
         ),
     ]
     cursor = RecordingCursor(rows)

@@ -270,10 +270,10 @@ def ingest_transcription_xml(
     type=click.Path(path_type=Path, file_okay=False),
     default=Path("transcriptions-csv"),
     show_default=True,
-    help="Directory to write the transcription XML CSV file.",
+    help="Directory to write the transcription XML and text CSV file.",
 )
 def dump_transcription_xml(database_url: str, output_dir: Path) -> None:
-    """Dump transcription and translation XML as CSV."""
+    """Dump transcription XML, rendered text, and lemmata as CSV."""
 
     dump_transcriptions(output_dir, database_url)
 

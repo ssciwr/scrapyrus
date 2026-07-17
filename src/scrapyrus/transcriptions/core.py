@@ -202,7 +202,7 @@ def dump_transcriptions(
     conninfo: str = "",
     **connect_kwargs: Any,
 ) -> None:
-    """Dump the transcription XML table to ``transcriptions.csv``."""
+    """Dump transcription XML, rendered text, and lemmata to CSV."""
 
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
