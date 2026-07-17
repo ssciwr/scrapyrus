@@ -21,7 +21,10 @@ from scrapyrus.transcriptions.embeddings import (
     update_embeddings,
 )
 from scrapyrus.transcriptions.evaluation import evaluate_embeddings
-from scrapyrus.transcriptions.lemmatization import lemmatize_transcriptions
+from scrapyrus.transcriptions.lemmatization import (
+    MAX_WORDS_PER_CHUNK,
+    lemmatize_transcriptions,
+)
 
 
 idp_data = click.option(
@@ -283,10 +286,21 @@ def dump_transcription_xml(database_url: str, output_dir: Path) -> None:
     show_default=True,
     help="Show a progress bar while lemmatizing supported transcriptions.",
 )
-def lemmatize(database_url: str, progress: bool) -> None:
+@click.option(
+    "--max-words",
+    type=click.IntRange(min=1),
+    default=MAX_WORDS_PER_CHUNK,
+    show_default=True,
+    help="Maximum words to analyze in one Stanza call.",
+)
+def lemmatize(database_url: str, progress: bool, max_words: int) -> None:
     """Lemmatize Greek, Latin, and Coptic transcription rows."""
 
-    lemmatize_transcriptions(database_url, progressbar=progress)
+    lemmatize_transcriptions(
+        database_url,
+        progressbar=progress,
+        max_words=max_words,
+    )
 
 
 @main.group("embeddings")

@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import re
 from typing import Any, Protocol
 
 import psycopg
@@ -38,6 +39,10 @@ class _Pipeline(Protocol):
 
 PipelineFactory = Callable[[str], _Pipeline]
 
+MAX_WORDS_PER_CHUNK = 50
+_WORD_RE = re.compile(r"\S+")
+_SENTENCE_END_RE = re.compile(r"[.!?;\u037e\u0387\u00b7][\"'\u2019\u201d\u00bb)\]}]*$")
+
 
 def normalize_language(language: str | None) -> str | None:
     """Return a supported CLTK language code, or ``None``."""
@@ -48,21 +53,59 @@ def normalize_language(language: str | None) -> str | None:
     return LANGUAGE_ALIASES.get(base_language)
 
 
-def lemmatize_text(text: str, pipeline: _Pipeline) -> str:
-    """Return the whitespace-separated lemmata produced by a CLTK pipeline."""
+def lemmatize_text(
+    text: str,
+    pipeline: _Pipeline,
+    *,
+    max_words: int = MAX_WORDS_PER_CHUNK,
+) -> str:
+    """Return CLTK lemmata while analyzing bounded, sentence-aware chunks."""
 
-    document = pipeline.analyze(text)
-    return " ".join(
-        lemma
-        for word in document.words
-        if (lemma := (word.lemma or word.string).strip())
-    )
+    lemmata = []
+    for chunk in _text_chunks(text, max_words=max_words):
+        document = pipeline.analyze(chunk)
+        lemmata.extend(
+            lemma
+            for word in document.words
+            if (lemma := (word.lemma or word.string).strip())
+        )
+    return " ".join(lemmata)
+
+
+def _text_chunks(text: str, *, max_words: int) -> list[str]:
+    """Split text at sentence boundaries, capping chunks by word count."""
+
+    if max_words < 1:
+        raise ValueError("max_words must be at least 1")
+
+    words = list(_WORD_RE.finditer(text))
+    chunks = []
+    chunk_start = 0
+    words_in_chunk = 0
+
+    for index, word in enumerate(words):
+        if words_in_chunk == 0:
+            chunk_start = word.start()
+        words_in_chunk += 1
+
+        next_word = words[index + 1] if index + 1 < len(words) else None
+        separator = text[word.end() : next_word.start()] if next_word else ""
+        sentence_ends = bool(_SENTENCE_END_RE.search(word.group())) or "\n" in separator
+        if words_in_chunk == max_words or sentence_ends:
+            chunks.append(text[chunk_start : word.end()].strip())
+            words_in_chunk = 0
+
+    if words_in_chunk:
+        chunks.append(text[chunk_start : words[-1].end()].strip())
+
+    return chunks
 
 
 def lemmatize_transcriptions(
     conninfo: str = "",
     *,
     progressbar: bool = True,
+    max_words: int = MAX_WORDS_PER_CHUNK,
     pipeline_factory: PipelineFactory | None = None,
     **connect_kwargs: Any,
 ) -> None:
@@ -108,7 +151,11 @@ WHERE transcription_id = %(transcription_id)s
             if pipeline is None:
                 pipeline = pipeline_factory(language)
                 pipelines[language] = pipeline
-            lemma_text = lemmatize_text(str(row["text"]), pipeline)
+            lemma_text = lemmatize_text(
+                str(row["text"]),
+                pipeline,
+                max_words=max_words,
+            )
             with connection.cursor() as cursor:
                 cursor.execute(
                     update_sql,

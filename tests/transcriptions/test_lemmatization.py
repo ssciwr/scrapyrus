@@ -77,6 +77,44 @@ def test_lemmatize_text_uses_word_text_when_lemma_is_missing():
     assert analyses == [("grc", "input")]
 
 
+def test_lemmatize_text_analyzes_sentences_individually():
+    analyses = []
+
+    result = lemmatize_text(
+        "First sentence. Second sentence!\nThird sentence",
+        Pipeline("lat", analyses),
+    )
+
+    assert result == " ".join(["lat-lemma fallback"] * 3)
+    assert analyses == [
+        ("lat", "First sentence."),
+        ("lat", "Second sentence!"),
+        ("lat", "Third sentence"),
+    ]
+
+
+def test_lemmatize_text_caps_sentences_by_word_count():
+    analyses = []
+    text = " ".join(f"word-{index}" for index in range(1, 106))
+
+    lemmatize_text(text, Pipeline("cop", analyses))
+
+    assert analyses == [
+        ("cop", " ".join(f"word-{index}" for index in range(1, 51))),
+        ("cop", " ".join(f"word-{index}" for index in range(51, 101))),
+        ("cop", " ".join(f"word-{index}" for index in range(101, 106))),
+    ]
+
+
+def test_lemmatize_text_rejects_invalid_word_limit():
+    try:
+        lemmatize_text("input", Pipeline("grc", []), max_words=0)
+    except ValueError as error:
+        assert str(error) == "max_words must be at least 1"
+    else:
+        raise AssertionError("Expected max_words=0 to be rejected")
+
+
 def test_lemmatize_transcriptions_updates_only_supported_rows(monkeypatch):
     rows = [
         {

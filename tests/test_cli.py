@@ -317,7 +317,9 @@ def test_transcriptions_lemmatize_subcommand_triggers_lemmatization(monkeypatch)
     calls = []
     monkeypatch.setattr(
         "scrapyrus.__main__.lemmatize_transcriptions",
-        lambda database_url, *, progressbar: calls.append((database_url, progressbar)),
+        lambda database_url, *, progressbar, max_words: calls.append(
+            (database_url, progressbar, max_words)
+        ),
     )
 
     result = CliRunner().invoke(
@@ -328,11 +330,13 @@ def test_transcriptions_lemmatize_subcommand_triggers_lemmatization(monkeypatch)
             "--database-url",
             "postgresql://database.example/scrapyrus",
             "--no-progress",
+            "--max-words",
+            "25",
         ),
     )
 
     assert result.exit_code == 0
-    assert calls == [("postgresql://database.example/scrapyrus", False)]
+    assert calls == [("postgresql://database.example/scrapyrus", False, 25)]
 
 
 def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypatch):
