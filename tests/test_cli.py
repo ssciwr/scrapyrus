@@ -120,7 +120,7 @@ def test_database_commands_use_shared_database_url_default_and_envvar():
         ("metadata", "dump"),
         ("transcriptions", "ingest"),
         ("transcriptions", "dump"),
-        ("lemmatization",),
+        ("transcriptions", "lemmatize"),
         ("embeddings", "ingest"),
         ("embeddings", "delete"),
         ("embeddings", "dump"),
@@ -313,7 +313,7 @@ def test_transcriptions_dump_subcommand_triggers_csv_dump(tmp_path, monkeypatch)
     assert calls == [(output_dir, "postgresql://database.example/scrapyrus")]
 
 
-def test_lemmatization_subcommand_triggers_lemmatization(monkeypatch):
+def test_transcriptions_lemmatize_subcommand_triggers_lemmatization(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "scrapyrus.__main__.lemmatize_transcriptions",
@@ -323,7 +323,8 @@ def test_lemmatization_subcommand_triggers_lemmatization(monkeypatch):
     result = CliRunner().invoke(
         main,
         (
-            "lemmatization",
+            "transcriptions",
+            "lemmatize",
             "--database-url",
             "postgresql://database.example/scrapyrus",
             "--no-progress",
