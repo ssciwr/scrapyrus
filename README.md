@@ -20,13 +20,14 @@ the following editable installation from this repository:
 ```
 git clone git@github.com:ssciwr/scrapyrus.git
 cd scrapyrus
-python -m pip install --editable .[tests]
+uv sync --extra tests
 ```
 
-Having done so, the test suite can be run using `pytest`:
+The test suite uses generated corpus fixtures and does not require an
+`idp.data` checkout. Run it through the worktree's environment:
 
 ```
-python -m pytest
+.venv/bin/python -m pytest
 ```
 
 ## PostgreSQL configuration

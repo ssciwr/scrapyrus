@@ -161,7 +161,7 @@ VALUES (
                 idp_data,
                 progressbar=progressbar,
             )
-            for tm_id, metadata, transcription, translation in records:
+            for tm_id, metadata, transcription, translations in records:
                 if transcription is not None:
                     try:
                         snippet = transcription_xml_snippet(
@@ -185,8 +185,7 @@ VALUES (
                 translation_sources = []
                 if metadata.is_relative_to(idp_data / "DCLP"):
                     translation_sources.append(metadata)
-                if translation is not None and translation not in translation_sources:
-                    translation_sources.append(translation)
+                translation_sources.extend(translations)
 
                 for translation_source in translation_sources:
                     try:

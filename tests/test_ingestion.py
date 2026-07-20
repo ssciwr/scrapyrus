@@ -223,7 +223,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
 
     def iterate(idp_data, *, progressbar):
         iterator_calls.append((idp_data, progressbar))
-        yield "46", metadata, None, None
+        yield "46", metadata, None, ()
 
     monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)
@@ -446,8 +446,8 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
         return connection
 
     def iterate(idp_data, *, progressbar):
-        yield "13", metadata_a, None, None
-        yield "13", metadata_b, None, None
+        yield "13", metadata_a, None, ()
+        yield "13", metadata_b, None, ()
 
     monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)
@@ -696,7 +696,7 @@ def test_ingest_metadata_prints_processed_file_on_validation_error(
         return connection
 
     def iterate(idp_data, *, progressbar):
-        yield "invalid", metadata, None, None
+        yield "invalid", metadata, None, ()
 
     monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)
@@ -722,7 +722,7 @@ def test_ingest_metadata_prints_processed_file_on_saxon_error(
         return connection
 
     def iterate(idp_data, *, progressbar):
-        yield "malformed", metadata, None, None
+        yield "malformed", metadata, None, ()
 
     monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr("scrapyrus.ingestion.iterate_idpdata_triples", iterate)

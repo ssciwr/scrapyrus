@@ -116,9 +116,9 @@ def test_scrape_images_uses_responsibility_chain_and_writes_todo(tmp_path, monke
     write_metadata(unknown_metadata, ["https://unknown.example/verso"])
 
     triples = [
-        ("1", metadata_without_image, None, None),
-        ("2", known_metadata, None, None),
-        ("3", unknown_metadata, None, None),
+        ("1", metadata_without_image, None, ()),
+        ("2", known_metadata, None, ()),
+        ("3", unknown_metadata, None, ()),
     ]
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples", lambda idp_data: iter(triples)
@@ -168,7 +168,7 @@ def test_scrape_images_finds_dclp_header_graphics(tmp_path, monkeypatch):
     write_dclp_metadata(metadata, ["https://dclp-images.example/recto"])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("123", metadata, metadata, None)]),
+        lambda idp_data: iter([("123", metadata, metadata, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -205,7 +205,7 @@ def test_scrape_images_resolves_doi_and_restarts_responsibility_chain(
 
     def triples():
         events.append("iterating")
-        yield "42", metadata, None, None
+        yield "42", metadata, None, ()
         events.append("iteration complete")
 
     monkeypatch.setattr(
@@ -274,7 +274,7 @@ def test_scrape_images_routes_resolved_oxford_doi_to_oxford_scraper(
     write_metadata(metadata, [source_url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("128296", metadata, None, None)]),
+        lambda idp_data: iter([("128296", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [DOIScraper, OxfordScraper])
 
@@ -327,7 +327,7 @@ def test_scrape_images_writes_unsupported_resolved_doi_url_to_todo(
     write_metadata(metadata, [source_url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [DOIScraper])
 
@@ -368,7 +368,7 @@ def test_scrape_images_writes_failed_resolved_doi_url_to_error(tmp_path, monkeyp
     write_metadata(metadata, [source_url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -421,7 +421,7 @@ def test_scrape_images_reports_url_resolution_cycles_as_errors(
     write_metadata(metadata, [first_url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -460,7 +460,7 @@ def test_scrape_images_passes_papyrus_directory_for_multiple_images(
     )
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -506,7 +506,7 @@ def test_scrape_images_reuses_each_scraper_instance_for_the_full_run(
     write_metadata(metadata, urls)
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -564,7 +564,7 @@ def test_scrape_images_adds_to_existing_papyrus_directory(tmp_path, monkeypatch)
     write_metadata(metadata, ["https://images.example/recto"])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -603,7 +603,7 @@ def test_scrape_images_writes_manifest_entries(tmp_path, monkeypatch):
     write_metadata(metadata, [url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -641,7 +641,7 @@ def test_scrape_images_skips_completed_manifest_entry(tmp_path, monkeypatch):
     write_metadata(metadata, [url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -698,7 +698,7 @@ def test_scrape_images_redownloads_incomplete_manifest_entry(tmp_path, monkeypat
     write_metadata(metadata, [url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -754,7 +754,7 @@ def test_scrape_images_skips_unavailable_responsible_scraper(tmp_path, monkeypat
     write_metadata(metadata, [url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -798,7 +798,7 @@ def test_scrape_images_rechecks_stateful_scraper_availability_before_each_downlo
     write_metadata(metadata, urls)
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -839,7 +839,7 @@ def test_scrape_images_writes_download_failures_to_error_file(
     write_metadata(metadata, [url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -879,7 +879,7 @@ def test_scrape_images_reports_downloads_without_images_as_errors(
     write_metadata(metadata, [url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -918,7 +918,7 @@ def test_scrape_images_skips_known_broken_urls_and_overwrites_error_file(
     write_metadata(metadata, [skipped_url, failing_url])
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",
-        lambda idp_data: iter([("42", metadata, None, None)]),
+        lambda idp_data: iter([("42", metadata, None, ())]),
     )
     monkeypatch.setattr(ImageScraperBase, "_scrapers", [])
 
@@ -964,7 +964,7 @@ def test_scrape_images_prints_normalized_stacked_outcome_chart(
     ):
         metadata = tmp_path / f"{tm_id}.xml"
         write_metadata(metadata, urls)
-        metadata_paths.append((tm_id, metadata, None, None))
+        metadata_paths.append((tm_id, metadata, None, ()))
 
     monkeypatch.setattr(
         "scrapyrus.images.iterate_idpdata_triples",

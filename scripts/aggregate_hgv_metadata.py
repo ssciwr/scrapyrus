@@ -534,7 +534,12 @@ def main() -> None:
     )
     metadata_paths = [metadata for _, metadata, _, _ in triples]
     transcription_paths = [transcription for _, _, transcription, _ in triples]
-    translation_paths = [translation for _, _, _, translation in triples]
+    translation_groups = [translations for _, _, _, translations in triples]
+    translation_paths = [
+        translation
+        for translations in translation_groups
+        for translation in translations
+    ]
     transcriptions = unique_paths(transcription_paths)
     translations = unique_paths(translation_paths)
 
@@ -553,7 +558,7 @@ def main() -> None:
         arguments.idp_data,
         len(triples),
         sum(path is not None for path in transcription_paths),
-        sum(path is not None for path in translation_paths),
+        sum(bool(translations) for translations in translation_groups),
         len(transcriptions),
         len(translations),
         metadata_inventory,

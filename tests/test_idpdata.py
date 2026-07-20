@@ -1,5 +1,7 @@
 from types import GeneratorType
 
+import pytest
+
 from scrapyrus.idpdata import (
     iterate_dclp_triples,
     iterate_hgv_triples,
@@ -49,28 +51,31 @@ def test_iterate_hgv_triples_finds_associated_files(idp_data):
     assert results["1"] == (
         "1",
         idp_data / "HGV_meta_EpiDoc" / "HGV1" / "1.xml",
-        idp_data / "DDB_EpiDoc_XML" / "p.adl" / "p.adl.G2.xml",
-        None,
+        idp_data / "DDbDP" / "0" / "1.xml",
+        (),
     )
     assert results["53"] == (
         "53",
         idp_data / "HGV_meta_EpiDoc" / "HGV1" / "53.xml",
-        idp_data / "DDB_EpiDoc_XML" / "p.ryl" / "p.ryl.4" / "p.ryl.4.581.xml",
-        idp_data / "HGV_trans_EpiDoc" / "53.xml",
+        idp_data / "DDbDP" / "0" / "53.xml",
+        (
+            idp_data / "Translations" / "0" / "53-1.xml",
+            idp_data / "Translations" / "0" / "53-2.xml",
+        ),
     )
     assert results["272"] == (
         "272",
         idp_data / "HGV_meta_EpiDoc" / "HGV1" / "272.xml",
         None,
-        None,
+        (),
     )
 
 
 def test_iterate_hgv_triples_returns_tm_id_from_metadata(tmp_path):
     idp_data = tmp_path / "idp.data"
     metadata_root = idp_data / "HGV_meta_EpiDoc" / "HGV999"
-    transcription_root = idp_data / "DDB_EpiDoc_XML" / "p.test"
-    translation_root = idp_data / "HGV_trans_EpiDoc"
+    transcription_root = idp_data / "DDbDP" / "123"
+    translation_root = idp_data / "Translations" / "999"
     metadata_root.mkdir(parents=True)
     transcription_root.mkdir(parents=True)
     translation_root.mkdir(parents=True)
@@ -86,13 +91,17 @@ def test_iterate_hgv_triples_returns_tm_id_from_metadata(tmp_path):
         "</TEI>",
         encoding="utf-8",
     )
-    transcription = transcription_root / "p.test.1.xml"
-    transcription.write_text("<TEI />", encoding="utf-8")
-    translation = translation_root / "999999.xml"
+    transcription = transcription_root / "123456.xml"
+    transcription.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        '<div type="edition"><ab>Text.</ab></div></TEI>',
+        encoding="utf-8",
+    )
+    translation = translation_root / "999999-1.xml"
     translation.write_text("<TEI />", encoding="utf-8")
 
     assert list(iterate_hgv_triples(idp_data, progressbar=False)) == [
-        ("123456", metadata, transcription, translation)
+        ("123456", metadata, transcription, (translation,))
     ]
 
 
@@ -157,9 +166,9 @@ def test_iterate_dclp_triples_reuses_metadata_for_nonempty_edition(tmp_path):
     )
 
     assert list(iterate_dclp_triples(idp_data, progressbar=False)) == [
-        ("123", with_transcription, with_transcription, None),
-        ("124", empty_transcription, None, None),
-        ("125", without_transcription, None, None),
+        ("123", with_transcription, with_transcription, ()),
+        ("124", empty_transcription, None, ()),
+        ("125", without_transcription, None, ()),
     ]
 
 
@@ -191,11 +200,17 @@ def test_iterate_idpdata_triples_concatenates_with_single_progressbar(
 ):
     idp_data = tmp_path / "idp.data"
     metadata = idp_data / "HGV_meta_EpiDoc" / "HGV1" / "1.xml"
-    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.1.xml"
+    transcription = idp_data / "DDbDP" / "0" / "1.xml"
+    translation_root = idp_data / "Translations"
     dclp = idp_data / "DCLP" / "2" / "2.xml"
     _write_tei_metadata(metadata, tm_id="1", ddb_filename="p.test.1")
     transcription.parent.mkdir(parents=True)
-    transcription.write_text("<TEI />", encoding="utf-8")
+    transcription.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        '<div type="edition"><ab>Text.</ab></div></TEI>',
+        encoding="utf-8",
+    )
+    translation_root.mkdir()
     _write_tei_metadata(
         dclp,
         tm_id="2",
@@ -212,10 +227,23 @@ def test_iterate_idpdata_triples_concatenates_with_single_progressbar(
     monkeypatch.setattr("scrapyrus.idpdata.tqdm", fake_tqdm)
 
     assert list(iterate_idpdata_triples(idp_data)) == [
-        ("1", metadata, transcription, None),
-        ("2", dclp, dclp, None),
+        ("1", metadata, transcription, ()),
+        ("2", dclp, dclp, ()),
     ]
     assert len(progress_calls) == 1
     assert progress_calls[0]["total"] == 2
     assert progress_calls[0]["unit"] == "record"
     assert progress_calls[0]["desc"] == "Iterating idp.data"
+
+
+def test_iterate_hgv_triples_rejects_obsolete_layout(tmp_path):
+    idp_data = tmp_path / "idp.data"
+    (idp_data / "HGV_meta_EpiDoc").mkdir(parents=True)
+    (idp_data / "DDB_EpiDoc_XML").mkdir()
+    (idp_data / "HGV_trans_EpiDoc").mkdir()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"missing directories: DDbDP, Translations",
+    ):
+        next(iterate_hgv_triples(idp_data, progressbar=False))

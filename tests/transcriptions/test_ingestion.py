@@ -91,18 +91,26 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
     monkeypatch,
 ):
     idp_data = tmp_path / "idp.data"
-    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.46.xml"
-    translation = idp_data / "HGV_trans_EpiDoc" / "46.xml"
+    transcription = idp_data / "DDbDP" / "0" / "46.xml"
+    translations = (
+        idp_data / "Translations" / "0" / "46-1.xml",
+        idp_data / "Translations" / "0" / "46-2.xml",
+    )
     transcription.parent.mkdir(parents=True)
-    translation.parent.mkdir(parents=True)
+    translations[0].parent.mkdir(parents=True)
     transcription.write_text(
         '<TEI xmlns="http://www.tei-c.org/ns/1.0"><div type="edition">'
         "<ab>Text</ab></div></TEI>",
         encoding="utf-8",
     )
-    translation.write_text(
+    translations[0].write_text(
         '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
-        '<div type="translation" xml:lang="en"><p>Translation.</p></div></TEI>',
+        '<div type="translation" xml:lang="en"><p>First.</p></div></TEI>',
+        encoding="utf-8",
+    )
+    translations[1].write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        '<div type="translation" xml:lang="de"><p>Second.</p></div></TEI>',
         encoding="utf-8",
     )
     cursor = RecordingCursor()
@@ -116,7 +124,7 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
 
     def iterate(root, *, progressbar):
         iterator_calls.append((root, progressbar))
-        yield "46", idp_data / "metadata.xml", transcription, translation
+        yield "46", idp_data / "metadata.xml", transcription, translations
 
     monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr(
@@ -176,13 +184,16 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
     assert [(row["type"], row["language"]) for row in rows] == [
         ("transcription", None),
         ("translation", "en"),
+        ("translation", "de"),
     ]
-    assert rows[0]["source_path"] == "DDB_EpiDoc_XML/p.test/p.test.46.xml"
+    assert rows[0]["source_path"] == "DDbDP/0/46.xml"
     assert rows[0]["tm_id"] == 46
-    assert rows[1]["source_path"] == "HGV_trans_EpiDoc/46.xml"
+    assert rows[1]["source_path"] == "Translations/0/46-1.xml"
+    assert rows[2]["source_path"] == "Translations/0/46-2.xml"
     assert 'xmlns="http://www.tei-c.org/ns/1.0"' in rows[0]["xml_content"]
     assert [row["text"] for row in rows] == [
         "Maximum transcription text",
+        "Complete translation text",
         "Complete translation text",
     ]
     assert text_calls == [
@@ -196,6 +207,7 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
                 "regularize": True,
             },
         ),
+        ("translation", {}),
         ("translation", {}),
     ]
 
@@ -222,7 +234,7 @@ def test_ingest_transcriptions_extracts_embedded_dclp_translation(
     )
     monkeypatch.setattr(
         "scrapyrus.transcriptions.core.iterate_idpdata_triples",
-        lambda root, *, progressbar: iter([("123", dclp, dclp, None)]),
+        lambda root, *, progressbar: iter([("123", dclp, dclp, ())]),
     )
 
     ingest_transcriptions(idp_data, progressbar=False)
@@ -236,8 +248,8 @@ def test_ingest_transcriptions_extracts_embedded_dclp_translation(
 
 def test_ingest_transcriptions_omits_rows_with_blank_text(tmp_path, monkeypatch):
     idp_data = tmp_path / "idp.data"
-    transcription = idp_data / "DDB_EpiDoc_XML" / "p.test" / "p.test.46.xml"
-    translation = idp_data / "HGV_trans_EpiDoc" / "46.xml"
+    transcription = idp_data / "DDbDP" / "0" / "46.xml"
+    translation = idp_data / "Translations" / "0" / "46-1.xml"
     transcription.parent.mkdir(parents=True)
     translation.parent.mkdir(parents=True)
     transcription.write_text(
@@ -259,7 +271,7 @@ def test_ingest_transcriptions_omits_rows_with_blank_text(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "scrapyrus.transcriptions.core.iterate_idpdata_triples",
         lambda root, *, progressbar: iter(
-            [("46", idp_data / "metadata.xml", transcription, translation)]
+            [("46", idp_data / "metadata.xml", transcription, (translation,))]
         ),
     )
     monkeypatch.setattr(
@@ -280,7 +292,7 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
     rows = [
         (
             1,
-            "DDB_EpiDoc_XML/p.test/p.test.46.xml",
+            "DDbDP/0/46.xml",
             46,
             '<div type="edition"><ab>Text</ab></div>',
             "transcription",
@@ -292,7 +304,7 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
         ),
         (
             2,
-            "HGV_trans_EpiDoc/46.xml",
+            "Translations/0/46-1.xml",
             46,
             '<div type="translation" xml:lang="en"><p>Text.</p></div>',
             "translation",
@@ -330,7 +342,7 @@ def test_import_transcriptions_rebuilds_table_from_dump(tmp_path, monkeypatch):
     rows = [
         (
             7,
-            "DDB_EpiDoc_XML/p.test/p.test.46.xml",
+            "DDbDP/0/46.xml",
             46,
             '<div type="edition"><ab>Text</ab></div>',
             "transcription",
@@ -342,7 +354,7 @@ def test_import_transcriptions_rebuilds_table_from_dump(tmp_path, monkeypatch):
         ),
         (
             9,
-            "HGV_trans_EpiDoc/46.xml",
+            "Translations/0/46-1.xml",
             46,
             '<div type="translation" xml:lang="en"><p>Text.</p></div>',
             "translation",

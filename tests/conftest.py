@@ -1,40 +1,65 @@
-import subprocess
 from pathlib import Path
 
 import pytest
 
 
-def _idp_data_repository(checkout: Path) -> Path:
-    git_common_dir = subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"],
-        cwd=checkout,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-    common_dir = Path(git_common_dir)
-    if not common_dir.is_absolute():
-        common_dir = checkout / common_dir
-
-    return common_dir.resolve().parent / "idp.data"
+def _write_tei(path: Path, *, tm_id: str, body: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '<TEI xmlns="http://www.tei-c.org/ns/1.0">'
+        "<teiHeader><fileDesc><publicationStmt>"
+        f'<idno type="TM">{tm_id}</idno>'
+        "</publicationStmt></fileDesc></teiHeader>"
+        f"<text><body>{body}</body></text>"
+        "</TEI>",
+        encoding="utf-8",
+    )
 
 
-@pytest.fixture(scope="session")
-def idp_data() -> Path:
-    """Return a local clone of the papyri.info data repository."""
+@pytest.fixture
+def idp_data(tmp_path: Path) -> Path:
+    """Return a minimal, self-contained fixture for the current idp.data layout."""
 
-    repository = _idp_data_repository(Path(__file__).resolve().parents[1])
-    if not repository.exists():
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "https://github.com/papyri/idp.data.git",
-                str(repository),
-            ],
-            check=True,
-        )
-    return repository
+    root = tmp_path / "idp.data"
+    metadata_root = root / "HGV_meta_EpiDoc" / "HGV1"
+    ddbdp_root = root / "DDbDP" / "0"
+    translations_root = root / "Translations" / "0"
+    (root / "DCLP").mkdir(parents=True)
+    translations_root.mkdir(parents=True)
+
+    _write_tei(metadata_root / "1.xml", tm_id="1")
+    _write_tei(metadata_root / "53.xml", tm_id="53")
+    _write_tei(metadata_root / "272.xml", tm_id="272")
+
+    _write_tei(
+        ddbdp_root / "1.xml",
+        tm_id="1",
+        body='<div type="edition"><ab>Text 1.</ab></div>',
+    )
+    _write_tei(
+        ddbdp_root / "53.xml",
+        tm_id="53",
+        body='<div type="edition"><ab>Text 53.</ab></div>',
+    )
+    _write_tei(
+        ddbdp_root / "272.xml",
+        tm_id="272",
+        body=(
+            '<div type="edition">'
+            '<note xml:lang="en">This text has not been added yet.</note>'
+            "<ab/>"
+            "</div>"
+        ),
+    )
+
+    _write_tei(
+        translations_root / "53-1.xml",
+        tm_id="53",
+        body='<div type="translation" xml:lang="en"><p>First.</p></div>',
+    )
+    _write_tei(
+        translations_root / "53-2.xml",
+        tm_id="53",
+        body='<div type="translation" xml:lang="de"><p>Second.</p></div>',
+    )
+    return root
