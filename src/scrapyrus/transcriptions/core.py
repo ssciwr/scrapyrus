@@ -46,6 +46,16 @@ TRANSCRIPTION_COLUMNS = (
     "lemma_text",
     "lemma_vector",
 )
+TRANSCRIPTION_IMPORT_COLUMNS = (
+    "transcription_id",
+    "source_path",
+    "tm_id",
+    "xml_content",
+    "type",
+    "language",
+    "text",
+    "lemma_text",
+)
 TRANSCRIPTIONS_SCHEMA_SQL = f"""CREATE TABLE {TRANSCRIPTIONS_TABLE} (
     transcription_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_path text NOT NULL,
@@ -224,6 +234,86 @@ def dump_transcriptions(
             with connection.cursor() as cursor:
                 cursor.execute(query)
                 writer.writerows(cursor)
+
+
+def import_transcriptions(
+    source: str | Path,
+    conninfo: str = "",
+    **connect_kwargs: Any,
+) -> None:
+    """Rebuild the transcriptions table from a CSV dump.
+
+    The source must have been produced by :func:`dump_transcriptions`. Identity
+    values are restored so that separately dumped embeddings continue to refer
+    to the same XML rows. PostgreSQL regenerates the stored text vectors from
+    the imported text and lemmata.
+    """
+
+    source = Path(source)
+    with source.open(encoding="utf-8", newline="") as csv_file:
+        header = next(csv.reader(csv_file), None)
+    expected_header = list(TRANSCRIPTION_COLUMNS)
+    if header != expected_header:
+        raise ValueError(
+            "Transcription CSV header does not match the dump format: "
+            f"expected {expected_header!r}, got {header!r}"
+        )
+
+    temporary_table = f"{TRANSCRIPTIONS_TABLE}_import"
+    dump_columns = sql.SQL(", ").join(
+        sql.Identifier(column) for column in TRANSCRIPTION_COLUMNS
+    )
+    import_columns = sql.SQL(", ").join(
+        sql.Identifier(column) for column in TRANSCRIPTION_IMPORT_COLUMNS
+    )
+
+    with psycopg.connect(conninfo, **connect_kwargs) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP TABLE IF EXISTS {TRANSCRIPTIONS_TABLE}")
+            cursor.execute(TRANSCRIPTIONS_SCHEMA_SQL)
+            cursor.execute(
+                sql.SQL(
+                    "CREATE TEMP TABLE {temporary_table} (LIKE {table}) ON COMMIT DROP"
+                ).format(
+                    temporary_table=sql.Identifier(temporary_table),
+                    table=sql.Identifier(TRANSCRIPTIONS_TABLE),
+                )
+            )
+            with source.open("rb") as input_file:
+                with cursor.copy(
+                    sql.SQL(
+                        "COPY {temporary_table} ({columns}) FROM STDIN "
+                        "WITH (FORMAT CSV, HEADER true)"
+                    ).format(
+                        temporary_table=sql.Identifier(temporary_table),
+                        columns=dump_columns,
+                    )
+                ) as copy:
+                    while chunk := input_file.read(1024 * 1024):
+                        copy.write(chunk)
+
+            cursor.execute(
+                sql.SQL(
+                    "INSERT INTO {table} ({columns}) "
+                    "OVERRIDING SYSTEM VALUE "
+                    "SELECT {columns} FROM {temporary_table} "
+                    "ORDER BY transcription_id"
+                ).format(
+                    table=sql.Identifier(TRANSCRIPTIONS_TABLE),
+                    columns=import_columns,
+                    temporary_table=sql.Identifier(temporary_table),
+                )
+            )
+            cursor.execute(
+                sql.SQL(
+                    "SELECT setval("
+                    "pg_get_serial_sequence(%s, %s), "
+                    "COALESCE(max(transcription_id), 1), "
+                    "max(transcription_id) IS NOT NULL) "
+                    "FROM {table}"
+                ).format(table=sql.Identifier(TRANSCRIPTIONS_TABLE)),
+                (TRANSCRIPTIONS_TABLE, "transcription_id"),
+            )
 
 
 def _transcription_row(

@@ -5,6 +5,7 @@ import psycopg
 from scrapyrus.transcriptions.core import (
     TRANSCRIPTION_COLUMNS,
     dump_transcriptions,
+    import_transcriptions,
     ingest_transcriptions,
     translation_xml_snippets,
 )
@@ -14,6 +15,8 @@ class RecordingCursor:
     def __init__(self, rows=()):
         self.executions = []
         self.rows = rows
+        self.copies = []
+        self.copy_writes = []
 
     def __enter__(self):
         return self
@@ -26,6 +29,24 @@ class RecordingCursor:
 
     def __iter__(self):
         return iter(self.rows)
+
+    def copy(self, query):
+        self.copies.append(str(query))
+        return RecordingCopy(self.copy_writes)
+
+
+class RecordingCopy:
+    def __init__(self, writes):
+        self.writes = writes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def write(self, chunk):
+        self.writes.append(chunk)
 
 
 class RecordingConnection:
@@ -302,3 +323,102 @@ def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
         ]
     assert len(cursor.executions) == 1
     assert "ORDER BY transcription_id" in str(cursor.executions[0][0])
+
+
+def test_import_transcriptions_rebuilds_table_from_dump(tmp_path, monkeypatch):
+    source = tmp_path / "transcriptions.csv"
+    rows = [
+        (
+            7,
+            "DDB_EpiDoc_XML/p.test/p.test.46.xml",
+            46,
+            '<div type="edition"><ab>Text</ab></div>',
+            "transcription",
+            None,
+            "Text",
+            "'text':1",
+            "lemma",
+            "'lemma':1",
+        ),
+        (
+            9,
+            "HGV_trans_EpiDoc/46.xml",
+            46,
+            '<div type="translation" xml:lang="en"><p>Text.</p></div>',
+            "translation",
+            "en",
+            "Text.",
+            "'text':1",
+            None,
+            None,
+        ),
+    ]
+    with source.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(TRANSCRIPTION_COLUMNS)
+        writer.writerows(rows)
+
+    cursor = RecordingCursor()
+    connect_calls = []
+
+    def connect(conninfo, **kwargs):
+        connect_calls.append((conninfo, kwargs))
+        return RecordingConnection(cursor)
+
+    monkeypatch.setattr(psycopg, "connect", connect)
+
+    import_transcriptions(
+        source,
+        "postgresql://database.example/scrapyrus",
+        application_name="scrapyrus-test",
+    )
+
+    assert connect_calls == [
+        (
+            "postgresql://database.example/scrapyrus",
+            {"application_name": "scrapyrus-test"},
+        )
+    ]
+    assert _normalize_sql(cursor.executions[0][0]) == (
+        "DROP TABLE IF EXISTS transcriptions"
+    )
+    assert "CREATE TABLE transcriptions" in cursor.executions[1][0]
+    assert any(
+        "CREATE TEMP TABLE" in str(query) and "transcriptions_import" in str(query)
+        for query, _ in cursor.executions
+    )
+    assert len(cursor.copies) == 1
+    assert "transcriptions_import" in cursor.copies[0]
+    assert "HEADER true" in cursor.copies[0]
+    assert b"".join(cursor.copy_writes) == source.read_bytes()
+
+    insert_query = next(
+        str(query) for query, _ in cursor.executions if "INSERT INTO" in str(query)
+    )
+    assert "OVERRIDING SYSTEM VALUE" in insert_query
+    assert "lemma_text" in insert_query
+    assert "text_vector" not in insert_query
+    assert "lemma_vector" not in insert_query
+    assert cursor.executions[-1][1] == ("transcriptions", "transcription_id")
+
+
+def test_import_transcriptions_rejects_non_dump_csv_before_connect(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "transcriptions.csv"
+    source.write_text("tm_id,text\n46,Text\n", encoding="utf-8")
+    monkeypatch.setattr(
+        psycopg,
+        "connect",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("database connection should not be opened")
+        ),
+    )
+
+    try:
+        import_transcriptions(source)
+    except ValueError as error:
+        assert "header does not match" in str(error)
+    else:
+        raise AssertionError("Expected import_transcriptions to reject the CSV")

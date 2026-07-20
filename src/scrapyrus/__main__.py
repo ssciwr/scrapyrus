@@ -9,7 +9,11 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
-from scrapyrus.transcriptions.core import dump_transcriptions, ingest_transcriptions
+from scrapyrus.transcriptions.core import (
+    dump_transcriptions,
+    import_transcriptions,
+    ingest_transcriptions,
+)
 from scrapyrus.transcriptions.embeddings import (
     EMBEDDING_KIND_ALIASES,
     EmbeddingStore,
@@ -276,6 +280,21 @@ def dump_transcription_xml(database_url: str, output_dir: Path) -> None:
     """Dump transcription XML, rendered text, and lemmata as CSV."""
 
     dump_transcriptions(output_dir, database_url)
+
+
+@transcriptions.command("import")
+@database_url
+@click.argument(
+    "input_file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True, readable=True),
+)
+def import_transcription_xml(database_url: str, input_file: Path) -> None:
+    """Rebuild the transcription table from a CSV dump."""
+
+    try:
+        import_transcriptions(input_file, database_url)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
 
 
 @transcriptions.command("lemmatize")
