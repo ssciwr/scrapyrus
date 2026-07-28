@@ -30,7 +30,111 @@ The test suite uses generated corpus fixtures and does not require an
 .venv/bin/python -m pytest
 ```
 
+## The idp.data corpus
+
+Every ingestion command parses XML records from a local clone of the
+[papyri.info `idp.data`](https://github.com/papyri/idp.data) repository. There is
+no bundled copy and nothing is downloaded at runtime, so the clone is required
+before `metadata ingest`, `transcriptions ingest`, or `images` will do anything.
+Only the test suite is exempt.
+
+```
+git clone --depth 1 https://github.com/papyri/idp.data.git
+```
+
+The clone is several gigabytes. Ingestion reads only three directories, so a
+sparse checkout is considerably faster and smaller:
+
+```
+git clone --filter=blob:none --sparse --depth 1 \
+    https://github.com/papyri/idp.data.git
+cd idp.data
+git sparse-checkout set HGV_meta_EpiDoc DDbDP Translations
+```
+
+Commands look for `idp.data` in the current working directory. Point them
+elsewhere with `--idp-data`, which belongs to the top-level command group and
+therefore precedes the subcommand:
+
+```
+scrapyrus --idp-data /path/to/idp.data metadata ingest
+```
+
+A checkout missing `HGV_meta_EpiDoc`, `DDbDP`, or `Translations` fails with a
+`FileNotFoundError` naming the absent directories.
+
 ## PostgreSQL configuration
+
+### Creating a local database
+
+Create the database and its owner as the `postgres` superuser:
+
+```
+sudo -u postgres psql
+```
+
+```sql
+CREATE DATABASE scrapyrus;
+CREATE USER scrapyrus WITH ENCRYPTED PASSWORD 'yourpw';
+ALTER DATABASE scrapyrus OWNER TO scrapyrus;
+```
+
+The `ALTER DATABASE ... OWNER` statement matters. Since PostgreSQL 15,
+`GRANT ALL PRIVILEGES ON DATABASE` does not confer the right to create objects
+in the `public` schema, and ingestion creates its own tables. Granting database
+privileges alone leaves ingestion failing with `permission denied for schema
+public`. Where changing the owner is not an option, grant the schema explicitly
+instead:
+
+```sql
+GRANT ALL ON SCHEMA public TO scrapyrus;
+```
+
+No schema migration step is needed. Ingestion drops and recreates the tables it
+owns on every run.
+
+When the PostgreSQL role name matches the Unix account running the command, the
+default peer authentication connects without a password. The database name still
+has to be supplied, because libpq defaults it to the account name as well and
+otherwise fails with `database "<your-username>" does not exist`. Either name the
+database in a connection URL:
+
+```
+export SCRAPYRUS_DATABASE_URL=postgresql:///scrapyrus
+```
+
+or set the standard PostgreSQL environment variable:
+
+```
+export PGDATABASE=scrapyrus
+```
+
+### Enabling the vector extension
+
+Embedding commands require the `vector` extension from
+[pgvector](https://github.com/pgvector/pgvector). Install the server package for
+the running major version, for example `postgresql-16-pgvector` on Debian and
+Ubuntu, then enable the extension once per database.
+
+Because pgvector loads a native shared library into the server process, it is not
+a trusted extension and `CREATE EXTENSION` requires a superuser even for the
+database owner:
+
+```
+sudo -u postgres psql -d scrapyrus -c 'CREATE EXTENSION IF NOT EXISTS vector'
+```
+
+Confirm that the extension is available on the cluster before enabling it:
+
+```
+psql -d scrapyrus -c "SELECT name, default_version FROM pg_available_extensions WHERE name = 'vector'"
+```
+
+An empty result means the server package is missing rather than the extension
+being disabled. This step is unnecessary in the Docker setup below, where the
+image ships pgvector and the configured user is a superuser.
+
+### Connecting
 
 Database-backed `scrapyrus` commands use PostgreSQL's standard connection
 defaults when no connection URL is supplied. To use a connection URL instead,
@@ -42,37 +146,71 @@ export SCRAPYRUS_DATABASE_URL=postgresql://scrapyrus:secret@localhost:5432/scrap
 
 scrapyrus metadata ingest
 scrapyrus transcriptions ingest
+
+# requires the vector extension; see "Enabling the vector extension" above
 scrapyrus embeddings ingest \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
-The database must already exist and be reachable. Embedding commands additionally
-require the PostgreSQL `vector` extension. Embedding ingestion reads the XML rows
-created by `transcriptions ingest`, so those commands must run in that order.
+The database must already exist and be reachable. Embedding ingestion reads the
+XML rows created by `transcriptions ingest`, so those commands must run in that
+order.
+
+Embedding commands additionally require the `vector` extension to be enabled in
+this database. Enable it before the first `embeddings ingest` run; without it the
+command stops with `PostgreSQL extension 'vector' is not available`. Verify with:
+
+```
+psql -d scrapyrus -c "SELECT extname FROM pg_extension WHERE extname = 'vector'"
+```
 
 The `--database-url` option can override `SCRAPYRUS_DATABASE_URL` for a single
 command. If neither is supplied, standard PostgreSQL parameters such as the
 `PGHOST`, `PGPORT`, `PGDATABASE`, and `PGUSER` environment variables apply.
 
-For local development, a pgvector-enabled PostgreSQL server can be started on
-port 5432 with Docker:
+### Running PostgreSQL in Docker
+
+Where a local server is unavailable, a pgvector-enabled PostgreSQL server can be
+started on port 5432 with Docker. Mount a named volume so the data outlives the
+container:
 
 ```
+docker volume create scrapyrus-pgdata
+
 docker run --name scrapyrus-postgres \
     --detach \
     --publish 5432:5432 \
     --env POSTGRES_DB=scrapyrus \
     --env POSTGRES_USER=scrapyrus \
     --env POSTGRES_PASSWORD=scrapyrus \
+    --volume scrapyrus-pgdata:/var/lib/postgresql/data \
     pgvector/pgvector:pg16
 
 export SCRAPYRUS_DATABASE_URL=postgresql://scrapyrus:scrapyrus@localhost:5432/scrapyrus
-scrapyrus metadata ingest
+scrapyrus --idp-data /path/to/idp.data metadata ingest
 ```
 
-This container does not use persistent storage, so removing it also removes its
-database data. Stop and remove it with `docker stop scrapyrus-postgres` followed
-by `docker rm scrapyrus-postgres`.
+The image ships pgvector and `POSTGRES_USER` is a superuser, so the extension can
+be enabled from the host without `sudo`:
+
+```
+docker exec scrapyrus-postgres \
+    psql --username=scrapyrus --dbname=scrapyrus \
+    --command='CREATE EXTENSION IF NOT EXISTS vector'
+```
+
+With the volume in place, `docker stop scrapyrus-postgres` and
+`docker rm scrapyrus-postgres` remove only the container; recreating it with the
+same `--volume` argument restores the database. Ingested data survives image
+upgrades within the same PostgreSQL major version. Deleting the data requires
+removing the volume explicitly:
+
+```
+docker volume rm scrapyrus-pgdata
+```
+
+Omitting `--volume` stores the data inside the container's writable layer, where
+`docker rm` destroys it along with the container.
 
 ### Moving the database
 
