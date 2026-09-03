@@ -142,6 +142,15 @@ def test_schema_creates_separate_kind_tables_without_migration():
     assert "config_id" not in sql
     assert "chunk_index integer NOT NULL DEFAULT 0" in sql
     assert "PRIMARY KEY (xml_id, model_name, chunk_index)" in sql
+    catalog_upserts = [
+        params
+        for query, params in cursor.executions
+        if query.lstrip().startswith("INSERT INTO scrapyrus_semantic_catalog")
+    ]
+    assert [params[1:4] for params in catalog_upserts] == [
+        ("transcription_embeddings", "embeddings", 1),
+        ("translation_embeddings", "embeddings", 1),
+    ]
 
 
 def test_chunking_keeps_documents_within_target_unchanged():
@@ -225,7 +234,9 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     ]
     assert len(selects) == 1
     inserts = [
-        (query, params) for query, params in cursor.executions if "INSERT INTO" in query
+        (query, params)
+        for query, params in cursor.executions
+        if "INSERT INTO" in query and "scrapyrus_semantic_catalog" not in query
     ]
     assert "transcription_embeddings" in inserts[0][0]
     assert inserts[0][1]["language"] == "grc"
@@ -318,7 +329,11 @@ def test_setup_store_embeds_chunks_with_indices(monkeypatch):
         "postgresql://db", False, chunk_size=10
     )
 
-    inserts = [params for query, params in cursor.executions if "INSERT INTO" in query]
+    inserts = [
+        params
+        for query, params in cursor.executions
+        if "INSERT INTO" in query and "scrapyrus_semantic_catalog" not in query
+    ]
     assert count == 2
     assert [params["chunk_index"] for params in inserts] == [0, 1]
     assert provider.inputs == list(chunk_embedding_text(document, 10))
@@ -421,7 +436,9 @@ def test_delete_embeddings_deletes_model_from_both_tables(monkeypatch):
 
     assert delete_embeddings("postgresql://db", modelname="model") == 6
     deletes = [
-        query for query, _ in cursor.executions if query.startswith("DELETE FROM")
+        query
+        for query, _ in cursor.executions
+        if query.startswith("DELETE FROM") and "scrapyrus_semantic_catalog" not in query
     ]
     assert len(deletes) == 2
     assert any("transcription_embeddings" in query for query in deletes)
@@ -484,7 +501,7 @@ def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
     deletes = [
         (query, params)
         for query, params in cursor.executions
-        if query.startswith("DELETE FROM")
+        if query.startswith("DELETE FROM") and "scrapyrus_semantic_catalog" not in query
     ]
     assert deletes == [
         ('DELETE FROM "transcription_embeddings" WHERE model_name = %s', ("model",))
@@ -540,7 +557,10 @@ def test_import_embeddings_rejects_unexpected_model_names(tmp_path, monkeypatch)
     else:
         raise AssertionError("Expected import_embeddings to reject mismatched models")
 
-    assert not any(query.startswith("DELETE FROM") for query, _ in cursor.executions)
+    assert not any(
+        query.startswith("DELETE FROM") and "scrapyrus_semantic_catalog" not in query
+        for query, _ in cursor.executions
+    )
 
 
 def test_embedding_store_initializes_provider(monkeypatch):

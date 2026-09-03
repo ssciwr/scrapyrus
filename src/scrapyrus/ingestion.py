@@ -7,6 +7,7 @@ from saxonche import PySaxonProcessor
 
 from scrapyrus.idpdata import iterate_idpdata_triples
 from scrapyrus.metadata.base import MetadataTable
+from scrapyrus.semantics import publish_semantics
 
 import psycopg
 from psycopg import sql
@@ -67,6 +68,11 @@ def ingest_metadata(
             for table in tables:
                 cursor.execute(f"DROP TABLE IF EXISTS {table.name}")
             cursor.execute(_metadata_schema_sql(tables))
+            publish_semantics(
+                cursor,
+                tuple(table.semantics for table in tables),
+                component="metadata",
+            )
             with PySaxonProcessor(license=False) as proc:
                 factories = {table.name: table.create_factory(proc) for table in tables}
                 idp_data = Path(idp_data)

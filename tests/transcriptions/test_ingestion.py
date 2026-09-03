@@ -67,6 +67,14 @@ def _normalize_sql(query):
     return " ".join(str(query).split())
 
 
+def _transcription_rows(cursor):
+    return [
+        params
+        for query, params in cursor.executions
+        if _normalize_sql(query).startswith("INSERT INTO transcriptions ")
+    ]
+
+
 def test_translation_xml_snippets_returns_each_language(tmp_path):
     translation = tmp_path / "translation.xml"
     translation.write_text(
@@ -180,7 +188,15 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
         "lemma_vector tsvector GENERATED ALWAYS AS "
         "(to_tsvector('simple', lemma_text)) STORED"
     ) in schema
-    rows = [execution[1] for execution in cursor.executions[2:]]
+    catalog_upserts = [
+        params
+        for query, params in cursor.executions
+        if _normalize_sql(query).startswith("INSERT INTO scrapyrus_semantic_catalog ")
+    ]
+    assert [params[1:4] for params in catalog_upserts] == [
+        ("transcriptions", "transcriptions", 1)
+    ]
+    rows = _transcription_rows(cursor)
     assert [(row["type"], row["language"]) for row in rows] == [
         ("transcription", None),
         ("translation", "en"),
@@ -239,7 +255,7 @@ def test_ingest_transcriptions_extracts_embedded_dclp_translation(
 
     ingest_transcriptions(idp_data, progressbar=False)
 
-    rows = [execution[1] for execution in cursor.executions[2:]]
+    rows = _transcription_rows(cursor)
     assert [(row["type"], row["source_path"]) for row in rows] == [
         ("transcription", "DCLP/1/123.xml"),
         ("translation", "DCLP/1/123.xml"),
@@ -285,7 +301,7 @@ def test_ingest_transcriptions_omits_rows_with_blank_text(tmp_path, monkeypatch)
 
     ingest_transcriptions(idp_data, progressbar=False)
 
-    assert len(cursor.executions) == 2
+    assert _transcription_rows(cursor) == []
 
 
 def test_dump_transcriptions_writes_csv(tmp_path, monkeypatch):
@@ -396,6 +412,11 @@ def test_import_transcriptions_rebuilds_table_from_dump(tmp_path, monkeypatch):
     )
     assert "CREATE TABLE transcriptions" in cursor.executions[1][0]
     assert any(
+        params is not None and params[1:4] == ("transcriptions", "transcriptions", 1)
+        for query, params in cursor.executions
+        if _normalize_sql(query).startswith("INSERT INTO scrapyrus_semantic_catalog ")
+    )
+    assert any(
         "CREATE TEMP TABLE" in str(query) and "transcriptions_import" in str(query)
         for query, _ in cursor.executions
     )
@@ -405,7 +426,9 @@ def test_import_transcriptions_rebuilds_table_from_dump(tmp_path, monkeypatch):
     assert b"".join(cursor.copy_writes) == source.read_bytes()
 
     insert_query = next(
-        str(query) for query, _ in cursor.executions if "INSERT INTO" in str(query)
+        str(query)
+        for query, _ in cursor.executions
+        if "INSERT INTO" in str(query) and "OVERRIDING SYSTEM VALUE" in str(query)
     )
     assert "OVERRIDING SYSTEM VALUE" in insert_query
     assert "lemma_text" in insert_query

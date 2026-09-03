@@ -164,6 +164,45 @@ command stops with `PostgreSQL extension 'vector' is not available`. Verify with
 psql -d scrapyrus -c "SELECT extname FROM pg_extension WHERE extname = 'vector'"
 ```
 
+### Structured semantic catalog
+
+Schema creation and import publish producer-owned table and column meanings to
+`public.scrapyrus_semantic_catalog` in the same transaction as the data schema.
+Metadata, transcriptions, and embeddings are independently published components,
+covering `papyri`, `principal_editions`, `keywords`, `orig_dates`, `orig_places`,
+`ancient_editions`, `transcriptions`, `transcription_embeddings`, and
+`translation_embeddings`.
+
+A PostgreSQL-only consumer can read the versioned JSONB contract with:
+
+```sql
+SELECT
+    schema_name,
+    table_name,
+    catalog_schema_version,
+    producer_version,
+    semantics
+FROM public.scrapyrus_semantic_catalog
+ORDER BY schema_name, table_name;
+```
+
+Publish all nine current definitions without rebuilding any data tables:
+
+```
+scrapyrus catalog
+```
+
+As with other database commands, use `--database-url` or
+`SCRAPYRUS_DATABASE_URL` to select the database.
+
+Consumers must support the returned `catalog_schema_version`, intersect entries
+with live base tables, and introspect PostgreSQL for SQL types, nullability,
+keys, and constraints. Semantic relationships marked
+`enforced_by_database=false` are guidance rather than referential guarantees;
+in particular, `tm_id` joins are generally logical and unenforced and may
+multiply rows. Exclude the catalog table itself from ordinary domain-table
+listings.
+
 The `--database-url` option can override `SCRAPYRUS_DATABASE_URL` for a single
 command. If neither is supplied, standard PostgreSQL parameters such as the
 `PGHOST`, `PGPORT`, `PGDATABASE`, and `PGUSER` environment variables apply.

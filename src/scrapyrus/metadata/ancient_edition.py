@@ -11,6 +11,7 @@ from scrapyrus.metadata.xmlutils import (
     optional_string,
     publication_idno_string,
 )
+from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSemantics
 
 
 ANCIENT_EDITION_BIBL_NODES_XPATH = (
@@ -68,19 +69,46 @@ CREATE INDEX IF NOT EXISTS ancient_editions_tm_title_id_idx ON ancient_editions 
 CREATE INDEX IF NOT EXISTS ancient_editions_author_idx ON ancient_editions (author);
 CREATE INDEX IF NOT EXISTS ancient_editions_perseus_author_urn_idx ON ancient_editions (perseus_author_urn);"""
 
-ANCIENT_EDITIONS_DESCRIPTION = """The ancient_editions table contains one row for each ancient work or
-author-work attribution cited in an ancient-edition bibliography entry. It
-links papyrus records to ancient titles, authors, Trismegistos author-work IDs,
-and Perseus author URNs."""
-
-ANCIENT_EDITIONS_SEMANTIC_CATALOG = """Table: ancient_editions
-Use this table for queries about ancient authors, literary works, attributed texts, and author-work identifiers. Join to papyri on tm_id.
-ancient_edition_id: Synthetic row identifier for an extracted ancient-edition entry; not an external work ID.
-tm_id: Trismegistos document ID for the papyrus record associated with this ancient work or author.
-title: Ancient work title from the bibliography entry, preferring main or abbreviated titles when present.
-tm_title_id: Trismegistos AuthorWork or title identifier extracted from the title reference.
-author: Ancient author name associated with the title or work.
-perseus_author_urn: Perseus CTS URN identifying the ancient author when available."""
+ANCIENT_EDITIONS_SEMANTICS = TableSemantics(
+    table_name="ancient_editions",
+    description=(
+        "The ancient_editions table contains extracted ancient author/work "
+        "attributions, display text, and external identifiers."
+    ),
+    row_grain="One extracted ancient author/work attribution.",
+    useful_for=("ancient authors, literary works, and attributed texts",),
+    columns={
+        "ancient_edition_id": ColumnSemantics(
+            description="Synthetic extracted-attribution row identifier, not an external work ID."
+        ),
+        "tm_id": ColumnSemantics(
+            description="Trismegistos document ID of the associated papyrus record."
+        ),
+        "title": ColumnSemantics(
+            description="Ancient work title text from the bibliography entry.",
+            caveats=("This display string is not a normalized work identity.",),
+        ),
+        "tm_title_id": ColumnSemantics(
+            description="Trismegistos AuthorWork/title identifier extracted from the title reference."
+        ),
+        "author": ColumnSemantics(
+            description="Ancient author display text associated with the work.",
+            caveats=("This display string is not a normalized author identity.",),
+        ),
+        "perseus_author_urn": ColumnSemantics(
+            description="Perseus CTS URN identifying the ancient author."
+        ),
+    },
+    relationships=(
+        RelationshipSemantics(
+            target_table="papyri",
+            source_columns=("tm_id",),
+            target_columns=("tm_id",),
+            cardinality="many-to-many",
+            description="Logical, unenforced Trismegistos document-key join.",
+        ),
+    ),
+)
 
 
 class AncientEditionModelFactory:
@@ -168,15 +196,10 @@ class AncientEditionMetadataTable(MetadataTable):
     name = "ancient_editions"
     order_by = ("ancient_edition_id",)
     schema_sql = ANCIENT_EDITIONS_SCHEMA_SQL
+    semantics = ANCIENT_EDITIONS_SEMANTICS
 
     def index_sql(self) -> str:
         return ANCIENT_EDITIONS_INDEX_SQL
-
-    def description(self) -> str:
-        return ANCIENT_EDITIONS_DESCRIPTION
-
-    def semantic_catalog(self) -> str:
-        return ANCIENT_EDITIONS_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[AncientEditionModel]:

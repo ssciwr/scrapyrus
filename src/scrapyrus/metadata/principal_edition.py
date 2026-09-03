@@ -11,6 +11,7 @@ from scrapyrus.metadata.xmlutils import (
     optional_string,
     publication_idno_string,
 )
+from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSemantics
 
 
 PRINCIPAL_EDITION_NODES_XPATH = (
@@ -57,21 +58,48 @@ PRINCIPAL_EDITIONS_INDEX_SQL = """CREATE INDEX IF NOT EXISTS principal_editions_
 CREATE INDEX IF NOT EXISTS principal_editions_biblio_id_idx ON principal_editions (biblio_id);
 CREATE INDEX IF NOT EXISTS principal_editions_author_idx ON principal_editions (author);"""
 
-PRINCIPAL_EDITIONS_DESCRIPTION = """The principal_editions table contains one row for each principal modern
-bibliographic edition cited for a papyrus record. It links editions to
-documents by tm_id and stores papyri.info bibliography IDs plus citation parts
-such as title, author, volume, number, and page."""
-
-PRINCIPAL_EDITIONS_SEMANTIC_CATALOG = """Table: principal_editions
-Use this table for questions about principal editions, publications, bibliography, and citation details. Join to papyri on tm_id.
-principal_edition_id: Synthetic row identifier for an extracted principal-edition citation; not an external bibliography ID.
-tm_id: Trismegistos document ID for the papyrus record that the edition describes.
-biblio_id: papyri.info bibliography record ID extracted from a biblio URL, when present.
-title: Publication or series title for the principal edition, preferring main titles over abbreviated titles.
-author: First listed author or editor text for the citation when available.
-volume: Volume component of the bibliographic citation.
-number: Number, item, or publication number component of the citation.
-page: Page or page-range component of the citation."""
+PRINCIPAL_EDITIONS_SEMANTICS = TableSemantics(
+    table_name="principal_editions",
+    description=(
+        "The principal_editions table contains extracted principal modern "
+        "bibliographic citations for papyrus records."
+    ),
+    row_grain="One extracted principal-edition citation.",
+    useful_for=("publications and bibliography", "citation details"),
+    columns={
+        "principal_edition_id": ColumnSemantics(
+            description="Synthetic identifier for the extracted citation, not an external bibliography ID."
+        ),
+        "tm_id": ColumnSemantics(
+            description="Trismegistos document ID of the described papyrus record."
+        ),
+        "biblio_id": ColumnSemantics(
+            description="External papyri.info bibliography record ID extracted from a biblio URL."
+        ),
+        "title": ColumnSemantics(
+            description="Publication or series title citation component, preferring main over abbreviated titles.",
+            caveats=("This is not a normalized publication entity.",),
+        ),
+        "author": ColumnSemantics(
+            description="First listed author or editor text citation component.",
+            caveats=("This is not a normalized person identity.",),
+        ),
+        "volume": ColumnSemantics(description="Volume citation component."),
+        "number": ColumnSemantics(
+            description="Number, item, or publication-number citation component."
+        ),
+        "page": ColumnSemantics(description="Page or page-range citation component."),
+    },
+    relationships=(
+        RelationshipSemantics(
+            target_table="papyri",
+            source_columns=("tm_id",),
+            target_columns=("tm_id",),
+            cardinality="many-to-many",
+            description="Logical, unenforced tm_id join that can multiply when a TM record has multiple metadata source rows.",
+        ),
+    ),
+)
 
 
 class PrincipalEditionModelFactory:
@@ -178,15 +206,10 @@ class PrincipalEditionMetadataTable(MetadataTable):
     name = "principal_editions"
     order_by = ("principal_edition_id",)
     schema_sql = PRINCIPAL_EDITIONS_SCHEMA_SQL
+    semantics = PRINCIPAL_EDITIONS_SEMANTICS
 
     def index_sql(self) -> str:
         return PRINCIPAL_EDITIONS_INDEX_SQL
-
-    def description(self) -> str:
-        return PRINCIPAL_EDITIONS_DESCRIPTION
-
-    def semantic_catalog(self) -> str:
-        return PRINCIPAL_EDITIONS_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[PrincipalEditionModel]:

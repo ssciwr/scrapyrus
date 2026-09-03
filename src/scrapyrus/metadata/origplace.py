@@ -11,6 +11,7 @@ from scrapyrus.metadata.xmlutils import (
     optional_string,
     publication_idno_string,
 )
+from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSemantics
 
 
 ORIG_PLACE_XPATH = ".//tei:msDesc/tei:history/tei:origin/tei:origPlace"
@@ -73,21 +74,64 @@ ORIG_PLACES_INDEX_SQL = """CREATE INDEX IF NOT EXISTS orig_places_tm_id_idx ON o
 CREATE INDEX IF NOT EXISTS orig_places_pleiades_place_id_idx ON orig_places (pleiades_place_id);
 CREATE INDEX IF NOT EXISTS orig_places_place_name_idx ON orig_places (place_name);"""
 
-ORIG_PLACES_DESCRIPTION = """The orig_places table contains one row for each extracted ancient place
-associated with a papyrus record's origin or provenance. It stores the full
-source place expression, normalized place name, Trismegistos and Pleiades place
-identifiers, relationship type, and geographic granularity."""
-
-ORIG_PLACES_SEMANTIC_CATALOG = """Table: orig_places
-Use this table for ancient geography, provenance, findspot, composition place, and origin-place queries. Join to papyri on tm_id.
-place_id: Synthetic row identifier for an extracted place statement; not an external place ID.
-tm_id: Trismegistos document ID for the papyrus record associated with this place.
-full_place_name: Complete source origin-place expression, useful when the query asks for the full recorded provenance wording.
-place_name: Normalized ancient place name extracted from the provenance text.
-tm_place_id: Trismegistos place ID for the ancient place, when available.
-pleiades_place_id: Pleiades place ID for the ancient place, when available.
-place_type: Relationship between the record and place, such as located, found, composed, sent, acquired, or received.
-granularity: Geographic specificity of place_name: settlement is most specific, while nome and region are broader areas."""
+ORIG_PLACES_SEMANTICS = TableSemantics(
+    table_name="orig_places",
+    description=(
+        "The orig_places table contains extracted ancient-place associations, "
+        "source wording, normalized names, external IDs, relation type, and granularity."
+    ),
+    row_grain="One extracted ancient-place association.",
+    useful_for=("ancient geography, provenance, findspots, and places of composition",),
+    columns={
+        "place_id": ColumnSemantics(
+            description="Synthetic extracted-place row identifier, not an external place ID."
+        ),
+        "tm_id": ColumnSemantics(
+            description="Trismegistos document ID of the record associated with the place."
+        ),
+        "full_place_name": ColumnSemantics(
+            description="Complete source origin-place expression preserving its recorded wording."
+        ),
+        "place_name": ColumnSemantics(
+            description="Normalized individual ancient place name extracted from the provenance text."
+        ),
+        "tm_place_id": ColumnSemantics(
+            description="Trismegistos Place identifier for the ancient place."
+        ),
+        "pleiades_place_id": ColumnSemantics(
+            description="Pleiades gazetteer identifier for the ancient place."
+        ),
+        "place_type": ColumnSemantics(
+            description="Semantic relationship between the record and the place.",
+            value_meanings={
+                "located": "place where the object was located",
+                "found": "findspot",
+                "composed": "place of textual composition",
+                "sent": "place from which it was sent",
+                "acquired": "place of acquisition",
+                "received": "place where it was received",
+            },
+            examples=("located", "found", "composed", "sent", "acquired", "received"),
+        ),
+        "granularity": ColumnSemantics(
+            description="Geographic specificity of place_name.",
+            value_meanings={
+                "settlement": "a specific settlement",
+                "nome": "a broader administrative nome",
+                "region": "a broader geographic region",
+            },
+        ),
+    },
+    relationships=(
+        RelationshipSemantics(
+            target_table="papyri",
+            source_columns=("tm_id",),
+            target_columns=("tm_id",),
+            cardinality="many-to-many",
+            description="Logical, unenforced Trismegistos document-key join.",
+        ),
+    ),
+)
 
 
 class OrigPlaceModelFactory:
@@ -172,15 +216,10 @@ class OrigPlaceMetadataTable(MetadataTable):
     name = "orig_places"
     order_by = ("place_id",)
     schema_sql = ORIG_PLACES_SCHEMA_SQL
+    semantics = ORIG_PLACES_SEMANTICS
 
     def index_sql(self) -> str:
         return ORIG_PLACES_INDEX_SQL
-
-    def description(self) -> str:
-        return ORIG_PLACES_DESCRIPTION
-
-    def semantic_catalog(self) -> str:
-        return ORIG_PLACES_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[OrigPlaceModel]:

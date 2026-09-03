@@ -280,12 +280,34 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "CREATE TABLE IF NOT EXISTS ancient_editions" in schema_sql
     assert "ancient_edition_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "perseus_author_urn text" in schema_sql
+    catalog_upserts = [
+        params
+        for query, params in cursor.executions
+        if _normalize_sql(query).startswith("INSERT INTO scrapyrus_semantic_catalog ")
+    ]
+    assert [params[1:4] for params in catalog_upserts] == [
+        (table_name, "metadata", 1)
+        for table_name in (
+            "papyri",
+            "principal_editions",
+            "keywords",
+            "orig_dates",
+            "orig_places",
+            "ancient_editions",
+        )
+    ]
+    data_executions = [
+        execution
+        for execution in cursor.executions
+        if _normalize_sql(execution[0]).startswith("INSERT INTO ")
+        and "scrapyrus_semantic_catalog" not in execution[0]
+    ]
     columns = list(PapyrusMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[7][0]) == (
+    assert _normalize_sql(data_executions[0][0]) == (
         f"INSERT INTO papyri ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[7][1] == {
+    assert data_executions[0][1] == {
         "source_path": "HGV_meta_EpiDoc/HGV1/46.xml",
         "tm_id": 46,
         "dclp_id": 123,
@@ -301,11 +323,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "current_location": None,
     }
     columns = list(PrincipalEditionMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[8][0]) == (
+    assert _normalize_sql(data_executions[1][0]) == (
         f"INSERT INTO principal_editions ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[8][1] == {
+    assert data_executions[1][1] == {
         "principal_edition_id": 1,
         "tm_id": 46,
         "biblio_id": 95120,
@@ -316,11 +338,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "page": "34-36",
     }
     columns = list(KeywordMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[9][0]) == (
+    assert _normalize_sql(data_executions[2][0]) == (
         f"INSERT INTO keywords ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert [execution[1] for execution in cursor.executions[9:13]] == [
+    assert [execution[1] for execution in data_executions[2:6]] == [
         {
             "keyword_id": 1,
             "tm_id": 46,
@@ -355,11 +377,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         },
     ]
     columns = list(OrigDateMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[13][0]) == (
+    assert _normalize_sql(data_executions[6][0]) == (
         f"INSERT INTO orig_dates ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[13][1] == {
+    assert data_executions[6][1] == {
         "date_id": 1,
         "tm_id": 46,
         "date_text": "9 Jan. 582",
@@ -374,11 +396,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "alternative": False,
     }
     columns = list(OrigPlaceMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[14][0]) == (
+    assert _normalize_sql(data_executions[7][0]) == (
         f"INSERT INTO orig_places ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert [execution[1] for execution in cursor.executions[14:16]] == [
+    assert [execution[1] for execution in data_executions[7:9]] == [
         {
             "place_id": 1,
             "tm_id": 46,
@@ -401,11 +423,11 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         },
     ]
     columns = list(AncientEditionMetadataTable().columns)
-    assert _normalize_sql(cursor.executions[16][0]) == (
+    assert _normalize_sql(data_executions[9][0]) == (
         f"INSERT INTO ancient_editions ({', '.join(columns)}) "
         f"VALUES ({', '.join(f'%({column})s' for column in columns)})"
     )
-    assert cursor.executions[16][1] == {
+    assert data_executions[9][1] == {
         "ancient_edition_id": 1,
         "tm_id": 46,
         "title": "Ilias",
@@ -413,14 +435,19 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
         "author": "Homerus",
         "perseus_author_urn": "urn:cts:greekLit:tlg0012",
     }
-    index_sql = _normalize_sql(cursor.executions[17][0])
+    index_execution = next(
+        execution
+        for execution in cursor.executions
+        if _normalize_sql(execution[0]).startswith("CREATE INDEX")
+    )
+    index_sql = _normalize_sql(index_execution[0])
     assert index_sql.count("CREATE INDEX") == 21
     assert "CREATE INDEX IF NOT EXISTS papyri_tm_id_idx ON papyri (tm_id);" in index_sql
     assert (
         "CREATE INDEX IF NOT EXISTS ancient_editions_perseus_author_urn_idx "
         "ON ancient_editions (perseus_author_urn);"
     ) in index_sql
-    assert cursor.executions[17][1] is None
+    assert index_execution[1] is None
 
 
 def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatch):
@@ -454,8 +481,12 @@ def test_ingest_metadata_stores_duplicate_tm_source_records(tmp_path, monkeypatc
 
     ingest_metadata(idp_data, progressbar=False)
 
-    first_row = cursor.executions[7][1]
-    second_row = cursor.executions[8][1]
+    rows = [
+        params
+        for query, params in cursor.executions
+        if _normalize_sql(query).startswith("INSERT INTO papyri ")
+    ]
+    first_row, second_row = rows
     assert first_row["tm_id"] == second_row["tm_id"] == 13
     assert first_row["source_path"] == "HGV_meta_EpiDoc/HGV1/13a.xml"
     assert first_row["title"] == "Sale of Land"
