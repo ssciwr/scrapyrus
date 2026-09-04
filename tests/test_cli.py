@@ -124,6 +124,7 @@ def test_database_commands_use_shared_database_url_default_and_envvar():
         ("transcriptions", "import"),
         ("transcriptions", "lemmatize"),
         ("embeddings", "ingest"),
+        ("embeddings", "keywords"),
         ("embeddings", "delete"),
         ("embeddings", "dump"),
         ("embeddings", "import"),
@@ -421,6 +422,35 @@ def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypat
             False,
             {"sample": None, "seed": 0, "chunk_size": 500},
         ),
+    ]
+
+
+def test_embeddings_keywords_uses_shared_embedding_options(monkeypatch):
+    calls = []
+
+    class Store:
+        def __init__(self, url, model, key):
+            calls.append(("init", url, model, key))
+
+        def setup_store(self, database_url, progress):
+            calls.append(("setup", database_url, progress))
+
+    monkeypatch.setattr("scrapyrus.__main__.KeywordEmbeddingStore", Store)
+    result = CliRunner().invoke(
+        main,
+        ("embeddings", "keywords", "--no-progress"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": "postgresql://db",
+            "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example/v1",
+            "SCRAPYRUS_EMBEDDINGS_MODEL": "model",
+            "SCRAPYRUS_EMBEDDINGS_API_KEY": "secret",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        ("init", "https://inference.example/v1", "model", "secret"),
+        ("setup", "postgresql://db", False),
     ]
 
 

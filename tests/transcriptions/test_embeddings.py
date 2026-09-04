@@ -150,6 +150,7 @@ def test_schema_creates_separate_kind_tables_without_migration():
     assert [params[1:4] for params in catalog_upserts] == [
         ("transcription_embeddings", "embeddings", 1),
         ("translation_embeddings", "embeddings", 1),
+        ("keyword_embeddings", "embeddings", 1),
     ]
 
 

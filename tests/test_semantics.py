@@ -110,6 +110,7 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
         "transcriptions",
         "transcription_embeddings",
         "translation_embeddings",
+        "keyword_embeddings",
     )
     metadata_entries = entries[:6]
     for table_type, entry in zip(
@@ -119,6 +120,9 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
     validate_semantic_columns(entries[6], TRANSCRIPTION_COLUMNS)
     validate_semantic_columns(entries[7], EMBEDDING_DUMP_COLUMNS)
     validate_semantic_columns(entries[8], EMBEDDING_DUMP_COLUMNS)
+    validate_semantic_columns(
+        entries[9], ("keyword", "model_name", "embedding", "updated_at")
+    )
     validate_catalog_entries(entries)
 
 
@@ -187,7 +191,11 @@ def test_publish_catalog_publishes_all_components_in_one_connection(monkeypatch)
         (cursor, ("transcriptions",), "transcriptions"),
         (
             cursor,
-            ("transcription_embeddings", "translation_embeddings"),
+            (
+                "transcription_embeddings",
+                "translation_embeddings",
+                "keyword_embeddings",
+            ),
             "embeddings",
         ),
     ]

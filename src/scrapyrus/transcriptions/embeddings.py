@@ -21,6 +21,7 @@ from scrapyrus.transcriptions.core import (
 from scrapyrus.transcriptions.llms import LLMProviderBase, initialize_llm_provider
 from scrapyrus.semantics import publish_semantics
 from scrapyrus.transcriptions.semantics import (
+    KEYWORD_EMBEDDINGS_SEMANTICS,
     TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
     TRANSLATION_EMBEDDINGS_SEMANTICS,
 )
@@ -571,6 +572,7 @@ END $$
         (
             TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
             TRANSLATION_EMBEDDINGS_SEMANTICS,
+            KEYWORD_EMBEDDINGS_SEMANTICS,
         ),
         component="embeddings",
     )
