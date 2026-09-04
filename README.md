@@ -152,6 +152,31 @@ scrapyrus embeddings ingest \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
+Create a keyword embedding store from the distinct strings in the `keywords`
+table with the same inference settings:
+
+```
+scrapyrus embeddings keywords \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+```
+
+The command keeps separate rows and cosine-search indexes for each model. On a
+rerun it embeds only newly encountered keyword strings and removes strings that
+no longer occur in `keywords` for that model.
+
+Use the standalone query script to embed free text and print its top candidates:
+
+```
+.venv/bin/python scripts/query_keyword_embeddings.py \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+```
+
+Both commands accept `SCRAPYRUS_DATABASE_URL`, `SCRAPYRUS_EMBEDDINGS_URL`,
+`SCRAPYRUS_EMBEDDINGS_MODEL`, and `SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the
+corresponding options. The query must use the same model as the stored keyword
+embeddings.
+
 The database must already exist and be reachable. Embedding ingestion reads the
 XML rows created by `transcriptions ingest`, so those commands must run in that
 order.
@@ -170,8 +195,8 @@ Schema creation and import publish producer-owned table and column meanings to
 `public.scrapyrus_semantic_catalog` in the same transaction as the data schema.
 Metadata, transcriptions, and embeddings are independently published components,
 covering `papyri`, `principal_editions`, `keywords`, `orig_dates`, `orig_places`,
-`ancient_editions`, `transcriptions`, `transcription_embeddings`, and
-`translation_embeddings`.
+`ancient_editions`, `transcriptions`, `transcription_embeddings`,
+`translation_embeddings`, and `keyword_embeddings`.
 
 A PostgreSQL-only consumer can read the versioned JSONB contract with:
 
@@ -186,7 +211,7 @@ FROM public.scrapyrus_semantic_catalog
 ORDER BY schema_name, table_name;
 ```
 
-Publish all nine current definitions without rebuilding any data tables:
+Publish all current definitions without rebuilding any data tables:
 
 ```
 scrapyrus catalog

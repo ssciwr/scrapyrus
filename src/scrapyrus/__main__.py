@@ -9,6 +9,7 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.keyword_embeddings import KeywordEmbeddingStore, KeywordsUnavailableError
 from scrapyrus.semantic_catalog import publish_catalog
 from scrapyrus.transcriptions.core import (
     dump_transcriptions,
@@ -333,7 +334,33 @@ def lemmatize(database_url: str, progress: bool, max_words: int) -> None:
 
 @main.group("embeddings")
 def embeddings() -> None:
-    """Work with transcription and translation embeddings."""
+    """Work with transcription, translation, and keyword embeddings."""
+
+
+@embeddings.command("keywords")
+@database_url
+@embedding_client_options
+@embedding_model_options
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while embedding distinct keyword strings.",
+)
+def embed_keywords(
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    progress: bool,
+) -> None:
+    """Create or update the pgvector store for metadata keywords."""
+
+    store = KeywordEmbeddingStore(inference_server_url, model_name, api_key)
+    try:
+        store.setup_store(database_url, progress)
+    except (PgvectorUnavailableError, KeywordsUnavailableError) as error:
+        raise click.ClickException(str(error)) from error
 
 
 @embeddings.command("ingest")
