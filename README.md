@@ -164,6 +164,17 @@ The command keeps separate rows and cosine-search indexes for each model. On a
 rerun it embeds only newly encountered keyword strings and removes strings that
 no longer occur in `keywords` for that model.
 
+Export and import one model's keyword embeddings with the existing binary dump
+commands by selecting the `keywords` kind:
+
+```
+scrapyrus embeddings dump \
+    --kind keywords --model-name <model> keyword-embeddings.dump
+
+scrapyrus embeddings import \
+    --kind keywords --model-name <model> keyword-embeddings.dump
+```
+
 Embed free text and print its top candidates with the evaluation command:
 
 ```
