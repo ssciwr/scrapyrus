@@ -9,7 +9,12 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
-from scrapyrus.keyword_embeddings import KeywordEmbeddingStore, KeywordsUnavailableError
+from scrapyrus.keyword_embeddings import (
+    KeywordEmbeddingStore,
+    KeywordEmbeddingsUnavailableError,
+    KeywordsUnavailableError,
+    find_similar_keywords,
+)
 from scrapyrus.semantic_catalog import publish_catalog
 from scrapyrus.transcriptions.core import (
     dump_transcriptions,
@@ -361,6 +366,45 @@ def embed_keywords(
         store.setup_store(database_url, progress)
     except (PgvectorUnavailableError, KeywordsUnavailableError) as error:
         raise click.ClickException(str(error)) from error
+
+
+@embeddings.command("evaluate_keywords")
+@database_url
+@embedding_client_options
+@embedding_model_options
+@click.option(
+    "--top-k",
+    type=click.IntRange(min=1),
+    default=10,
+    show_default=True,
+    help="Number of nearest keyword candidates to print.",
+)
+@click.argument("query")
+def evaluate_keywords(
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    top_k: int,
+    query: str,
+) -> None:
+    """Embed QUERY and print its nearest stored keyword candidates."""
+
+    try:
+        matches = find_similar_keywords(
+            query,
+            database_url,
+            inference_server_url=inference_server_url,
+            modelname=model_name,
+            api_key=api_key,
+            top_k=top_k,
+        )
+    except (KeywordEmbeddingsUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    click.echo("rank\tsimilarity\tkeyword")
+    for rank, match in enumerate(matches, start=1):
+        click.echo(f"{rank}\t{match.similarity:.6f}\t{match.keyword}")
 
 
 @embeddings.command("ingest")
