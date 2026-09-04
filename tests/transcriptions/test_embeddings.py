@@ -4,6 +4,7 @@ import psycopg
 import pytest
 
 from scrapyrus.transcriptions.embeddings import (
+    KEYWORD_EMBEDDING_DUMP_COLUMNS,
     MAXIMUM_TRANSCRIPTION_OPTIONS,
     EmbeddingStore,
     TranscriptionsUnavailableError,
@@ -136,6 +137,7 @@ def test_schema_creates_separate_kind_tables_without_migration():
 
     assert "CREATE TABLE IF NOT EXISTS transcription_embeddings" in sql
     assert "CREATE TABLE IF NOT EXISTS translation_embeddings" in sql
+    assert "CREATE TABLE IF NOT EXISTS keyword_embeddings" in sql
     assert "DROP TABLE" not in sql
     assert "embedding_configurations" not in sql
     assert "document_embeddings" not in sql
@@ -472,6 +474,29 @@ def test_dump_embeddings_writes_filtered_binary_copy(tmp_path, monkeypatch):
     assert "TO STDOUT WITH (FORMAT binary)" in cursor.copies[0]
 
 
+def test_dump_embeddings_supports_keywords(tmp_path, monkeypatch):
+    output = tmp_path / "keyword-embeddings.dump"
+    cursor = RecordingCursor(results=[(2,)], copy_chunks=[b"keyword-data"])
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+
+    count = dump_embeddings(
+        output,
+        "postgresql://db",
+        modelname="model",
+        document_kind="keywords",
+    )
+
+    assert count == 2
+    assert output.read_bytes() == b"keyword-data"
+    copy_query = cursor.copies[0]
+    assert 'FROM "keyword_embeddings"' in copy_query
+    assert 'ORDER BY "keyword"' in copy_query
+    assert all(f'"{column}"' in copy_query for column in KEYWORD_EMBEDDING_DUMP_COLUMNS)
+    assert '"xml_id"' not in copy_query
+
+
 def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
     tmp_path, monkeypatch
 ):
@@ -510,6 +535,45 @@ def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
     assert any(
         query.startswith('INSERT INTO "transcription_embeddings"')
         for query, _ in cursor.executions
+    )
+    assert any(
+        "USING hnsw" in query and "vector(3)" in query for query, _ in cursor.executions
+    )
+
+
+def test_import_embeddings_supports_keywords(tmp_path, monkeypatch):
+    source = tmp_path / "keyword-embeddings.dump"
+    source.write_bytes(b"keyword-data")
+    cursor = RecordingCursor(
+        fetchall_results=[[("model",)]],
+        results=[(2, 3, 3)],
+    )
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+
+    count = import_embeddings(
+        source,
+        "postgresql://db",
+        modelname="model",
+        document_kind="keywords",
+    )
+
+    assert count == 2
+    assert cursor.copy_writes == [b"keyword-data"]
+    assert any(
+        'CREATE TEMP TABLE "keyword_embeddings_import"' in query
+        and 'LIKE "keyword_embeddings"' in query
+        for query, _ in cursor.executions
+    )
+    insert_query = next(
+        query
+        for query, _ in cursor.executions
+        if query.startswith('INSERT INTO "keyword_embeddings"')
+    )
+    assert 'ORDER BY "keyword"' in insert_query
+    assert all(
+        f'"{column}"' in insert_query for column in KEYWORD_EMBEDDING_DUMP_COLUMNS
     )
     assert any(
         "USING hnsw" in query and "vector(3)" in query for query, _ in cursor.executions

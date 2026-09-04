@@ -29,6 +29,7 @@ from scrapyrus.transcriptions.semantics import (
 
 TRANSCRIPTION_EMBEDDINGS_TABLE = "transcription_embeddings"
 TRANSLATION_EMBEDDINGS_TABLE = "translation_embeddings"
+KEYWORD_EMBEDDINGS_TABLE = "keyword_embeddings"
 EMBEDDING_TABLES = {
     "transcription": TRANSCRIPTION_EMBEDDINGS_TABLE,
     "translation": TRANSLATION_EMBEDDINGS_TABLE,
@@ -38,6 +39,7 @@ EMBEDDING_KIND_ALIASES = {
     "translation": "translation",
     "transcriptions": "transcription",
     "translations": "translation",
+    "keywords": "keywords",
 }
 EMBEDDING_DUMP_COLUMNS = (
     "xml_id",
@@ -51,6 +53,26 @@ EMBEDDING_DUMP_COLUMNS = (
     "embedding",
     "updated_at",
 )
+KEYWORD_EMBEDDING_DUMP_COLUMNS = (
+    "keyword",
+    "model_name",
+    "embedding",
+    "updated_at",
+)
+EXPORT_EMBEDDING_TABLES = {
+    **EMBEDDING_TABLES,
+    "keywords": KEYWORD_EMBEDDINGS_TABLE,
+}
+EMBEDDING_DUMP_COLUMNS_BY_KIND = {
+    "transcription": EMBEDDING_DUMP_COLUMNS,
+    "translation": EMBEDDING_DUMP_COLUMNS,
+    "keywords": KEYWORD_EMBEDDING_DUMP_COLUMNS,
+}
+EMBEDDING_DUMP_ORDER_BY = {
+    "transcription": ("xml_id", "chunk_index"),
+    "translation": ("xml_id", "chunk_index"),
+    "keywords": ("keyword",),
+}
 
 PGVECTOR_UNAVAILABLE_MESSAGE = (
     "PostgreSQL extension 'vector' is not available. Install pgvector on the "
@@ -289,7 +311,8 @@ def dump_embeddings(
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     table = _embedding_table(document_kind)
-    columns = _embedding_columns_sql()
+    columns = _embedding_columns_sql(document_kind)
+    ordering = _embedding_ordering_sql(document_kind)
 
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
@@ -306,12 +329,13 @@ def dump_embeddings(
                     sql.SQL(
                         "COPY (SELECT {columns} FROM {table} "
                         "WHERE model_name = {modelname} "
-                        "ORDER BY xml_id, chunk_index) "
+                        "ORDER BY {ordering}) "
                         "TO STDOUT WITH (FORMAT binary)"
                     ).format(
                         columns=columns,
                         table=sql.Identifier(table),
                         modelname=sql.Literal(modelname),
+                        ordering=ordering,
                     )
                 ) as copy:
                     for chunk in copy:
@@ -332,7 +356,8 @@ def import_embeddings(
     source = Path(source)
     table = _embedding_table(document_kind)
     temporary_table = f"{table}_import"
-    columns = _embedding_columns_sql()
+    columns = _embedding_columns_sql(document_kind)
+    ordering = _embedding_ordering_sql(document_kind)
 
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
@@ -381,11 +406,12 @@ def import_embeddings(
                 sql.SQL(
                     "INSERT INTO {table} ({columns}) "
                     "SELECT {columns} FROM {temporary_table} "
-                    "ORDER BY xml_id, chunk_index"
+                    "ORDER BY {ordering}"
                 ).format(
                     table=sql.Identifier(table),
                     columns=columns,
                     temporary_table=sql.Identifier(temporary_table),
+                    ordering=ordering,
                 )
             )
             if dimensions is not None:
@@ -450,21 +476,29 @@ def chunk_embedding_text(document_text: str, chunk_size: int = 500) -> tuple[str
 
 
 def _embedding_table(document_kind: str) -> str:
+    normalized_kind = _embedding_kind(document_kind)
+    return EXPORT_EMBEDDING_TABLES[normalized_kind]
+
+
+def _embedding_kind(document_kind: str) -> str:
     try:
-        normalized_kind = EMBEDDING_KIND_ALIASES[document_kind]
+        return EMBEDDING_KIND_ALIASES[document_kind]
     except KeyError as error:
         choices = ", ".join(EMBEDDING_KIND_ALIASES)
         raise ValueError(
             f"Unknown embedding document kind {document_kind!r}. "
             f"Expected one of: {choices}"
         ) from error
-    return EMBEDDING_TABLES[normalized_kind]
 
 
-def _embedding_columns_sql() -> sql.Composed:
-    return sql.SQL(", ").join(
-        sql.Identifier(column) for column in EMBEDDING_DUMP_COLUMNS
-    )
+def _embedding_columns_sql(document_kind: str) -> sql.Composed:
+    columns = EMBEDDING_DUMP_COLUMNS_BY_KIND[_embedding_kind(document_kind)]
+    return sql.SQL(", ").join(sql.Identifier(column) for column in columns)
+
+
+def _embedding_ordering_sql(document_kind: str) -> sql.Composed:
+    ordering = EMBEDDING_DUMP_ORDER_BY[_embedding_kind(document_kind)]
+    return sql.SQL(", ").join(sql.Identifier(column) for column in ordering)
 
 
 def _select_xml_rows(
@@ -567,6 +601,17 @@ BEGIN
 END $$
 """
         )
+    cursor.execute(
+        f"""
+CREATE TABLE IF NOT EXISTS {KEYWORD_EMBEDDINGS_TABLE} (
+    keyword text NOT NULL,
+    model_name text NOT NULL,
+    embedding vector NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (keyword, model_name)
+)
+"""
+    )
     publish_semantics(
         cursor,
         (

@@ -20,7 +20,10 @@ from scrapyrus.semantics import (
     validate_semantic_columns,
 )
 from scrapyrus.transcriptions.core import TRANSCRIPTION_COLUMNS
-from scrapyrus.transcriptions.embeddings import EMBEDDING_DUMP_COLUMNS
+from scrapyrus.transcriptions.embeddings import (
+    EMBEDDING_DUMP_COLUMNS,
+    KEYWORD_EMBEDDING_DUMP_COLUMNS,
+)
 
 
 class RecordingCursor:
@@ -120,9 +123,7 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
     validate_semantic_columns(entries[6], TRANSCRIPTION_COLUMNS)
     validate_semantic_columns(entries[7], EMBEDDING_DUMP_COLUMNS)
     validate_semantic_columns(entries[8], EMBEDDING_DUMP_COLUMNS)
-    validate_semantic_columns(
-        entries[9], ("keyword", "model_name", "embedding", "updated_at")
-    )
+    validate_semantic_columns(entries[9], KEYWORD_EMBEDDING_DUMP_COLUMNS)
     validate_catalog_entries(entries)
 
 

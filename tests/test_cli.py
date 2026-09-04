@@ -718,6 +718,36 @@ def test_embeddings_dump_uses_parameterized_default_filename(monkeypatch):
     ]
 
 
+def test_embeddings_dump_supports_keywords_kind(tmp_path, monkeypatch):
+    calls = []
+    output = tmp_path / "keywords.dump"
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_embeddings",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "dump",
+            "--model-name",
+            "model",
+            "--kind",
+            "keywords",
+            str(output),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            (output, DEFAULT_DATABASE_URL),
+            {"modelname": "model", "document_kind": "keywords"},
+        )
+    ]
+
+
 def test_embeddings_import_reads_selected_table(tmp_path, monkeypatch):
     calls = []
     source = tmp_path / "embeddings.dump"
@@ -747,6 +777,37 @@ def test_embeddings_import_reads_selected_table(tmp_path, monkeypatch):
         (
             (source, "postgresql://db"),
             {"modelname": "model", "document_kind": "transcription"},
+        )
+    ]
+
+
+def test_embeddings_import_supports_keywords_kind(tmp_path, monkeypatch):
+    calls = []
+    source = tmp_path / "keywords.dump"
+    source.write_bytes(b"dump")
+    monkeypatch.setattr(
+        "scrapyrus.__main__.import_embeddings",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "import",
+            "--model-name",
+            "model",
+            "--kind",
+            "keywords",
+            str(source),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            (source, DEFAULT_DATABASE_URL),
+            {"modelname": "model", "document_kind": "keywords"},
         )
     ]
 

@@ -75,9 +75,6 @@ class FakeProvider:
 
 def test_keyword_schema_uses_exact_keyword_and_model_as_identity(monkeypatch):
     cursor = RecordingCursor()
-    monkeypatch.setattr(
-        "scrapyrus.keyword_embeddings.publish_semantics", lambda *args, **kwargs: None
-    )
 
     _ensure_keyword_embedding_schema(cursor)
 
@@ -99,9 +96,6 @@ def test_setup_store_embeds_only_missing_distinct_keywords(monkeypatch):
     monkeypatch.setattr(
         "scrapyrus.keyword_embeddings.initialize_llm_provider",
         lambda *args: provider,
-    )
-    monkeypatch.setattr(
-        "scrapyrus.keyword_embeddings.publish_semantics", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
         "scrapyrus.keyword_embeddings._recreate_embedding_index",
@@ -143,9 +137,6 @@ def test_setup_store_rejects_changed_embedding_dimensions(monkeypatch):
     monkeypatch.setattr(
         "scrapyrus.keyword_embeddings.initialize_llm_provider",
         lambda *args: FakeProvider([[0.1, 0.2, 0.3]]),
-    )
-    monkeypatch.setattr(
-        "scrapyrus.keyword_embeddings.publish_semantics", lambda *args, **kwargs: None
     )
 
     store = KeywordEmbeddingStore("https://example", "model", "key")

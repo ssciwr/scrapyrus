@@ -9,26 +9,18 @@ import psycopg
 from psycopg import sql
 from tqdm import tqdm
 
-from scrapyrus.semantics import publish_semantics
 from scrapyrus.transcriptions.embeddings import (
-    PGVECTOR_UNAVAILABLE_MESSAGE,
     HNSW_HALFVEC_MAX_DIMENSIONS,
     HNSW_VECTOR_MAX_DIMENSIONS,
-    PgvectorUnavailableError,
-    _is_missing_vector_extension_error,
+    KEYWORD_EMBEDDINGS_TABLE,
+    _ensure_embedding_schema,
     _recreate_embedding_index,
     _vector_literal,
 )
 from scrapyrus.transcriptions.llms import LLMProviderBase, initialize_llm_provider
-from scrapyrus.transcriptions.semantics import (
-    KEYWORD_EMBEDDINGS_SEMANTICS,
-    TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
-    TRANSLATION_EMBEDDINGS_SEMANTICS,
-)
 
 
 KEYWORDS_TABLE = "keywords"
-KEYWORD_EMBEDDINGS_TABLE = "keyword_embeddings"
 KEYWORDS_UNAVAILABLE_MESSAGE = (
     f"PostgreSQL table '{KEYWORDS_TABLE}' does not exist. Run "
     "'scrapyrus metadata ingest' against this database before creating keyword "
@@ -182,32 +174,7 @@ def find_similar_keywords(
 
 
 def _ensure_keyword_embedding_schema(cursor: Any) -> None:
-    try:
-        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    except (psycopg.errors.FeatureNotSupported, psycopg.errors.UndefinedFile) as error:
-        if _is_missing_vector_extension_error(error):
-            raise PgvectorUnavailableError(PGVECTOR_UNAVAILABLE_MESSAGE) from error
-        raise
-    cursor.execute(
-        f"""
-CREATE TABLE IF NOT EXISTS {KEYWORD_EMBEDDINGS_TABLE} (
-    keyword text NOT NULL,
-    model_name text NOT NULL,
-    embedding vector NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (keyword, model_name)
-)
-"""
-    )
-    publish_semantics(
-        cursor,
-        (
-            TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
-            TRANSLATION_EMBEDDINGS_SEMANTICS,
-            KEYWORD_EMBEDDINGS_SEMANTICS,
-        ),
-        component="embeddings",
-    )
+    _ensure_embedding_schema(cursor)
 
 
 def _select_keywords(cursor: Any) -> tuple[str, ...]:
