@@ -164,10 +164,10 @@ The command keeps separate rows and cosine-search indexes for each model. On a
 rerun it embeds only newly encountered keyword strings and removes strings that
 no longer occur in `keywords` for that model.
 
-Use the standalone query script to embed free text and print its top candidates:
+Embed free text and print its top candidates with the evaluation command:
 
 ```
-.venv/bin/python scripts/query_keyword_embeddings.py \
+scrapyrus embeddings evaluate_keywords \
     "sale of a house" --top-k 10 \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```

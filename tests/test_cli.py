@@ -125,6 +125,7 @@ def test_database_commands_use_shared_database_url_default_and_envvar():
         ("transcriptions", "lemmatize"),
         ("embeddings", "ingest"),
         ("embeddings", "keywords"),
+        ("embeddings", "evaluate_keywords"),
         ("embeddings", "delete"),
         ("embeddings", "dump"),
         ("embeddings", "import"),
@@ -452,6 +453,47 @@ def test_embeddings_keywords_uses_shared_embedding_options(monkeypatch):
         ("init", "https://inference.example/v1", "model", "secret"),
         ("setup", "postgresql://db", False),
     ]
+
+
+def test_embeddings_evaluate_keywords_prints_ranked_candidates(monkeypatch):
+    calls = []
+
+    class Match:
+        def __init__(self, keyword, similarity):
+            self.keyword = keyword
+            self.similarity = similarity
+
+    monkeypatch.setattr(
+        "scrapyrus.__main__.find_similar_keywords",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or (Match("contract", 0.91234567), Match("receipt", 0.75)),
+    )
+    result = CliRunner().invoke(
+        main,
+        ("embeddings", "evaluate_keywords", "sale of a house", "--top-k", "2"),
+        env={
+            "SCRAPYRUS_DATABASE_URL": "postgresql://db",
+            "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example/v1",
+            "SCRAPYRUS_EMBEDDINGS_MODEL": "model",
+            "SCRAPYRUS_EMBEDDINGS_API_KEY": "secret",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            ("sale of a house", "postgresql://db"),
+            {
+                "inference_server_url": "https://inference.example/v1",
+                "modelname": "model",
+                "api_key": "secret",
+                "top_k": 2,
+            },
+        )
+    ]
+    assert result.output == (
+        "rank\tsimilarity\tkeyword\n1\t0.912346\tcontract\n2\t0.750000\treceipt\n"
+    )
 
 
 def test_embeddings_ingest_uses_envvars(monkeypatch):
