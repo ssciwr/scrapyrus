@@ -271,6 +271,8 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "CREATE TABLE IF NOT EXISTS keywords" in schema_sql
     assert "keyword_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "uncertain boolean NOT NULL" in schema_sql
+    assert "qualifier text" in schema_sql
+    assert "qualifier_uncertain boolean NOT NULL" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS orig_dates" in schema_sql
     assert "date_id integer NOT NULL PRIMARY KEY" in schema_sql
     assert "alternative boolean NOT NULL" in schema_sql
@@ -350,6 +352,8 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "keyword_type": None,
             "keyword": "prose",
             "uncertain": True,
+            "qualifier": None,
+            "qualifier_uncertain": False,
         },
         {
             "keyword_id": 2,
@@ -358,6 +362,8 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "keyword_type": None,
             "keyword": "bible",
             "uncertain": True,
+            "qualifier": None,
+            "qualifier_uncertain": False,
         },
         {
             "keyword_id": 3,
@@ -366,6 +372,8 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "keyword_type": "culture",
             "keyword": "literature",
             "uncertain": False,
+            "qualifier": None,
+            "qualifier_uncertain": False,
         },
         {
             "keyword_id": 4,
@@ -374,6 +382,8 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "keyword_type": "religion",
             "keyword": "christian",
             "uncertain": False,
+            "qualifier": None,
+            "qualifier_uncertain": False,
         },
     ]
     columns = list(OrigDateMetadataTable().columns)
@@ -528,8 +538,8 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
         ),
     ]
     keyword_rows = [
-        (1, 13, "hgv", None, "prose", True),
-        (2, 13, "hgv", "culture", "literature", False),
+        (1, 13, "hgv", None, "prose", True, None, False),
+        (2, 13, "hgv", "culture", "literature", False, "poetry", True),
     ]
     principal_edition_rows = [
         (1, 13, 95120, "P.Oxy. 7", "Jane Smith", "7", "12", "34-36"),
@@ -649,8 +659,17 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
 
     assert dumped_keywords == [
         list(KeywordMetadataTable().columns),
-        ["1", "13", "hgv", "", "prose", "True"],
-        ["2", "13", "hgv", "culture", "literature", "False"],
+        ["1", "13", "hgv", "", "prose", "True", "", "False"],
+        [
+            "2",
+            "13",
+            "hgv",
+            "culture",
+            "literature",
+            "False",
+            "poetry",
+            "True",
+        ],
     ]
     with (tmp_path / "metadata-csv" / "orig_dates.csv").open(
         encoding="utf-8", newline=""
