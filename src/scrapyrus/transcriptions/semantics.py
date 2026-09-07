@@ -169,7 +169,7 @@ KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
     table_name="keyword_embeddings",
     description=(
         "The keyword_embeddings table stores one model-specific vector for each "
-        "distinct keyword string."
+        "distinct keyword and optional qualifier string."
     ),
     row_grain=(
         "One exact keyword string and embedding model, keyed by (keyword, model_name)."
@@ -177,7 +177,10 @@ KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
     useful_for=("semantic keyword candidate search",),
     columns={
         "keyword": ColumnSemantics(
-            description="Exact non-null keywords.keyword value supplied to the embedding model."
+            description=(
+                "Exact text supplied to the embedding model: a keyword by itself, "
+                "or 'keyword, qualifier' when a qualifier is present."
+            )
         ),
         "model_name": ColumnSemantics(
             description="Embedding model identifier.",
@@ -192,18 +195,6 @@ KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
             description="Time the stored embedding row was inserted or refreshed."
         ),
     },
-    relationships=(
-        RelationshipSemantics(
-            target_table="keywords",
-            source_columns=("keyword",),
-            target_columns=("keyword",),
-            cardinality="one-to-many",
-            description=(
-                "Logical relationship to every metadata assignment using the exact "
-                "keyword string; it is not a foreign key."
-            ),
-        ),
-    ),
     caveats=(
         "Cosine and distance operations must not compare vectors from different models.",
     ),
