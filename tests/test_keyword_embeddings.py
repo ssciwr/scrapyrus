@@ -31,7 +31,7 @@ class RecordingCursor:
     def execute(self, query, params=None):
         query = _sql_text(query)
         self.executions.append((query, params))
-        if query.startswith("SELECT DISTINCT keyword"):
+        if query.startswith("SELECT DISTINCT"):
             self._result = self.keyword_rows
         elif query.startswith("SELECT keyword, vector_dims"):
             self._result = self.stored_rows
@@ -84,9 +84,10 @@ def test_keyword_schema_uses_exact_keyword_and_model_as_identity(monkeypatch):
     assert "PRIMARY KEY (keyword, model_name)" in schema
 
 
-def test_update_store_embeds_only_missing_distinct_keywords(monkeypatch):
+def test_update_store_embeds_only_missing_distinct_keyword_qualifiers(monkeypatch):
     cursor = RecordingCursor(
-        keyword_rows=[("alpha",), ("beta",)], stored_rows=[("alpha", 2)]
+        keyword_rows=[("alpha",), ("beta, private",)],
+        stored_rows=[("alpha", 2)],
     )
     provider = FakeProvider([[0.25, 0.75]])
     indexes = []
@@ -107,7 +108,7 @@ def test_update_store_embeds_only_missing_distinct_keywords(monkeypatch):
     )
 
     assert count == 1
-    assert provider.inputs == ["beta"]
+    assert provider.inputs == ["beta, private"]
     inserts = [
         params
         for query, params in cursor.executions
@@ -115,7 +116,7 @@ def test_update_store_embeds_only_missing_distinct_keywords(monkeypatch):
     ]
     assert inserts == [
         {
-            "keyword": "beta",
+            "keyword": "beta, private",
             "model_name": "model",
             "embedding": "[0.25,0.75]",
         }
@@ -124,6 +125,16 @@ def test_update_store_embeds_only_missing_distinct_keywords(monkeypatch):
         query.lstrip().startswith("DELETE FROM keyword_embeddings")
         for query, _ in cursor.executions
     )
+    source_query = next(
+        query for query, _ in cursor.executions if query.startswith("SELECT DISTINCT")
+    )
+    assert "keyword || ', ' || qualifier" in source_query
+    delete_query = next(
+        query
+        for query, _ in cursor.executions
+        if query.lstrip().startswith("DELETE FROM keyword_embeddings")
+    )
+    assert "source.keyword || ', ' || source.qualifier" in delete_query
     assert indexes == [(cursor, "keyword_embeddings", "model", 2)]
 
 
@@ -169,7 +180,8 @@ def test_setup_store_rejects_changed_embedding_dimensions(monkeypatch):
 
 def test_find_similar_keywords_embeds_query_and_returns_ranked_matches(monkeypatch):
     cursor = RecordingCursor(
-        stats=(2, 2, 2), matches=[("contract", 0.9), ("receipt", 0.75)]
+        stats=(2, 2, 2),
+        matches=[("contract, private", 0.9), ("receipt", 0.75)],
     )
     provider = FakeProvider([[0.4, 0.6]])
     monkeypatch.setattr(
@@ -191,7 +203,7 @@ def test_find_similar_keywords_embeds_query_and_returns_ranked_matches(monkeypat
 
     assert provider.inputs == ["sale of a house"]
     assert [(match.keyword, match.similarity) for match in matches] == [
-        ("contract", 0.9),
+        ("contract, private", 0.9),
         ("receipt", 0.75),
     ]
     query, params = next(

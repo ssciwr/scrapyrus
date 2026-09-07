@@ -49,7 +49,7 @@ class KeywordMatch:
 
 
 class KeywordEmbeddingStore:
-    """Store one embedding per distinct, non-null keyword and model."""
+    """Store one embedding per distinct keyword/qualifier text and model."""
 
     def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
         self.modelname = modelname
@@ -65,12 +65,13 @@ class KeywordEmbeddingStore:
         *,
         stale_only: bool = False,
     ) -> int:
-        """Embed keyword strings for this model.
+        """Embed keyword and optional qualifier strings for this model.
 
-        Duplicate assignments in ``keywords`` share one embedding. Stored terms
-        which no longer occur in the source table are removed for this model.
-        When ``stale_only`` is true, existing terms are not sent to the model.
-        Return the number of embedded terms.
+        Qualifiers are appended as ``keyword, qualifier``. Duplicate assignments
+        in ``keywords`` share one embedding. Stored terms which no longer occur
+        in the source table are removed for this model. When ``stale_only`` is
+        true, existing terms are not sent to the model. Return the number of
+        embedded terms.
         """
 
         with psycopg.connect(conninfo) as connection:
@@ -194,12 +195,23 @@ def _ensure_keyword_embedding_schema(cursor: Any) -> None:
 def _select_keywords(cursor: Any) -> tuple[str, ...]:
     try:
         cursor.execute(
-            f"SELECT DISTINCT keyword FROM {KEYWORDS_TABLE} "
-            "WHERE keyword IS NOT NULL ORDER BY keyword"
+            f"SELECT DISTINCT {_embedding_keyword_sql()} AS embedding_keyword "
+            f"FROM {KEYWORDS_TABLE} WHERE keyword IS NOT NULL "
+            "ORDER BY embedding_keyword"
         )
     except psycopg.errors.UndefinedTable as error:
         raise KeywordsUnavailableError(KEYWORDS_UNAVAILABLE_MESSAGE) from error
-    return tuple(str(_row_value(row, "keyword", 0)) for row in cursor.fetchall())
+    return tuple(
+        str(_row_value(row, "embedding_keyword", 0)) for row in cursor.fetchall()
+    )
+
+
+def _embedding_keyword_sql(table_alias: str | None = None) -> str:
+    prefix = f"{table_alias}." if table_alias is not None else ""
+    return (
+        f"CASE WHEN {prefix}qualifier IS NULL THEN {prefix}keyword "
+        f"ELSE {prefix}keyword || ', ' || {prefix}qualifier END"
+    )
 
 
 def _select_stored_keyword_dimensions(cursor: Any, modelname: str) -> dict[str, int]:
@@ -244,7 +256,7 @@ DELETE FROM {KEYWORD_EMBEDDINGS_TABLE} AS embedding
 WHERE embedding.model_name = %s
   AND NOT EXISTS (
       SELECT 1 FROM {KEYWORDS_TABLE} AS source
-      WHERE source.keyword = embedding.keyword
+      WHERE {_embedding_keyword_sql("source")} = embedding.keyword
   )
 """,
         (modelname,),
