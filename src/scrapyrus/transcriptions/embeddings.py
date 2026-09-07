@@ -31,15 +31,12 @@ TRANSCRIPTION_EMBEDDINGS_TABLE = "transcription_embeddings"
 TRANSLATION_EMBEDDINGS_TABLE = "translation_embeddings"
 KEYWORD_EMBEDDINGS_TABLE = "keyword_embeddings"
 EMBEDDING_TABLES = {
-    "transcription": TRANSCRIPTION_EMBEDDINGS_TABLE,
-    "translation": TRANSLATION_EMBEDDINGS_TABLE,
+    "transcriptions": TRANSCRIPTION_EMBEDDINGS_TABLE,
+    "translations": TRANSLATION_EMBEDDINGS_TABLE,
 }
-EMBEDDING_KIND_ALIASES = {
-    "transcription": "transcription",
-    "translation": "translation",
+EMBEDDING_SOURCE_TYPES = {
     "transcriptions": "transcription",
     "translations": "translation",
-    "keywords": "keywords",
 }
 EMBEDDING_DUMP_COLUMNS = (
     "xml_id",
@@ -64,13 +61,13 @@ EXPORT_EMBEDDING_TABLES = {
     "keywords": KEYWORD_EMBEDDINGS_TABLE,
 }
 EMBEDDING_DUMP_COLUMNS_BY_KIND = {
-    "transcription": EMBEDDING_DUMP_COLUMNS,
-    "translation": EMBEDDING_DUMP_COLUMNS,
+    "transcriptions": EMBEDDING_DUMP_COLUMNS,
+    "translations": EMBEDDING_DUMP_COLUMNS,
     "keywords": KEYWORD_EMBEDDING_DUMP_COLUMNS,
 }
 EMBEDDING_DUMP_ORDER_BY = {
-    "transcription": ("xml_id", "chunk_index"),
-    "translation": ("xml_id", "chunk_index"),
+    "transcriptions": ("xml_id", "chunk_index"),
+    "translations": ("xml_id", "chunk_index"),
     "keywords": ("keyword",),
 }
 
@@ -132,12 +129,13 @@ class EmbeddingStore:
         progressbar: bool = True,
         /,
         *,
+        document_kind: str,
         stale_only: bool = False,
         sample: int | None = None,
         seed: int = 0,
         chunk_size: int = 500,
     ) -> int:
-        """Embed transcription/translation XML rows in PostgreSQL.
+        """Embed one kind of transcription XML row in PostgreSQL.
 
         Transcriptions always use the maximum text variant. Translations use
         their complete plain-text rendering. Rows are stored in separate tables.
@@ -148,16 +146,24 @@ class EmbeddingStore:
         Text size and overlap are measured in whitespace-delimited words.
         """
 
+        if document_kind not in EMBEDDING_TABLES:
+            raise ValueError(f"Unknown embedding document kind {document_kind!r}")
         if chunk_size < 1:
             raise ValueError("chunk_size must be at least 1")
 
         jobs: list[_EmbeddingJob] = []
-        seen_ids = {kind: set() for kind in EMBEDDING_TABLES}
+        seen_ids: set[int] = set()
+        table = EMBEDDING_TABLES[document_kind]
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 _ensure_embedding_schema(cursor)
                 try:
-                    sources = _select_xml_rows(cursor, sample=sample, seed=seed)
+                    sources = _select_xml_rows(
+                        cursor,
+                        document_kind=document_kind,
+                        sample=sample,
+                        seed=seed,
+                    )
                 except psycopg.errors.UndefinedTable as error:
                     raise TranscriptionsUnavailableError(
                         TRANSCRIPTIONS_UNAVAILABLE_MESSAGE
@@ -173,24 +179,20 @@ class EmbeddingStore:
                     else sources
                 )
                 for source in source_rows:
-                    document_kind = str(source["type"])
-                    if document_kind not in EMBEDDING_TABLES:
-                        continue
                     xml_id = int(source["transcription_id"])
                     document_text = _xml_to_embedding_text(
                         str(source["xml_content"]), document_kind
                     )
                     if not document_text.strip():
                         continue
-                    table = EMBEDDING_TABLES[document_kind]
-                    seen_ids[document_kind].add(xml_id)
+                    seen_ids.add(xml_id)
                     chunks = chunk_embedding_text(document_text, chunk_size)
                     _delete_extra_chunks(
                         cursor, table, xml_id, self.modelname, len(chunks)
                     )
                     language = (
                         transcription_language(str(source["xml_content"]))
-                        if document_kind == "transcription"
+                        if document_kind == "transcriptions"
                         else source["language"]
                     )
                     for chunk_index, chunk in enumerate(chunks):
@@ -247,14 +249,11 @@ class EmbeddingStore:
                         },
                     )
 
-                for kind, table in EMBEDDING_TABLES.items():
-                    _delete_missing_source_rows(
-                        cursor, table, self.modelname, seen_ids[kind]
+                _delete_missing_source_rows(cursor, table, self.modelname, seen_ids)
+                if table in dimensions:
+                    _recreate_embedding_index(
+                        cursor, table, self.modelname, dimensions[table]
                     )
-                    if table in dimensions:
-                        _recreate_embedding_index(
-                            cursor, table, self.modelname, dimensions[table]
-                        )
 
         return len(embedded)
 
@@ -267,6 +266,7 @@ def update_embeddings(
     progressbar: bool = True,
     /,
     *,
+    document_kind: str,
     inference_server_url: str,
     modelname: str,
     api_key: str,
@@ -275,27 +275,31 @@ def update_embeddings(
     """Compute missing or stale embeddings for one model from database XML."""
 
     return EmbeddingStore(inference_server_url, modelname, api_key).setup_store(
-        conninfo, progressbar, stale_only=True, chunk_size=chunk_size
+        conninfo,
+        progressbar,
+        document_kind=document_kind,
+        stale_only=True,
+        chunk_size=chunk_size,
     )
 
 
-def delete_embeddings(conninfo: str = "", /, *, modelname: str) -> int:
-    """Delete one model's transcription and translation embeddings."""
+def delete_embeddings(
+    conninfo: str = "", /, *, modelname: str, document_kind: str
+) -> int:
+    """Delete one model's embeddings for one document kind."""
 
-    deleted = 0
+    table = _embedding_table(document_kind)
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             _ensure_embedding_schema(cursor)
-            for table in EMBEDDING_TABLES.values():
-                _drop_embedding_index(cursor, table, modelname)
-                cursor.execute(
-                    sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
-                        sql.Identifier(table)
-                    ),
-                    (modelname,),
-                )
-                deleted += max(cursor.rowcount, 0)
-    return deleted
+            _drop_embedding_index(cursor, table, modelname)
+            cursor.execute(
+                sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
+                    sql.Identifier(table)
+                ),
+                (modelname,),
+            )
+            return max(cursor.rowcount, 0)
 
 
 def dump_embeddings(
@@ -304,7 +308,7 @@ def dump_embeddings(
     /,
     *,
     modelname: str,
-    document_kind: str = "transcription",
+    document_kind: str,
 ) -> int:
     """Dump one model's embedding rows in PostgreSQL binary COPY format."""
 
@@ -349,7 +353,7 @@ def import_embeddings(
     /,
     *,
     modelname: str,
-    document_kind: str = "transcription",
+    document_kind: str,
 ) -> int:
     """Import one model's embedding rows from PostgreSQL binary COPY format."""
 
@@ -429,7 +433,7 @@ def retrieve_embedding(
 ) -> tuple[float, ...] | None:
     """Return an embedding selected by model, kind, and XML source path."""
 
-    table = EMBEDDING_TABLES["translation" if translation else "transcription"]
+    table = EMBEDDING_TABLES["translations" if translation else "transcriptions"]
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -445,7 +449,7 @@ def retrieve_embedding(
 
 
 def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
-    if document_kind == "translation":
+    if document_kind == "translations":
         return translation_epidoc_xml_to_text(xml)
     return epidoc_xml_to_text(xml, **MAXIMUM_TRANSCRIPTION_OPTIONS)
 
@@ -481,14 +485,13 @@ def _embedding_table(document_kind: str) -> str:
 
 
 def _embedding_kind(document_kind: str) -> str:
-    try:
-        return EMBEDDING_KIND_ALIASES[document_kind]
-    except KeyError as error:
-        choices = ", ".join(EMBEDDING_KIND_ALIASES)
+    if document_kind not in EXPORT_EMBEDDING_TABLES:
+        choices = ", ".join(EXPORT_EMBEDDING_TABLES)
         raise ValueError(
             f"Unknown embedding document kind {document_kind!r}. "
             f"Expected one of: {choices}"
-        ) from error
+        )
+    return document_kind
 
 
 def _embedding_columns_sql(document_kind: str) -> sql.Composed:
@@ -502,15 +505,21 @@ def _embedding_ordering_sql(document_kind: str) -> sql.Composed:
 
 
 def _select_xml_rows(
-    cursor: Any, *, sample: int | None = None, seed: int = 0
+    cursor: Any,
+    *,
+    document_kind: str,
+    sample: int | None = None,
+    seed: int = 0,
 ) -> tuple[dict[str, Any], ...]:
     if sample is None:
         cursor.execute(
             f"""
 SELECT transcription_id, source_path, tm_id, xml_content::text, type, language
 FROM {TRANSCRIPTIONS_TABLE}
+WHERE type = %s
 ORDER BY transcription_id
-"""
+""",
+            (EMBEDDING_SOURCE_TYPES[document_kind],),
         )
     else:
         cursor.execute(
@@ -527,9 +536,10 @@ WITH sampled_records AS (
 SELECT transcription_id, source_path, tm_id, xml_content::text, type, language
 FROM {TRANSCRIPTIONS_TABLE}
 JOIN sampled_records USING (tm_id)
+WHERE type = %s
 ORDER BY transcription_id
 """,
-            (seed, sample),
+            (seed, sample, EMBEDDING_SOURCE_TYPES[document_kind]),
         )
     keys = (
         "transcription_id",

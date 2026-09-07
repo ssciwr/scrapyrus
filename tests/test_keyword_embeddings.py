@@ -84,7 +84,7 @@ def test_keyword_schema_uses_exact_keyword_and_model_as_identity(monkeypatch):
     assert "PRIMARY KEY (keyword, model_name)" in schema
 
 
-def test_setup_store_embeds_only_missing_distinct_keywords(monkeypatch):
+def test_update_store_embeds_only_missing_distinct_keywords(monkeypatch):
     cursor = RecordingCursor(
         keyword_rows=[("alpha",), ("beta",)], stored_rows=[("alpha", 2)]
     )
@@ -103,7 +103,7 @@ def test_setup_store_embeds_only_missing_distinct_keywords(monkeypatch):
     )
 
     count = KeywordEmbeddingStore("https://example", "model", "key").setup_store(
-        "postgresql://db", False
+        "postgresql://db", False, stale_only=True
     )
 
     assert count == 1
@@ -125,6 +125,29 @@ def test_setup_store_embeds_only_missing_distinct_keywords(monkeypatch):
         for query, _ in cursor.executions
     )
     assert indexes == [(cursor, "keyword_embeddings", "model", 2)]
+
+
+def test_ingest_store_reembeds_existing_keywords(monkeypatch):
+    cursor = RecordingCursor(keyword_rows=[("alpha",)], stored_rows=[("alpha", 2)])
+    provider = FakeProvider([[0.4, 0.6]])
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    monkeypatch.setattr(
+        "scrapyrus.keyword_embeddings.initialize_llm_provider",
+        lambda *args: provider,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.keyword_embeddings._recreate_embedding_index",
+        lambda *args: None,
+    )
+
+    count = KeywordEmbeddingStore("https://example", "model", "key").setup_store(
+        "postgresql://db", False, stale_only=False
+    )
+
+    assert count == 1
+    assert provider.inputs == ["alpha"]
 
 
 def test_setup_store_rejects_changed_embedding_dimensions(monkeypatch):
