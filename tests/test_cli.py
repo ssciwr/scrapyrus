@@ -123,14 +123,24 @@ def test_database_commands_use_shared_database_url_default_and_envvar():
         ("transcriptions", "dump"),
         ("transcriptions", "import"),
         ("transcriptions", "lemmatize"),
-        ("embeddings", "ingest"),
-        ("embeddings", "keywords"),
-        ("embeddings", "evaluate_keywords"),
-        ("embeddings", "delete"),
-        ("embeddings", "dump"),
-        ("embeddings", "import"),
-        ("embeddings", "update"),
-        ("embeddings", "evaluate"),
+        ("embeddings", "ingest", "transcriptions"),
+        ("embeddings", "ingest", "translations"),
+        ("embeddings", "ingest", "keywords"),
+        ("embeddings", "dump", "transcriptions"),
+        ("embeddings", "dump", "translations"),
+        ("embeddings", "dump", "keywords"),
+        ("embeddings", "import", "transcriptions"),
+        ("embeddings", "import", "translations"),
+        ("embeddings", "import", "keywords"),
+        ("embeddings", "evaluate", "transcriptions"),
+        ("embeddings", "evaluate", "translations"),
+        ("embeddings", "evaluate", "keywords"),
+        ("embeddings", "update", "transcriptions"),
+        ("embeddings", "update", "translations"),
+        ("embeddings", "update", "keywords"),
+        ("embeddings", "delete", "transcriptions"),
+        ("embeddings", "delete", "translations"),
+        ("embeddings", "delete", "keywords"),
     )
 
     for command_path in command_paths:
@@ -147,6 +157,23 @@ def test_database_commands_use_shared_database_url_default_and_envvar():
         assert database_options[0].envvar == DATABASE_URL_ENVVAR
         assert database_options[0].default == DEFAULT_DATABASE_URL
         assert not database_options[0].required
+
+
+def test_embeddings_exposes_only_nested_operation_groups():
+    assert set(main.commands["embeddings"].commands) == {
+        "ingest",
+        "dump",
+        "import",
+        "evaluate",
+        "update",
+        "delete",
+    }
+    for operation in main.commands["embeddings"].commands.values():
+        assert set(operation.commands) == {
+            "transcriptions",
+            "translations",
+            "keywords",
+        }
 
 
 def test_catalog_subcommand_publishes_all_semantics(monkeypatch):
@@ -403,6 +430,7 @@ def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypat
         (
             "embeddings",
             "ingest",
+            "transcriptions",
             "--database-url",
             "postgresql://db",
             "--inference-server-url",
@@ -421,25 +449,30 @@ def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypat
             "setup",
             "postgresql://db",
             False,
-            {"sample": None, "seed": 0, "chunk_size": 500},
+            {
+                "document_kind": "transcriptions",
+                "sample": None,
+                "seed": 0,
+                "chunk_size": 500,
+            },
         ),
     ]
 
 
-def test_embeddings_keywords_uses_shared_embedding_options(monkeypatch):
+def test_embeddings_ingest_keywords_uses_shared_embedding_options(monkeypatch):
     calls = []
 
     class Store:
         def __init__(self, url, model, key):
             calls.append(("init", url, model, key))
 
-        def setup_store(self, database_url, progress):
-            calls.append(("setup", database_url, progress))
+        def setup_store(self, database_url, progress, **kwargs):
+            calls.append(("setup", database_url, progress, kwargs))
 
     monkeypatch.setattr("scrapyrus.__main__.KeywordEmbeddingStore", Store)
     result = CliRunner().invoke(
         main,
-        ("embeddings", "keywords", "--no-progress"),
+        ("embeddings", "ingest", "keywords", "--no-progress"),
         env={
             "SCRAPYRUS_DATABASE_URL": "postgresql://db",
             "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example/v1",
@@ -451,11 +484,11 @@ def test_embeddings_keywords_uses_shared_embedding_options(monkeypatch):
     assert result.exit_code == 0
     assert calls == [
         ("init", "https://inference.example/v1", "model", "secret"),
-        ("setup", "postgresql://db", False),
+        ("setup", "postgresql://db", False, {"stale_only": False}),
     ]
 
 
-def test_embeddings_evaluate_keywords_prints_ranked_candidates(monkeypatch):
+def test_embeddings_evaluate_keyword_candidates_prints_ranked_matches(monkeypatch):
     calls = []
 
     class Match:
@@ -470,7 +503,14 @@ def test_embeddings_evaluate_keywords_prints_ranked_candidates(monkeypatch):
     )
     result = CliRunner().invoke(
         main,
-        ("embeddings", "evaluate_keywords", "sale of a house", "--top-k", "2"),
+        (
+            "embeddings",
+            "evaluate",
+            "keywords",
+            "sale of a house",
+            "--top-k",
+            "2",
+        ),
         env={
             "SCRAPYRUS_DATABASE_URL": "postgresql://db",
             "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example/v1",
@@ -509,7 +549,7 @@ def test_embeddings_ingest_uses_envvars(monkeypatch):
     monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
     result = CliRunner().invoke(
         main,
-        ("embeddings", "ingest"),
+        ("embeddings", "ingest", "translations"),
         env={
             "SCRAPYRUS_DATABASE_URL": "postgresql://db",
             "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example",
@@ -523,7 +563,12 @@ def test_embeddings_ingest_uses_envvars(monkeypatch):
         (
             "postgresql://db",
             True,
-            {"sample": None, "seed": 0, "chunk_size": 500},
+            {
+                "document_kind": "translations",
+                "sample": None,
+                "seed": 0,
+                "chunk_size": 500,
+            },
         ),
     ]
 
@@ -544,6 +589,7 @@ def test_embeddings_ingest_passes_sample_size(monkeypatch):
         (
             "embeddings",
             "ingest",
+            "transcriptions",
             "--database-url",
             "postgresql://db",
             "--inference-server-url",
@@ -566,7 +612,12 @@ def test_embeddings_ingest_passes_sample_size(monkeypatch):
     assert calls == [
         (
             ("postgresql://db", False),
-            {"sample": 12, "seed": 8675309, "chunk_size": 750},
+            {
+                "document_kind": "transcriptions",
+                "sample": 12,
+                "seed": 8675309,
+                "chunk_size": 750,
+            },
         )
     ]
 
@@ -587,6 +638,7 @@ def test_embeddings_ingest_reports_missing_pgvector(monkeypatch):
         (
             "embeddings",
             "ingest",
+            "transcriptions",
             "--database-url",
             "postgresql://db",
             "--inference-server-url",
@@ -617,6 +669,7 @@ def test_embeddings_ingest_reports_missing_transcriptions(monkeypatch):
         (
             "embeddings",
             "ingest",
+            "transcriptions",
             "--database-url",
             "postgresql://db",
             "--inference-server-url",
@@ -632,7 +685,7 @@ def test_embeddings_ingest_reports_missing_transcriptions(monkeypatch):
     assert result.output == ("Error: Run 'scrapyrus transcriptions ingest' first.\n")
 
 
-def test_embeddings_delete_removes_model_from_both_tables(monkeypatch):
+def test_embeddings_delete_removes_model_from_selected_table(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "scrapyrus.__main__.delete_embeddings",
@@ -643,6 +696,7 @@ def test_embeddings_delete_removes_model_from_both_tables(monkeypatch):
         (
             "embeddings",
             "delete",
+            "translations",
             "--database-url",
             "postgresql://db",
             "--model-name",
@@ -650,7 +704,12 @@ def test_embeddings_delete_removes_model_from_both_tables(monkeypatch):
         ),
     )
     assert result.exit_code == 0
-    assert calls == [("postgresql://db", {"modelname": "model"})]
+    assert calls == [
+        (
+            "postgresql://db",
+            {"modelname": "model", "document_kind": "translations"},
+        )
+    ]
 
 
 def test_embeddings_dump_writes_selected_table(tmp_path, monkeypatch):
@@ -666,12 +725,11 @@ def test_embeddings_dump_writes_selected_table(tmp_path, monkeypatch):
         (
             "embeddings",
             "dump",
+            "translations",
             "--database-url",
             "postgresql://db",
             "--model-name",
             "model",
-            "--kind",
-            "translations",
             str(output),
         ),
     )
@@ -697,12 +755,11 @@ def test_embeddings_dump_uses_parameterized_default_filename(monkeypatch):
         (
             "embeddings",
             "dump",
+            "translations",
             "--database-url",
             "postgresql://db",
             "--model-name",
             "provider/model name",
-            "--kind",
-            "translations",
         ),
     )
 
@@ -710,7 +767,7 @@ def test_embeddings_dump_uses_parameterized_default_filename(monkeypatch):
     assert calls == [
         (
             (
-                Path("translation-embeddings-provider-model-name.dump"),
+                Path("translations-embeddings-provider-model-name.dump"),
                 "postgresql://db",
             ),
             {"modelname": "provider/model name", "document_kind": "translations"},
@@ -731,10 +788,9 @@ def test_embeddings_dump_supports_keywords_kind(tmp_path, monkeypatch):
         (
             "embeddings",
             "dump",
+            "keywords",
             "--model-name",
             "model",
-            "--kind",
-            "keywords",
             str(output),
         ),
     )
@@ -762,12 +818,11 @@ def test_embeddings_import_reads_selected_table(tmp_path, monkeypatch):
         (
             "embeddings",
             "import",
+            "transcriptions",
             "--database-url",
             "postgresql://db",
             "--model-name",
             "model",
-            "--kind",
-            "transcription",
             str(source),
         ),
     )
@@ -776,7 +831,7 @@ def test_embeddings_import_reads_selected_table(tmp_path, monkeypatch):
     assert calls == [
         (
             (source, "postgresql://db"),
-            {"modelname": "model", "document_kind": "transcription"},
+            {"modelname": "model", "document_kind": "transcriptions"},
         )
     ]
 
@@ -795,10 +850,9 @@ def test_embeddings_import_supports_keywords_kind(tmp_path, monkeypatch):
         (
             "embeddings",
             "import",
+            "keywords",
             "--model-name",
             "model",
-            "--kind",
-            "keywords",
             str(source),
         ),
     )
@@ -823,6 +877,7 @@ def test_embeddings_update_requires_model_and_uses_database(monkeypatch):
         (
             "embeddings",
             "update",
+            "transcriptions",
             "--database-url",
             "postgresql://db",
             "--inference-server-url",
@@ -840,11 +895,52 @@ def test_embeddings_update_requires_model_and_uses_database(monkeypatch):
             ("postgresql://db", False),
             {
                 "inference_server_url": "https://example",
+                "document_kind": "transcriptions",
                 "modelname": "model",
                 "api_key": "secret",
                 "chunk_size": 500,
             },
         )
+    ]
+
+
+def test_embeddings_update_keywords_updates_only_stale_rows(monkeypatch):
+    calls = []
+
+    class Store:
+        def __init__(self, *args):
+            calls.append(("init", args))
+
+        def setup_store(self, *args, **kwargs):
+            calls.append(("setup", args, kwargs))
+
+    monkeypatch.setattr("scrapyrus.__main__.KeywordEmbeddingStore", Store)
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "update",
+            "keywords",
+            "--database-url",
+            "postgresql://db",
+            "--inference-server-url",
+            "https://example",
+            "--model-name",
+            "model",
+            "--api-key",
+            "secret",
+            "--no-progress",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        ("init", ("https://example", "model", "secret")),
+        (
+            "setup",
+            ("postgresql://db", False),
+            {"stale_only": True},
+        ),
     ]
 
 
@@ -860,6 +956,7 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
         (
             "embeddings",
             "evaluate",
+            "transcriptions",
             "--database-url",
             "postgresql://db",
             "--output",
@@ -872,6 +969,7 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
             ("postgresql://db",),
             {
                 "output_file": output,
+                "query_kind": "transcriptions",
                 "progressbar": True,
                 "sample": None,
                 "seed": 0,
@@ -893,6 +991,7 @@ def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
         (
             "embeddings",
             "evaluate",
+            "translations",
             "--database-url",
             "postgresql://db",
             "--sample",
@@ -911,6 +1010,7 @@ def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
             ("postgresql://db",),
             {
                 "output_file": output,
+                "query_kind": "translations",
                 "progressbar": False,
                 "sample": 12,
                 "seed": 8675309,

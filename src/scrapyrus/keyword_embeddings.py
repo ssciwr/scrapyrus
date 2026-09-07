@@ -28,7 +28,7 @@ KEYWORDS_UNAVAILABLE_MESSAGE = (
 )
 KEYWORD_EMBEDDINGS_UNAVAILABLE_MESSAGE = (
     f"PostgreSQL table '{KEYWORD_EMBEDDINGS_TABLE}' does not exist. Run "
-    "'scrapyrus embeddings keywords' against this database first."
+    "'scrapyrus embeddings ingest keywords' against this database first."
 )
 
 
@@ -57,12 +57,20 @@ class KeywordEmbeddingStore:
             inference_server_url, modelname, api_key
         )
 
-    def setup_store(self, conninfo: str = "", progressbar: bool = True, /) -> int:
-        """Embed keyword strings not yet stored for this model.
+    def setup_store(
+        self,
+        conninfo: str = "",
+        progressbar: bool = True,
+        /,
+        *,
+        stale_only: bool = False,
+    ) -> int:
+        """Embed keyword strings for this model.
 
         Duplicate assignments in ``keywords`` share one embedding. Stored terms
         which no longer occur in the source table are removed for this model.
-        Return the number of newly embedded terms.
+        When ``stale_only`` is true, existing terms are not sent to the model.
+        Return the number of embedded terms.
         """
 
         with psycopg.connect(conninfo) as connection:
@@ -79,9 +87,15 @@ class KeywordEmbeddingStore:
                         "have inconsistent dimensions"
                     )
 
-                pending = [
-                    keyword for keyword in keywords if keyword not in stored_dimensions
-                ]
+                pending = (
+                    [
+                        keyword
+                        for keyword in keywords
+                        if keyword not in stored_dimensions
+                    ]
+                    if stale_only
+                    else list(keywords)
+                )
                 terms = (
                     tqdm(pending, unit="keyword", desc="Embedding keywords")
                     if progressbar
@@ -142,7 +156,7 @@ def find_similar_keywords(
             if count == 0:
                 raise ValueError(
                     f"No keyword embeddings found for model {modelname!r}. Run "
-                    "'scrapyrus embeddings keywords' with the same model first."
+                    "'scrapyrus embeddings ingest keywords' with the same model first."
                 )
             if minimum_dimensions != maximum_dimensions:
                 raise ValueError(

@@ -4,6 +4,8 @@ import psycopg
 import pytest
 
 from scrapyrus.transcriptions.embeddings import (
+    EMBEDDING_TABLES,
+    EXPORT_EMBEDDING_TABLES,
     KEYWORD_EMBEDDING_DUMP_COLUMNS,
     MAXIMUM_TRANSCRIPTION_OPTIONS,
     EmbeddingStore,
@@ -119,7 +121,7 @@ def test_maximum_transcription_variant_is_fixed(monkeypatch):
         lambda xml, **options: calls.append((xml, options)) or "maximum",
     )
 
-    assert _xml_to_embedding_text("<div/>", "transcription") == "maximum"
+    assert _xml_to_embedding_text("<div/>", "transcriptions") == "maximum"
     assert calls == [("<div/>", MAXIMUM_TRANSCRIPTION_OPTIONS)]
     assert MAXIMUM_TRANSCRIPTION_OPTIONS == {
         "abbrev": True,
@@ -154,6 +156,15 @@ def test_schema_creates_separate_kind_tables_without_migration():
         ("translation_embeddings", "embeddings", 1),
         ("keyword_embeddings", "embeddings", 1),
     ]
+
+
+def test_embedding_kinds_use_only_plural_names():
+    assert set(EMBEDDING_TABLES) == {"transcriptions", "translations"}
+    assert set(EXPORT_EMBEDDING_TABLES) == {
+        "transcriptions",
+        "translations",
+        "keywords",
+    }
 
 
 def test_chunking_keeps_documents_within_target_unchanged():
@@ -196,10 +207,9 @@ def test_chunking_rejects_non_positive_chunk_size():
         chunk_embedding_text("text", 0)
 
 
-def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
+def test_setup_store_reads_only_selected_document_kind(monkeypatch):
     rows = [
         (1, "DDB/a.xml", 46, '<div type="edition">A</div>', "transcription", None),
-        (2, "HGV/46.xml", 46, '<div type="translation">B</div>', "translation", "en"),
     ]
     cursor = RecordingCursor(rows=rows)
     monkeypatch.setattr(
@@ -217,7 +227,7 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
         "scrapyrus.transcriptions.embeddings.transcription_language",
         lambda xml: "grc",
     )
-    provider = FakeProvider([[0.1, 0.2], [0.3, 0.4]])
+    provider = FakeProvider([[0.1, 0.2]])
     monkeypatch.setattr(
         "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
         lambda *args: provider,
@@ -228,10 +238,10 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     )
 
     count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
-        "postgresql://db", False
+        "postgresql://db", False, document_kind="transcriptions"
     )
 
-    assert count == 2
+    assert count == 1
     selects = [
         query for query, _ in cursor.executions if "FROM transcriptions" in query
     ]
@@ -245,16 +255,52 @@ def test_setup_store_reads_all_xml_rows_and_splits_output_tables(monkeypatch):
     assert inserts[0][1]["language"] == "grc"
     assert inserts[0][1]["document_text"] == "Alpha"
     assert inserts[0][1]["input_hash"] == hashlib.sha256(b"Alpha").hexdigest()
-    assert "translation_embeddings" in inserts[1][0]
-    assert inserts[1][1]["language"] == "en"
-    assert inserts[1][1]["document_text"] == "Beta"
-    assert provider.inputs == ["Alpha", "Beta"]
+    assert provider.inputs == ["Alpha"]
+    select_query, select_params = next(
+        (query, params)
+        for query, params in cursor.executions
+        if "FROM transcriptions" in query
+    )
+    assert "WHERE type = %s" in select_query
+    assert select_params == ("transcription",)
+
+
+def test_setup_store_embeds_translations_in_their_own_table(monkeypatch):
+    rows = [
+        (2, "HGV/46.xml", 46, '<div type="translation">B</div>', "translation", "en")
+    ]
+    cursor = RecordingCursor(rows=rows)
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.translation_epidoc_xml_to_text",
+        lambda xml: "Beta",
+    )
+    provider = FakeProvider([[0.3, 0.4]])
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: provider,
+    )
+
+    count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
+        "postgresql://db", False, document_kind="translations"
+    )
+
+    assert count == 1
+    insert = next(
+        (query, params)
+        for query, params in cursor.executions
+        if "INSERT INTO" in query and "translation_embeddings" in query
+    )
+    assert insert[1]["language"] == "en"
+    assert insert[1]["document_text"] == "Beta"
+    assert provider.inputs == ["Beta"]
 
 
 def test_setup_store_reports_xml_preparation_progress(monkeypatch):
     rows = [
         (1, "DDB/a.xml", 46, "<div/>", "transcription", None),
-        (2, "HGV/46.xml", 46, "<div/>", "translation", "en"),
     ]
     cursor = RecordingCursor(rows=rows)
     monkeypatch.setattr(
@@ -274,7 +320,7 @@ def test_setup_store_reports_xml_preparation_progress(monkeypatch):
     )
     monkeypatch.setattr(
         "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
-        lambda *args: FakeProvider([[0.1], [0.2]]),
+        lambda *args: FakeProvider([[0.1]]),
     )
     progress_calls = []
 
@@ -298,13 +344,13 @@ def test_setup_store_reports_xml_preparation_progress(monkeypatch):
     monkeypatch.setattr("scrapyrus.transcriptions.embeddings.tqdm", fake_tqdm)
 
     EmbeddingStore("https://example/v1", "model", "key").setup_store(
-        "postgresql://db", True
+        "postgresql://db", True, document_kind="transcriptions"
     )
 
     prepared_rows, total, unit, description = progress_calls[0]
-    assert len(prepared_rows) == 2
-    assert (total, unit, description) == (2, "row", "Preparing XML rows")
-    assert progress_calls[1][1:] == (2, "request", "Embedding XML rows")
+    assert len(prepared_rows) == 1
+    assert (total, unit, description) == (1, "row", "Preparing XML rows")
+    assert progress_calls[1][1:] == (1, "request", "Embedding XML rows")
 
 
 def test_setup_store_embeds_chunks_with_indices(monkeypatch):
@@ -329,7 +375,10 @@ def test_setup_store_embeds_chunks_with_indices(monkeypatch):
     )
 
     count = EmbeddingStore("https://example/v1", "model", "key").setup_store(
-        "postgresql://db", False, chunk_size=10
+        "postgresql://db",
+        False,
+        document_kind="transcriptions",
+        chunk_size=10,
     )
 
     inserts = [
@@ -366,13 +415,13 @@ def test_setup_store_reports_missing_transcriptions_table(monkeypatch):
 
     store = EmbeddingStore("https://example/v1", "model", "key")
     with pytest.raises(TranscriptionsUnavailableError, match="transcriptions ingest"):
-        store.setup_store("postgresql://db", False)
+        store.setup_store("postgresql://db", False, document_kind="transcriptions")
 
 
 def test_select_xml_rows_samples_deterministically_with_seed():
     cursor = RecordingCursor()
 
-    _select_xml_rows(cursor, sample=10, seed=42)
+    _select_xml_rows(cursor, document_kind="transcriptions", sample=10, seed=42)
 
     query, params = cursor.executions[0]
     assert "GROUP BY tm_id" in query
@@ -380,7 +429,7 @@ def test_select_xml_rows_samples_deterministically_with_seed():
     assert "bool_or(type = 'translation')" in query
     assert "ORDER BY md5(tm_id::text || ':' || (%s)::text), tm_id" in query
     assert "random()" not in query
-    assert params == (42, 10)
+    assert params == (42, 10, "transcription")
 
 
 def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
@@ -406,6 +455,7 @@ def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
         update_embeddings(
             "postgresql://db",
             False,
+            document_kind="transcriptions",
             inference_server_url="https://example",
             modelname="model",
             api_key="key",
@@ -431,21 +481,27 @@ def test_retrieve_embedding_uses_separate_kind_table(monkeypatch):
     assert 'FROM "translation_embeddings"' in cursor.executions[0][0]
 
 
-def test_delete_embeddings_deletes_model_from_both_tables(monkeypatch):
+def test_delete_embeddings_deletes_model_from_selected_table(monkeypatch):
     cursor = RecordingCursor(rowcount=3)
     monkeypatch.setattr(
         psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
     )
 
-    assert delete_embeddings("postgresql://db", modelname="model") == 6
+    assert (
+        delete_embeddings(
+            "postgresql://db",
+            modelname="model",
+            document_kind="translations",
+        )
+        == 3
+    )
     deletes = [
         query
         for query, _ in cursor.executions
         if query.startswith("DELETE FROM") and "scrapyrus_semantic_catalog" not in query
     ]
-    assert len(deletes) == 2
-    assert any("transcription_embeddings" in query for query in deletes)
-    assert any("translation_embeddings" in query for query in deletes)
+    assert len(deletes) == 1
+    assert "translation_embeddings" in deletes[0]
 
 
 def test_dump_embeddings_writes_filtered_binary_copy(tmp_path, monkeypatch):
@@ -514,7 +570,7 @@ def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
         source,
         "postgresql://db",
         modelname="model",
-        document_kind="transcription",
+        document_kind="transcriptions",
     )
 
     assert count == 2
@@ -615,7 +671,7 @@ def test_import_embeddings_rejects_unexpected_model_names(tmp_path, monkeypatch)
             source,
             "postgresql://db",
             modelname="model",
-            document_kind="translation",
+            document_kind="translations",
         )
     except ValueError as error:
         assert "other than 'model'" in str(error)

@@ -148,7 +148,9 @@ scrapyrus metadata ingest
 scrapyrus transcriptions ingest
 
 # requires the vector extension; see "Enabling the vector extension" above
-scrapyrus embeddings ingest \
+scrapyrus embeddings ingest transcriptions \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+scrapyrus embeddings ingest translations \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
@@ -156,44 +158,52 @@ Create a keyword embedding store from the distinct strings in the `keywords`
 table with the same inference settings:
 
 ```
-scrapyrus embeddings keywords \
+scrapyrus embeddings ingest keywords \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
 The command keeps separate rows and cosine-search indexes for each model. On a
-rerun it embeds only newly encountered keyword strings and removes strings that
-no longer occur in `keywords` for that model.
+fresh ingestion it embeds every source row or keyword. The corresponding
+`embeddings update transcriptions`, `embeddings update translations`, and
+`embeddings update keywords` commands embed only missing or stale entries and
+remove entries whose source no longer exists.
 
-Export and import one model's keyword embeddings with the existing binary dump
-commands by selecting the `keywords` kind:
+Each operation selects its collection through a subcommand. For example, export
+and import one model's keyword embeddings with:
 
 ```
-scrapyrus embeddings dump \
-    --kind keywords --model-name <model> keyword-embeddings.dump
+scrapyrus embeddings dump keywords \
+    --model-name <model> keyword-embeddings.dump
 
-scrapyrus embeddings import \
-    --kind keywords --model-name <model> keyword-embeddings.dump
+scrapyrus embeddings import keywords \
+    --model-name <model> keyword-embeddings.dump
 ```
 
 Embed free text and print its top candidates with the evaluation command:
 
 ```
-scrapyrus embeddings evaluate_keywords \
+scrapyrus embeddings evaluate keywords \
     "sale of a house" --top-k 10 \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
-Both commands accept `SCRAPYRUS_DATABASE_URL`, `SCRAPYRUS_EMBEDDINGS_URL`,
-`SCRAPYRUS_EMBEDDINGS_MODEL`, and `SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the
-corresponding options. The query must use the same model as the stored keyword
-embeddings.
+`scrapyrus embeddings evaluate transcriptions` evaluates transcription queries
+against translation candidates. `scrapyrus embeddings evaluate translations`
+evaluates translation queries against transcription candidates. The `dump`,
+`import`, and `delete` operation groups likewise provide `transcriptions`,
+`translations`, and `keywords` subcommands.
+
+The keyword ingestion and evaluation commands accept `SCRAPYRUS_DATABASE_URL`,
+`SCRAPYRUS_EMBEDDINGS_URL`, `SCRAPYRUS_EMBEDDINGS_MODEL`, and
+`SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the corresponding options. The query
+must use the same model as the stored keyword embeddings.
 
 The database must already exist and be reachable. Embedding ingestion reads the
 XML rows created by `transcriptions ingest`, so those commands must run in that
 order.
 
 Embedding commands additionally require the `vector` extension to be enabled in
-this database. Enable it before the first `embeddings ingest` run; without it the
+this database. Enable it before the first embedding ingestion; without it the
 command stops with `PostgreSQL extension 'vector' is not available`. Verify with:
 
 ```
