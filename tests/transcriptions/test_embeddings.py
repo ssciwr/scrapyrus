@@ -8,10 +8,12 @@ from scrapyrus.transcriptions.embeddings import (
     EXPORT_EMBEDDING_TABLES,
     KEYWORD_EMBEDDING_DUMP_COLUMNS,
     MAXIMUM_TRANSCRIPTION_OPTIONS,
+    DocumentMatch,
     EmbeddingStore,
     TranscriptionsUnavailableError,
     chunk_embedding_text,
     dump_embeddings,
+    find_similar_documents,
     _recreate_embedding_index,
     _ensure_embedding_schema,
     _select_xml_rows,
@@ -165,6 +167,68 @@ def test_embedding_kinds_use_only_plural_names():
         "translations",
         "keywords",
     }
+
+
+def test_find_similar_documents_embeds_query_and_returns_ranked_matches(monkeypatch):
+    cursor = RecordingCursor(
+        rows=[
+            ("DDB/a.xml", "123", "grc", "winning chunk", 0.875),
+            ("DDB/b.xml", "456", None, "another answer", 0.75),
+        ],
+        results=[(3, 2, 2)],
+    )
+    provider = FakeProvider([(0.25, 0.75)])
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    monkeypatch.setattr(
+        "scrapyrus.transcriptions.embeddings.initialize_llm_provider",
+        lambda *args: provider,
+    )
+
+    matches = find_similar_documents(
+        "sale of a house",
+        "postgresql://db",
+        document_kind="transcriptions",
+        inference_server_url="https://example",
+        modelname="model",
+        api_key="secret",
+        top_k=2,
+    )
+
+    assert provider.inputs == ["sale of a house"]
+    assert matches == (
+        DocumentMatch("DDB/a.xml", "123", "grc", "winning chunk", 0.875),
+        DocumentMatch("DDB/b.xml", "456", None, "another answer", 0.75),
+    )
+    stats_query, stats_params = cursor.executions[0]
+    assert 'FROM "transcription_embeddings"' in stats_query
+    assert stats_params == ("model",)
+    nearest_query, nearest_params = cursor.executions[1]
+    assert "PARTITION BY xml_id" in nearest_query
+    assert '"embedding"::vector(2) <=> %(embedding)s::vector(2)' in nearest_query
+    assert "WHERE chunk_rank = 1" in nearest_query
+    assert nearest_params == {
+        "embedding": "[0.25,0.75]",
+        "modelname": "model",
+        "top_k": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "top_k"),
+    [("", 10), ("   ", 10), ("query", 0)],
+)
+def test_find_similar_documents_validates_inputs(query, top_k):
+    with pytest.raises(ValueError):
+        find_similar_documents(
+            query,
+            document_kind="translations",
+            inference_server_url="https://example",
+            modelname="model",
+            api_key="secret",
+            top_k=top_k,
+        )
 
 
 def test_chunking_keeps_documents_within_target_unchanged():

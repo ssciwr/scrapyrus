@@ -22,11 +22,13 @@ from scrapyrus.transcriptions.core import (
     ingest_transcriptions,
 )
 from scrapyrus.transcriptions.embeddings import (
+    DocumentEmbeddingsUnavailableError,
     EmbeddingStore,
     PgvectorUnavailableError,
     TranscriptionsUnavailableError,
     delete_embeddings,
     dump_embeddings,
+    find_similar_documents,
     import_embeddings,
     update_embeddings,
 )
@@ -703,6 +705,117 @@ def delete_keyword_embeddings(database_url: str, model_name: str) -> None:
     _delete_embeddings("keywords", database_url, model_name)
 
 
+@embeddings.group("query")
+def query_embedding_rows() -> None:
+    """Find stored embeddings nearest to free text."""
+
+
+def _embedding_query_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            embedding_client_options,
+            embedding_model_options,
+            click.option(
+                "--top-k",
+                type=click.IntRange(min=1),
+                default=10,
+                show_default=True,
+                help="Number of nearest candidates to print.",
+            ),
+            click.argument("query"),
+        ],
+    )
+
+
+def _tsv_field(value: object | None) -> str:
+    return "" if value is None else " ".join(str(value).split())
+
+
+def _query_text_embeddings(
+    document_kind: str,
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    top_k: int,
+    query: str,
+) -> None:
+    try:
+        matches = find_similar_documents(
+            query,
+            database_url,
+            document_kind=document_kind,
+            inference_server_url=inference_server_url,
+            modelname=model_name,
+            api_key=api_key,
+            top_k=top_k,
+        )
+    except (DocumentEmbeddingsUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    click.echo("rank\tsimilarity\ttm_id\tlanguage\tsource_path\ttext")
+    for rank, match in enumerate(matches, start=1):
+        click.echo(
+            "\t".join(
+                (
+                    str(rank),
+                    f"{match.similarity:.6f}",
+                    _tsv_field(match.tm_id),
+                    _tsv_field(match.language),
+                    _tsv_field(match.source_path),
+                    _tsv_field(match.document_text),
+                )
+            )
+        )
+
+
+@query_embedding_rows.command("transcriptions")
+@_embedding_query_options
+def query_transcription_embeddings(**options) -> None:
+    """Embed QUERY and print its nearest stored transcriptions."""
+
+    _query_text_embeddings("transcriptions", **options)
+
+
+@query_embedding_rows.command("translations")
+@_embedding_query_options
+def query_translation_embeddings(**options) -> None:
+    """Embed QUERY and print its nearest stored translations."""
+
+    _query_text_embeddings("translations", **options)
+
+
+@query_embedding_rows.command("keywords")
+@_embedding_query_options
+def query_keyword_embeddings(
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    top_k: int,
+    query: str,
+) -> None:
+    """Embed QUERY and print its nearest stored keyword candidates."""
+
+    try:
+        matches = find_similar_keywords(
+            query,
+            database_url,
+            inference_server_url=inference_server_url,
+            modelname=model_name,
+            api_key=api_key,
+            top_k=top_k,
+        )
+    except (KeywordEmbeddingsUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    click.echo("rank\tsimilarity\tkeyword")
+    for rank, match in enumerate(matches, start=1):
+        click.echo(f"{rank}\t{match.similarity:.6f}\t{match.keyword}")
+
+
 @embeddings.group("evaluate")
 def evaluate_embedding_rows() -> None:
     """Evaluate embedding retrieval."""
@@ -784,45 +897,6 @@ def evaluate_translation_embeddings(**options) -> None:
     """Evaluate translation queries against transcription embeddings."""
 
     _evaluate_text_embeddings("translations", **options)
-
-
-@evaluate_embedding_rows.command("keywords")
-@database_url
-@embedding_client_options
-@embedding_model_options
-@click.option(
-    "--top-k",
-    type=click.IntRange(min=1),
-    default=10,
-    show_default=True,
-    help="Number of nearest keyword candidates to print.",
-)
-@click.argument("query")
-def evaluate_keyword_embeddings(
-    database_url: str,
-    inference_server_url: str,
-    model_name: str,
-    api_key: str,
-    top_k: int,
-    query: str,
-) -> None:
-    """Embed QUERY and print its nearest stored keyword candidates."""
-
-    try:
-        matches = find_similar_keywords(
-            query,
-            database_url,
-            inference_server_url=inference_server_url,
-            modelname=model_name,
-            api_key=api_key,
-            top_k=top_k,
-        )
-    except (KeywordEmbeddingsUnavailableError, ValueError) as error:
-        raise click.ClickException(str(error)) from error
-
-    click.echo("rank\tsimilarity\tkeyword")
-    for rank, match in enumerate(matches, start=1):
-        click.echo(f"{rank}\t{match.similarity:.6f}\t{match.keyword}")
 
 
 if __name__ == "__main__":

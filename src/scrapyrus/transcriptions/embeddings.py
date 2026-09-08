@@ -93,6 +93,21 @@ class TranscriptionsUnavailableError(RuntimeError):
     """Raised when transcription XML has not been ingested into PostgreSQL."""
 
 
+class DocumentEmbeddingsUnavailableError(RuntimeError):
+    """Raised when a requested document embedding table does not exist."""
+
+
+@dataclass(frozen=True)
+class DocumentMatch:
+    """One source document nearest to an embedded free-text query."""
+
+    source_path: str
+    tm_id: str
+    language: str | None
+    document_text: str
+    similarity: float
+
+
 @dataclass(frozen=True)
 class _EmbeddingJob:
     ordinal: int
@@ -448,6 +463,85 @@ def retrieve_embedding(
     return None if row is None else _parse_vector(_first_column(row))
 
 
+def find_similar_documents(
+    query: str,
+    conninfo: str = "",
+    /,
+    *,
+    document_kind: str,
+    inference_server_url: str,
+    modelname: str,
+    api_key: str,
+    top_k: int = 10,
+) -> tuple[DocumentMatch, ...]:
+    """Embed *query* and return the nearest stored source documents.
+
+    Chunked documents occur only once in the result, using their closest chunk
+    as the displayed text and as the document's similarity score.
+    """
+
+    if not query.strip():
+        raise ValueError("query must not be blank")
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
+
+    if document_kind not in EMBEDDING_TABLES:
+        choices = ", ".join(EMBEDDING_TABLES)
+        raise ValueError(
+            f"Cannot query embedding document kind {document_kind!r}. "
+            f"Expected one of: {choices}"
+        )
+    table = EMBEDDING_TABLES[document_kind]
+
+    provider = initialize_llm_provider(inference_server_url, modelname, api_key)
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            count, minimum_dimensions, maximum_dimensions = (
+                _stored_document_embedding_stats(cursor, table, modelname)
+            )
+            if count == 0:
+                raise ValueError(
+                    f"No {document_kind} embeddings found for model {modelname!r}. "
+                    f"Run 'scrapyrus embeddings ingest {document_kind}' with the "
+                    "same model first."
+                )
+            if minimum_dimensions != maximum_dimensions:
+                raise ValueError(
+                    f"Stored {document_kind} embeddings for model {modelname!r} "
+                    "have inconsistent dimensions"
+                )
+
+            embedding = provider.embed(query)
+            if len(embedding) != minimum_dimensions:
+                raise ValueError(
+                    f"Query embedding has {len(embedding)} dimensions, but stored "
+                    f"{document_kind} embeddings for model {modelname!r} have "
+                    f"{minimum_dimensions}"
+                )
+            cursor.execute(
+                _nearest_documents_query(table, minimum_dimensions),
+                {
+                    "embedding": _vector_literal(embedding),
+                    "modelname": modelname,
+                    "top_k": top_k,
+                },
+            )
+            return tuple(
+                DocumentMatch(
+                    source_path=str(_row_value(row, "source_path", 0)),
+                    tm_id=str(_row_value(row, "tm_id", 1)),
+                    language=(
+                        None
+                        if _row_value(row, "language", 2) is None
+                        else str(_row_value(row, "language", 2))
+                    ),
+                    document_text=str(_row_value(row, "document_text", 3)),
+                    similarity=float(_row_value(row, "similarity", 4)),
+                )
+                for row in cursor.fetchall()
+            )
+
+
 def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
     if document_kind == "translations":
         return translation_epidoc_xml_to_text(xml)
@@ -502,6 +596,72 @@ def _embedding_columns_sql(document_kind: str) -> sql.Composed:
 def _embedding_ordering_sql(document_kind: str) -> sql.Composed:
     ordering = EMBEDDING_DUMP_ORDER_BY[_embedding_kind(document_kind)]
     return sql.SQL(", ").join(sql.Identifier(column) for column in ordering)
+
+
+def _stored_document_embedding_stats(
+    cursor: Any, table: str, modelname: str
+) -> tuple[int, int, int]:
+    try:
+        cursor.execute(
+            sql.SQL(
+                "SELECT count(*), min(vector_dims(embedding)), "
+                "max(vector_dims(embedding)) FROM {} WHERE model_name = %s"
+            ).format(sql.Identifier(table)),
+            (modelname,),
+        )
+    except psycopg.errors.UndefinedTable as error:
+        document_kind = (
+            "transcriptions"
+            if table == TRANSCRIPTION_EMBEDDINGS_TABLE
+            else "translations"
+        )
+        raise DocumentEmbeddingsUnavailableError(
+            f"PostgreSQL table {table!r} does not exist. Run "
+            f"'scrapyrus embeddings ingest {document_kind}' against this "
+            "database first."
+        ) from error
+    row = cursor.fetchone()
+    count = int(_row_value(row, "count", 0))
+    if count == 0:
+        return 0, 0, 0
+    return (
+        count,
+        int(_row_value(row, "min", 1)),
+        int(_row_value(row, "max", 2)),
+    )
+
+
+def _nearest_documents_query(table: str, dimensions: int) -> sql.Composed:
+    if dimensions <= HNSW_VECTOR_MAX_DIMENSIONS:
+        vector_type = "vector"
+    elif dimensions <= HNSW_HALFVEC_MAX_DIMENSIONS:
+        vector_type = "halfvec"
+    else:
+        vector_type = None
+
+    if vector_type is None:
+        stored = sql.Identifier("embedding")
+        query = sql.SQL("{}::vector").format(sql.Placeholder("embedding"))
+    else:
+        cast = sql.SQL("{}({})").format(sql.SQL(vector_type), sql.Literal(dimensions))
+        stored = sql.SQL("{}::{}").format(sql.Identifier("embedding"), cast)
+        query = sql.SQL("{}::{}").format(sql.Placeholder("embedding"), cast)
+    distance = sql.SQL("{} <=> {}").format(stored, query)
+    return sql.SQL(
+        "WITH ranked_chunks AS ("
+        "SELECT xml_id, source_path, tm_id, language, document_text, chunk_index, "
+        "1 - ({distance}) AS similarity, "
+        "row_number() OVER (PARTITION BY xml_id ORDER BY {distance}, chunk_index) "
+        "AS chunk_rank FROM {table} WHERE model_name = {modelname}"
+        ") SELECT source_path, tm_id, language, document_text, similarity "
+        "FROM ranked_chunks WHERE chunk_rank = 1 "
+        "ORDER BY similarity DESC, source_path, tm_id, xml_id LIMIT {top_k}"
+    ).format(
+        distance=distance,
+        table=sql.Identifier(table),
+        modelname=sql.Placeholder("modelname"),
+        top_k=sql.Placeholder("top_k"),
+    )
 
 
 def _select_xml_rows(

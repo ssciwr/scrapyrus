@@ -134,7 +134,9 @@ def test_database_commands_use_shared_database_url_default_and_envvar():
         ("embeddings", "import", "keywords"),
         ("embeddings", "evaluate", "transcriptions"),
         ("embeddings", "evaluate", "translations"),
-        ("embeddings", "evaluate", "keywords"),
+        ("embeddings", "query", "transcriptions"),
+        ("embeddings", "query", "translations"),
+        ("embeddings", "query", "keywords"),
         ("embeddings", "update", "transcriptions"),
         ("embeddings", "update", "translations"),
         ("embeddings", "update", "keywords"),
@@ -165,15 +167,22 @@ def test_embeddings_exposes_only_nested_operation_groups():
         "dump",
         "import",
         "evaluate",
+        "query",
         "update",
         "delete",
     }
-    for operation in main.commands["embeddings"].commands.values():
+    complete_operations = ("ingest", "dump", "import", "query", "update", "delete")
+    for operation_name in complete_operations:
+        operation = main.commands["embeddings"].commands[operation_name]
         assert set(operation.commands) == {
             "transcriptions",
             "translations",
             "keywords",
         }
+    assert set(main.commands["embeddings"].commands["evaluate"].commands) == {
+        "transcriptions",
+        "translations",
+    }
 
 
 def test_catalog_subcommand_publishes_all_semantics(monkeypatch):
@@ -488,7 +497,7 @@ def test_embeddings_ingest_keywords_uses_shared_embedding_options(monkeypatch):
     ]
 
 
-def test_embeddings_evaluate_keyword_candidates_prints_ranked_matches(monkeypatch):
+def test_embeddings_query_keyword_candidates_prints_ranked_matches(monkeypatch):
     calls = []
 
     class Match:
@@ -505,7 +514,7 @@ def test_embeddings_evaluate_keyword_candidates_prints_ranked_matches(monkeypatc
         main,
         (
             "embeddings",
-            "evaluate",
+            "query",
             "keywords",
             "sale of a house",
             "--top-k",
@@ -533,6 +542,63 @@ def test_embeddings_evaluate_keyword_candidates_prints_ranked_matches(monkeypatc
     ]
     assert result.output == (
         "rank\tsimilarity\tkeyword\n1\t0.912346\tcontract\n2\t0.750000\treceipt\n"
+    )
+
+
+def test_embeddings_query_text_candidates_prints_ranked_matches(monkeypatch):
+    calls = []
+
+    class Match:
+        def __init__(self, source_path, tm_id, language, document_text, similarity):
+            self.source_path = source_path
+            self.tm_id = tm_id
+            self.language = language
+            self.document_text = document_text
+            self.similarity = similarity
+
+    monkeypatch.setattr(
+        "scrapyrus.__main__.find_similar_documents",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or (
+            Match("DDB/a.xml", "123", "grc", "first\nanswer", 0.81234567),
+            Match("DDB/b.xml", "456", None, "second answer", 0.7),
+        ),
+    )
+    result = CliRunner().invoke(
+        main,
+        (
+            "embeddings",
+            "query",
+            "transcriptions",
+            "sale of a house",
+            "--top-k",
+            "2",
+        ),
+        env={
+            "SCRAPYRUS_DATABASE_URL": "postgresql://db",
+            "SCRAPYRUS_EMBEDDINGS_URL": "https://inference.example/v1",
+            "SCRAPYRUS_EMBEDDINGS_MODEL": "model",
+            "SCRAPYRUS_EMBEDDINGS_API_KEY": "secret",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            ("sale of a house", "postgresql://db"),
+            {
+                "document_kind": "transcriptions",
+                "inference_server_url": "https://inference.example/v1",
+                "modelname": "model",
+                "api_key": "secret",
+                "top_k": 2,
+            },
+        )
+    ]
+    assert result.output == (
+        "rank\tsimilarity\ttm_id\tlanguage\tsource_path\ttext\n"
+        "1\t0.812346\t123\tgrc\tDDB/a.xml\tfirst answer\n"
+        "2\t0.700000\t456\t\tDDB/b.xml\tsecond answer\n"
     )
 
 
