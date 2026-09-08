@@ -369,6 +369,11 @@ def _text_ingestion_options(function):
                 show_default=True,
                 help="Show progress bars while embedding database XML rows.",
             ),
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table is configured for another model.",
+            ),
         ],
     )
 
@@ -383,6 +388,7 @@ def _ingest_text_embeddings(
     seed: int,
     chunk_size: int,
     progress: bool,
+    force: bool,
 ) -> None:
     store = EmbeddingStore(inference_server_url, model_name, api_key)
     try:
@@ -393,8 +399,13 @@ def _ingest_text_embeddings(
             sample=sample,
             seed=seed,
             chunk_size=chunk_size,
+            force=force,
         )
-    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
+    except (
+        PgvectorUnavailableError,
+        TranscriptionsUnavailableError,
+        ValueError,
+    ) as error:
         raise click.ClickException(str(error)) from error
 
 
@@ -424,19 +435,25 @@ def ingest_translation_embeddings(**options) -> None:
     show_default=True,
     help="Show a progress bar while embedding distinct keyword strings.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Discard embeddings if the table is configured for another model.",
+)
 def ingest_keyword_embeddings(
     database_url: str,
     inference_server_url: str,
     model_name: str,
     api_key: str,
     progress: bool,
+    force: bool,
 ) -> None:
     """Embed distinct metadata keyword strings in PostgreSQL."""
 
     store = KeywordEmbeddingStore(inference_server_url, model_name, api_key)
     try:
-        store.setup_store(database_url, progress, stale_only=False)
-    except (PgvectorUnavailableError, KeywordsUnavailableError) as error:
+        store.setup_store(database_url, progress, stale_only=False, force=force)
+    except (PgvectorUnavailableError, KeywordsUnavailableError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
@@ -521,6 +538,11 @@ def _import_options(function):
                     path_type=Path, dir_okay=False, exists=True, readable=True
                 ),
             ),
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table is configured for another model.",
+            ),
         ],
     )
 
@@ -530,6 +552,7 @@ def _import_embeddings(
     database_url: str,
     model_name: str,
     input_file: Path,
+    force: bool,
 ) -> None:
     try:
         import_embeddings(
@@ -537,6 +560,7 @@ def _import_embeddings(
             database_url,
             modelname=model_name,
             document_kind=document_kind,
+            force=force,
         )
     except (PgvectorUnavailableError, ValueError) as error:
         raise click.ClickException(str(error)) from error
@@ -593,6 +617,11 @@ def _text_update_options(function):
                 show_default=True,
                 help="Show progress bars while embedding stale database XML rows.",
             ),
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table is configured for another model.",
+            ),
         ],
     )
 
@@ -605,6 +634,7 @@ def _update_text_embeddings(
     api_key: str,
     chunk_size: int,
     progress: bool,
+    force: bool,
 ) -> None:
     try:
         update_embeddings(
@@ -615,8 +645,13 @@ def _update_text_embeddings(
             modelname=model_name,
             api_key=api_key,
             chunk_size=chunk_size,
+            force=force,
         )
-    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
+    except (
+        PgvectorUnavailableError,
+        TranscriptionsUnavailableError,
+        ValueError,
+    ) as error:
         raise click.ClickException(str(error)) from error
 
 
@@ -646,19 +681,25 @@ def update_translation_embeddings(**options) -> None:
     show_default=True,
     help="Show a progress bar while embedding new keyword strings.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Discard embeddings if the table is configured for another model.",
+)
 def update_keyword_embeddings(
     database_url: str,
     inference_server_url: str,
     model_name: str,
     api_key: str,
     progress: bool,
+    force: bool,
 ) -> None:
     """Update keyword embeddings for one model."""
 
     store = KeywordEmbeddingStore(inference_server_url, model_name, api_key)
     try:
-        store.setup_store(database_url, progress, stale_only=True)
-    except (PgvectorUnavailableError, KeywordsUnavailableError) as error:
+        store.setup_store(database_url, progress, stale_only=True, force=force)
+    except (PgvectorUnavailableError, KeywordsUnavailableError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
@@ -821,45 +862,34 @@ def evaluate_embedding_rows() -> None:
     """Evaluate embedding retrieval."""
 
 
-def _text_evaluation_options(default_output: str):
-    def decorator(function):
-        return _apply_options(
-            function,
-            [
-                database_url,
-                click.option(
-                    "--sample",
-                    type=click.IntRange(min=1),
-                    help=(
-                        "Randomly select this many records that have both a "
-                        "transcription and a translation."
-                    ),
+def _text_evaluation_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            click.option(
+                "--sample",
+                type=click.IntRange(min=1),
+                help=(
+                    "Randomly select this many records that have both a "
+                    "transcription and a translation."
                 ),
-                click.option(
-                    "--seed",
-                    type=int,
-                    default=0,
-                    show_default=True,
-                    help="Seed used to make --sample selection deterministic.",
-                ),
-                click.option(
-                    "--output",
-                    "output_file",
-                    type=click.Path(path_type=Path, dir_okay=False),
-                    default=Path(default_output),
-                    show_default=True,
-                    help="Markdown file to write evaluation findings to.",
-                ),
-                click.option(
-                    "--progress/--no-progress",
-                    default=True,
-                    show_default=True,
-                    help="Show progress bars while evaluating embedding retrieval.",
-                ),
-            ],
-        )
-
-    return decorator
+            ),
+            click.option(
+                "--seed",
+                type=int,
+                default=0,
+                show_default=True,
+                help="Seed used to make --sample selection deterministic.",
+            ),
+            click.option(
+                "--progress/--no-progress",
+                default=True,
+                show_default=True,
+                help="Show progress bars while evaluating embedding retrieval.",
+            ),
+        ],
+    )
 
 
 def _evaluate_text_embeddings(
@@ -867,14 +897,12 @@ def _evaluate_text_embeddings(
     database_url: str,
     sample: int | None,
     seed: int,
-    output_file: Path,
     progress: bool,
 ) -> None:
     try:
         evaluate_embeddings(
             database_url,
             query_kind=query_kind,
-            output_file=output_file,
             progressbar=progress,
             sample=sample,
             seed=seed,
@@ -884,7 +912,7 @@ def _evaluate_text_embeddings(
 
 
 @evaluate_embedding_rows.command("transcriptions")
-@_text_evaluation_options("transcription-embedding-evaluation.md")
+@_text_evaluation_options
 def evaluate_transcription_embeddings(**options) -> None:
     """Evaluate transcription queries against translation embeddings."""
 
@@ -892,7 +920,7 @@ def evaluate_transcription_embeddings(**options) -> None:
 
 
 @evaluate_embedding_rows.command("translations")
-@_text_evaluation_options("translation-embedding-evaluation.md")
+@_text_evaluation_options
 def evaluate_translation_embeddings(**options) -> None:
     """Evaluate translation queries against transcription embeddings."""
 

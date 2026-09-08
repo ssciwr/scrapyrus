@@ -13,8 +13,11 @@ from scrapyrus.transcriptions.embeddings import (
     HNSW_HALFVEC_MAX_DIMENSIONS,
     HNSW_VECTOR_MAX_DIMENSIONS,
     KEYWORD_EMBEDDINGS_TABLE,
+    _associate_embedding_model,
     _ensure_embedding_schema,
     _recreate_embedding_index,
+    _require_embedding_model,
+    _set_embedding_size,
     _vector_literal,
 )
 from scrapyrus.transcriptions.llms import LLMProviderBase, initialize_llm_provider
@@ -64,6 +67,7 @@ class KeywordEmbeddingStore:
         /,
         *,
         stale_only: bool = False,
+        force: bool = False,
     ) -> int:
         """Embed keyword and optional qualifier strings for this model.
 
@@ -77,10 +81,11 @@ class KeywordEmbeddingStore:
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 _ensure_keyword_embedding_schema(cursor)
-                keywords = _select_keywords(cursor)
-                stored_dimensions = _select_stored_keyword_dimensions(
-                    cursor, self.modelname
+                metadata = _associate_embedding_model(
+                    cursor, KEYWORD_EMBEDDINGS_TABLE, self.modelname, force=force
                 )
+                keywords = _select_keywords(cursor)
+                stored_dimensions = _select_stored_keyword_dimensions(cursor)
                 dimensions = set(stored_dimensions.values())
                 if len(dimensions) > 1:
                     raise ValueError(
@@ -102,7 +107,12 @@ class KeywordEmbeddingStore:
                     if progressbar
                     else pending
                 )
-                expected_dimensions = next(iter(dimensions), None)
+                expected_dimensions = metadata.embedding_size
+                if dimensions and dimensions != {expected_dimensions}:
+                    raise ValueError(
+                        "Stored keyword vectors do not match the configured "
+                        f"embedding size {expected_dimensions}"
+                    )
                 for keyword in terms:
                     embedding = self.provider.embed(keyword)
                     if expected_dimensions is None:
@@ -115,16 +125,20 @@ class KeywordEmbeddingStore:
                     _upsert_keyword_embedding(
                         cursor,
                         keyword=keyword,
-                        modelname=self.modelname,
                         embedding=embedding,
                     )
 
-                _delete_stale_keyword_embeddings(cursor, self.modelname)
+                _delete_stale_keyword_embeddings(cursor)
                 if expected_dimensions is not None:
-                    _recreate_embedding_index(
+                    _set_embedding_size(
                         cursor,
                         KEYWORD_EMBEDDINGS_TABLE,
                         self.modelname,
+                        expected_dimensions,
+                    )
+                    _recreate_embedding_index(
+                        cursor,
+                        KEYWORD_EMBEDDINGS_TABLE,
                         expected_dimensions,
                     )
 
@@ -151,8 +165,11 @@ def find_similar_keywords(
     provider = initialize_llm_provider(inference_server_url, modelname, api_key)
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
+            metadata = _require_embedding_model(
+                cursor, KEYWORD_EMBEDDINGS_TABLE, modelname
+            )
             count, minimum_dimensions, maximum_dimensions = (
-                _stored_keyword_embedding_stats(cursor, modelname)
+                _stored_keyword_embedding_stats(cursor)
             )
             if count == 0:
                 raise ValueError(
@@ -163,6 +180,11 @@ def find_similar_keywords(
                 raise ValueError(
                     f"Stored keyword embeddings for model {modelname!r} have "
                     "inconsistent dimensions"
+                )
+            if metadata.embedding_size != minimum_dimensions:
+                raise ValueError(
+                    "Stored keyword vectors do not match the configured embedding "
+                    f"size {metadata.embedding_size}"
                 )
 
             embedding = provider.embed(query)
@@ -175,7 +197,6 @@ def find_similar_keywords(
                 _nearest_keywords_query(minimum_dimensions),
                 {
                     "embedding": _vector_literal(embedding),
-                    "modelname": modelname,
                     "top_k": top_k,
                 },
             )
@@ -214,11 +235,10 @@ def _embedding_keyword_sql(table_alias: str | None = None) -> str:
     )
 
 
-def _select_stored_keyword_dimensions(cursor: Any, modelname: str) -> dict[str, int]:
+def _select_stored_keyword_dimensions(cursor: Any) -> dict[str, int]:
     cursor.execute(
         f"SELECT keyword, vector_dims(embedding) FROM {KEYWORD_EMBEDDINGS_TABLE} "
-        "WHERE model_name = %s",
-        (modelname,),
+        "ORDER BY keyword"
     )
     return {
         str(_row_value(row, "keyword", 0)): int(_row_value(row, "vector_dims", 1))
@@ -230,50 +250,42 @@ def _upsert_keyword_embedding(
     cursor: Any,
     *,
     keyword: str,
-    modelname: str,
     embedding: tuple[float, ...],
 ) -> None:
     cursor.execute(
         f"""
-INSERT INTO {KEYWORD_EMBEDDINGS_TABLE} (keyword, model_name, embedding)
-VALUES (%(keyword)s, %(model_name)s, %(embedding)s::vector)
-ON CONFLICT (keyword, model_name) DO UPDATE SET
+INSERT INTO {KEYWORD_EMBEDDINGS_TABLE} (keyword, embedding)
+VALUES (%(keyword)s, %(embedding)s::vector)
+ON CONFLICT (keyword) DO UPDATE SET
     embedding = EXCLUDED.embedding,
     updated_at = now()
 """,
         {
             "keyword": keyword,
-            "model_name": modelname,
             "embedding": _vector_literal(embedding),
         },
     )
 
 
-def _delete_stale_keyword_embeddings(cursor: Any, modelname: str) -> None:
+def _delete_stale_keyword_embeddings(cursor: Any) -> None:
     cursor.execute(
         f"""
 DELETE FROM {KEYWORD_EMBEDDINGS_TABLE} AS embedding
-WHERE embedding.model_name = %s
-  AND NOT EXISTS (
+WHERE NOT EXISTS (
       SELECT 1 FROM {KEYWORDS_TABLE} AS source
       WHERE {_embedding_keyword_sql("source")} = embedding.keyword
   )
 """,
-        (modelname,),
     )
 
 
-def _stored_keyword_embedding_stats(
-    cursor: Any, modelname: str
-) -> tuple[int, int, int]:
+def _stored_keyword_embedding_stats(cursor: Any) -> tuple[int, int, int]:
     try:
         cursor.execute(
             f"""
 SELECT count(*), min(vector_dims(embedding)), max(vector_dims(embedding))
 FROM {KEYWORD_EMBEDDINGS_TABLE}
-WHERE model_name = %s
-""",
-            (modelname,),
+"""
         )
     except psycopg.errors.UndefinedTable as error:
         raise KeywordEmbeddingsUnavailableError(
@@ -308,12 +320,11 @@ def _nearest_keywords_query(dimensions: int) -> sql.Composed:
     distance = sql.SQL("{} <=> {}").format(stored, query)
     return sql.SQL(
         "SELECT keyword, 1 - ({distance}) AS similarity "
-        "FROM {table} WHERE model_name = {modelname} "
+        "FROM {table} "
         "ORDER BY {distance}, keyword LIMIT {top_k}"
     ).format(
         distance=distance,
         table=sql.Identifier(KEYWORD_EMBEDDINGS_TABLE),
-        modelname=sql.Placeholder("modelname"),
         top_k=sql.Placeholder("top_k"),
     )
 

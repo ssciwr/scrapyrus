@@ -162,11 +162,17 @@ scrapyrus embeddings ingest keywords \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
-The command keeps separate rows and cosine-search indexes for each model. On a
-fresh ingestion it embeds every source row or keyword. The corresponding
+Each embeddings table is associated with exactly one model. The association and
+embedding size are stored in `embedding_table_metadata`, and the data tables do
+not repeat the model on every row. On a fresh ingestion the command embeds every
+source row or keyword. The corresponding
 `embeddings update transcriptions`, `embeddings update translations`, and
 `embeddings update keywords` commands embed only missing or stale entries and
 remove entries whose source no longer exists.
+
+Ingest, update, and import refuse a model different from the table's configured
+model. Pass `--force` to one of those commands to discard the table's existing
+embeddings and associate it with the requested model.
 
 Each operation selects its collection through a subcommand. For example, export
 and import one model's keyword embeddings with:
@@ -201,7 +207,9 @@ is included in the output together with its source path, TM ID, and language.
 
 `scrapyrus embeddings evaluate transcriptions` evaluates transcription queries
 against translation candidates. `scrapyrus embeddings evaluate translations`
-evaluates translation queries against transcription candidates. The `dump`,
+evaluates translation queries against transcription candidates. Both tables
+must use the same unique model and embedding size. The Markdown report is
+written to standard output. The `dump`,
 `import`, and `delete` operation groups likewise provide `transcriptions`,
 `translations`, and `keywords` subcommands.
 

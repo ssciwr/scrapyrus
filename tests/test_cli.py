@@ -463,6 +463,7 @@ def test_embeddings_ingest_reads_database_without_text_variant_options(monkeypat
                 "sample": None,
                 "seed": 0,
                 "chunk_size": 500,
+                "force": False,
             },
         ),
     ]
@@ -493,7 +494,7 @@ def test_embeddings_ingest_keywords_uses_shared_embedding_options(monkeypatch):
     assert result.exit_code == 0
     assert calls == [
         ("init", "https://inference.example/v1", "model", "secret"),
-        ("setup", "postgresql://db", False, {"stale_only": False}),
+        ("setup", "postgresql://db", False, {"stale_only": False, "force": False}),
     ]
 
 
@@ -634,6 +635,7 @@ def test_embeddings_ingest_uses_envvars(monkeypatch):
                 "sample": None,
                 "seed": 0,
                 "chunk_size": 500,
+                "force": False,
             },
         ),
     ]
@@ -670,6 +672,7 @@ def test_embeddings_ingest_passes_sample_size(monkeypatch):
             "8675309",
             "--chunk-size",
             "750",
+            "--force",
             "--no-progress",
         ),
     )
@@ -683,6 +686,7 @@ def test_embeddings_ingest_passes_sample_size(monkeypatch):
                 "sample": 12,
                 "seed": 8675309,
                 "chunk_size": 750,
+                "force": True,
             },
         )
     ]
@@ -897,7 +901,11 @@ def test_embeddings_import_reads_selected_table(tmp_path, monkeypatch):
     assert calls == [
         (
             (source, "postgresql://db"),
-            {"modelname": "model", "document_kind": "transcriptions"},
+            {
+                "modelname": "model",
+                "document_kind": "transcriptions",
+                "force": False,
+            },
         )
     ]
 
@@ -927,7 +935,7 @@ def test_embeddings_import_supports_keywords_kind(tmp_path, monkeypatch):
     assert calls == [
         (
             (source, DEFAULT_DATABASE_URL),
-            {"modelname": "model", "document_kind": "keywords"},
+            {"modelname": "model", "document_kind": "keywords", "force": False},
         )
     ]
 
@@ -965,6 +973,7 @@ def test_embeddings_update_requires_model_and_uses_database(monkeypatch):
                 "modelname": "model",
                 "api_key": "secret",
                 "chunk_size": 500,
+                "force": False,
             },
         )
     ]
@@ -1005,18 +1014,17 @@ def test_embeddings_update_keywords_updates_only_stale_rows(monkeypatch):
         (
             "setup",
             ("postgresql://db", False),
-            {"stale_only": True},
+            {"stale_only": True, "force": False},
         ),
     ]
 
 
-def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monkeypatch):
+def test_embeddings_evaluate_has_no_idpdata_variant_or_output_arguments(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "scrapyrus.__main__.evaluate_embeddings",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
-    output = tmp_path / "evaluation.md"
     result = CliRunner().invoke(
         main,
         (
@@ -1025,8 +1033,6 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
             "transcriptions",
             "--database-url",
             "postgresql://db",
-            "--output",
-            str(output),
         ),
     )
     assert result.exit_code == 0
@@ -1034,7 +1040,6 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
         (
             ("postgresql://db",),
             {
-                "output_file": output,
                 "query_kind": "transcriptions",
                 "progressbar": True,
                 "sample": None,
@@ -1044,13 +1049,12 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
     ]
 
 
-def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
+def test_embeddings_evaluate_passes_sample_size_and_seed(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "scrapyrus.__main__.evaluate_embeddings",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
-    output = tmp_path / "evaluation.md"
 
     result = CliRunner().invoke(
         main,
@@ -1064,8 +1068,6 @@ def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
             "12",
             "--seed",
             "8675309",
-            "--output",
-            str(output),
             "--no-progress",
         ),
     )
@@ -1075,7 +1077,6 @@ def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
         (
             ("postgresql://db",),
             {
-                "output_file": output,
                 "query_kind": "translations",
                 "progressbar": False,
                 "sample": 12,
