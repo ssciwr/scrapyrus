@@ -7,6 +7,7 @@ from scrapyrus.keyword_embeddings import (
     _ensure_keyword_embedding_schema,
     find_similar_keywords,
 )
+from scrapyrus.transcriptions.embeddings import EMBEDDING_TABLE_METADATA_TABLE
 
 
 def _sql_text(query):
@@ -14,13 +15,22 @@ def _sql_text(query):
 
 
 class RecordingCursor:
-    def __init__(self, *, keyword_rows=(), stored_rows=(), stats=None, matches=()):
+    def __init__(
+        self,
+        *,
+        keyword_rows=(),
+        stored_rows=(),
+        stats=None,
+        matches=(),
+        metadata=None,
+    ):
         self.keyword_rows = list(keyword_rows)
         self.stored_rows = list(stored_rows)
         self.stats = stats
         self.matches = list(matches)
         self.executions = []
         self._result = []
+        self.metadata = {} if metadata is None else dict(metadata)
 
     def __enter__(self):
         return self
@@ -31,7 +41,23 @@ class RecordingCursor:
     def execute(self, query, params=None):
         query = _sql_text(query)
         self.executions.append((query, params))
-        if query.startswith("SELECT DISTINCT"):
+        if query.startswith(f"INSERT INTO {EMBEDDING_TABLE_METADATA_TABLE}"):
+            self.metadata.setdefault(params[0], (params[1], None))
+            self._result = []
+        elif query.startswith("SELECT table_name, model_name, embedding_size"):
+            configured = self.metadata.get(params[0])
+            self._result = (
+                []
+                if configured is None
+                else [(params[0], configured[0], configured[1])]
+            )
+        elif query.startswith(f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} SET"):
+            if "embedding_size = NULL" in query:
+                self.metadata[params[1]] = (params[0], None)
+            else:
+                self.metadata[params[1]] = (params[2], params[0])
+            self._result = []
+        elif query.startswith("SELECT DISTINCT"):
             self._result = self.keyword_rows
         elif query.startswith("SELECT keyword, vector_dims"):
             self._result = self.stored_rows
@@ -73,7 +99,7 @@ class FakeProvider:
         return tuple(self.embeddings.pop(0))
 
 
-def test_keyword_schema_uses_exact_keyword_and_model_as_identity(monkeypatch):
+def test_keyword_schema_uses_keyword_as_identity(monkeypatch):
     cursor = RecordingCursor()
 
     _ensure_keyword_embedding_schema(cursor)
@@ -81,13 +107,15 @@ def test_keyword_schema_uses_exact_keyword_and_model_as_identity(monkeypatch):
     schema = "\n".join(query for query, _ in cursor.executions)
     assert "CREATE EXTENSION IF NOT EXISTS vector" in schema
     assert f"CREATE TABLE IF NOT EXISTS {KEYWORD_EMBEDDINGS_TABLE}" in schema
-    assert "PRIMARY KEY (keyword, model_name)" in schema
+    assert "PRIMARY KEY (keyword)" in schema
+    assert "CREATE TABLE IF NOT EXISTS embedding_table_metadata" in schema
 
 
 def test_update_store_embeds_only_missing_distinct_keyword_qualifiers(monkeypatch):
     cursor = RecordingCursor(
         keyword_rows=[("alpha",), ("beta, private",)],
         stored_rows=[("alpha", 2)],
+        metadata={"keyword_embeddings": ("model", 2)},
     )
     provider = FakeProvider([[0.25, 0.75]])
     indexes = []
@@ -109,6 +137,7 @@ def test_update_store_embeds_only_missing_distinct_keyword_qualifiers(monkeypatc
 
     assert count == 1
     assert provider.inputs == ["beta, private"]
+    assert cursor.metadata["keyword_embeddings"] == ("model", 2)
     inserts = [
         params
         for query, params in cursor.executions
@@ -117,7 +146,6 @@ def test_update_store_embeds_only_missing_distinct_keyword_qualifiers(monkeypatc
     assert inserts == [
         {
             "keyword": "beta, private",
-            "model_name": "model",
             "embedding": "[0.25,0.75]",
         }
     ]
@@ -135,11 +163,15 @@ def test_update_store_embeds_only_missing_distinct_keyword_qualifiers(monkeypatc
         if query.lstrip().startswith("DELETE FROM keyword_embeddings")
     )
     assert "source.keyword || ', ' || source.qualifier" in delete_query
-    assert indexes == [(cursor, "keyword_embeddings", "model", 2)]
+    assert indexes == [(cursor, "keyword_embeddings", 2)]
 
 
 def test_ingest_store_reembeds_existing_keywords(monkeypatch):
-    cursor = RecordingCursor(keyword_rows=[("alpha",)], stored_rows=[("alpha", 2)])
+    cursor = RecordingCursor(
+        keyword_rows=[("alpha",)],
+        stored_rows=[("alpha", 2)],
+        metadata={"keyword_embeddings": ("model", 2)},
+    )
     provider = FakeProvider([[0.4, 0.6]])
     monkeypatch.setattr(
         psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
@@ -163,7 +195,9 @@ def test_ingest_store_reembeds_existing_keywords(monkeypatch):
 
 def test_setup_store_rejects_changed_embedding_dimensions(monkeypatch):
     cursor = RecordingCursor(
-        keyword_rows=[("alpha",), ("beta",)], stored_rows=[("alpha", 2)]
+        keyword_rows=[("alpha",), ("beta",)],
+        stored_rows=[("alpha", 2)],
+        metadata={"keyword_embeddings": ("model", 2)},
     )
     monkeypatch.setattr(
         psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
@@ -182,6 +216,7 @@ def test_find_similar_keywords_embeds_query_and_returns_ranked_matches(monkeypat
     cursor = RecordingCursor(
         stats=(2, 2, 2),
         matches=[("contract, private", 0.9), ("receipt", 0.75)],
+        metadata={"keyword_embeddings": ("model", 2)},
     )
     provider = FakeProvider([[0.4, 0.6]])
     monkeypatch.setattr(
@@ -215,7 +250,6 @@ def test_find_similar_keywords_embeds_query_and_returns_ranked_matches(monkeypat
     assert "ORDER BY" in query
     assert params == {
         "embedding": "[0.40000000000000002,0.59999999999999998]",
-        "modelname": "model",
         "top_k": 2,
     }
 

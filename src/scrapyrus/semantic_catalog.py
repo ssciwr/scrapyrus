@@ -18,6 +18,7 @@ from scrapyrus.semantics import (
     render_table_summary,
 )
 from scrapyrus.transcriptions.semantics import (
+    EMBEDDING_TABLE_METADATA_SEMANTICS,
     KEYWORD_EMBEDDINGS_SEMANTICS,
     TRANSCRIPTIONS_SEMANTICS,
     TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
@@ -36,6 +37,7 @@ _CATALOG_COMPONENTS: dict[CatalogComponent, tuple[TableSemantics, ...]] = {
     ),
     "transcriptions": (TRANSCRIPTIONS_SEMANTICS,),
     "embeddings": (
+        EMBEDDING_TABLE_METADATA_SEMANTICS,
         TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
         TRANSLATION_EMBEDDINGS_SEMANTICS,
         KEYWORD_EMBEDDINGS_SEMANTICS,
