@@ -179,13 +179,25 @@ scrapyrus embeddings import keywords \
     --model-name <model> keyword-embeddings.dump
 ```
 
-Embed free text and print its top candidates with the evaluation command:
+Embed free text and print its top candidates with the query commands:
 
 ```
-scrapyrus embeddings evaluate keywords \
+scrapyrus embeddings query keywords \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+
+scrapyrus embeddings query transcriptions \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+
+scrapyrus embeddings query translations \
     "sale of a house" --top-k 10 \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
+
+Transcription and translation results are ranked by the closest chunk in each
+source document, so a chunked document appears at most once. The matching chunk
+is included in the output together with its source path, TM ID, and language.
 
 `scrapyrus embeddings evaluate transcriptions` evaluates transcription queries
 against translation candidates. `scrapyrus embeddings evaluate translations`
@@ -193,10 +205,10 @@ evaluates translation queries against transcription candidates. The `dump`,
 `import`, and `delete` operation groups likewise provide `transcriptions`,
 `translations`, and `keywords` subcommands.
 
-The keyword ingestion and evaluation commands accept `SCRAPYRUS_DATABASE_URL`,
+The embedding ingestion and query commands accept `SCRAPYRUS_DATABASE_URL`,
 `SCRAPYRUS_EMBEDDINGS_URL`, `SCRAPYRUS_EMBEDDINGS_MODEL`, and
 `SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the corresponding options. The query
-must use the same model as the stored keyword embeddings.
+must use the same model as the stored embeddings.
 
 The database must already exist and be reachable. Embedding ingestion reads the
 XML rows created by `transcriptions ingest`, so those commands must run in that
