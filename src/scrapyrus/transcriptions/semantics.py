@@ -165,9 +165,45 @@ TRANSLATION_EMBEDDINGS_SEMANTICS = _embedding_semantics(
     "translation_embeddings", "translation"
 )
 
+KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
+    table_name="keyword_embeddings",
+    description=(
+        "The keyword_embeddings table stores one model-specific vector for each "
+        "distinct keyword and optional qualifier string."
+    ),
+    row_grain=(
+        "One exact keyword string and embedding model, keyed by (keyword, model_name)."
+    ),
+    useful_for=("semantic keyword candidate search",),
+    columns={
+        "keyword": ColumnSemantics(
+            description=(
+                "Exact text supplied to the embedding model: a keyword by itself, "
+                "or 'keyword, qualifier' when a qualifier is present."
+            )
+        ),
+        "model_name": ColumnSemantics(
+            description="Embedding model identifier.",
+            caveats=(
+                "Filter vector comparisons to one compatible model; dimensions may vary by model.",
+            ),
+        ),
+        "embedding": ColumnSemantics(
+            description="pgvector value produced by model_name for keyword."
+        ),
+        "updated_at": ColumnSemantics(
+            description="Time the stored embedding row was inserted or refreshed."
+        ),
+    },
+    caveats=(
+        "Cosine and distance operations must not compare vectors from different models.",
+    ),
+)
+
 
 __all__ = [
     "TRANSCRIPTIONS_SEMANTICS",
+    "KEYWORD_EMBEDDINGS_SEMANTICS",
     "TRANSCRIPTION_EMBEDDINGS_SEMANTICS",
     "TRANSLATION_EMBEDDINGS_SEMANTICS",
 ]
