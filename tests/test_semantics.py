@@ -20,7 +20,10 @@ from scrapyrus.semantics import (
     validate_semantic_columns,
 )
 from scrapyrus.transcriptions.core import TRANSCRIPTION_COLUMNS
-from scrapyrus.transcriptions.embeddings import EMBEDDING_DUMP_COLUMNS
+from scrapyrus.transcriptions.embeddings import (
+    EMBEDDING_DUMP_COLUMNS,
+    KEYWORD_EMBEDDING_DUMP_COLUMNS,
+)
 
 
 class RecordingCursor:
@@ -108,8 +111,10 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
         "orig_places",
         "ancient_editions",
         "transcriptions",
+        "embedding_table_metadata",
         "transcription_embeddings",
         "translation_embeddings",
+        "keyword_embeddings",
     )
     metadata_entries = entries[:6]
     for table_type, entry in zip(
@@ -117,8 +122,12 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
     ):
         validate_semantic_columns(entry, tuple(table_type().model_class.model_fields))
     validate_semantic_columns(entries[6], TRANSCRIPTION_COLUMNS)
-    validate_semantic_columns(entries[7], EMBEDDING_DUMP_COLUMNS)
+    validate_semantic_columns(
+        entries[7], ("table_name", "model_name", "embedding_size")
+    )
     validate_semantic_columns(entries[8], EMBEDDING_DUMP_COLUMNS)
+    validate_semantic_columns(entries[9], EMBEDDING_DUMP_COLUMNS)
+    validate_semantic_columns(entries[10], KEYWORD_EMBEDDING_DUMP_COLUMNS)
     validate_catalog_entries(entries)
 
 
@@ -187,7 +196,12 @@ def test_publish_catalog_publishes_all_components_in_one_connection(monkeypatch)
         (cursor, ("transcriptions",), "transcriptions"),
         (
             cursor,
-            ("transcription_embeddings", "translation_embeddings"),
+            (
+                "embedding_table_metadata",
+                "transcription_embeddings",
+                "translation_embeddings",
+                "keyword_embeddings",
+            ),
             "embeddings",
         ),
     ]

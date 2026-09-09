@@ -75,14 +75,14 @@ TRANSCRIPTIONS_SEMANTICS = TableSemantics(
             source_columns=("transcription_id",),
             target_columns=("xml_id",),
             cardinality="one-to-many",
-            description="One source row can have multiple chunks and embedding models.",
+            description="One source row can have multiple embedding chunks.",
         ),
         RelationshipSemantics(
             target_table="translation_embeddings",
             source_columns=("transcription_id",),
             target_columns=("xml_id",),
             cardinality="one-to-many",
-            description="One translation row can have multiple chunks and embedding models.",
+            description="One translation row can have multiple embedding chunks.",
         ),
     ),
 )
@@ -93,11 +93,12 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
         table_name=table_name,
         description=(
             f"The {table_name} table stores {document_kind} text chunks and "
-            "model-specific vector embeddings."
+            "vector embeddings. Its unique model and vector size are recorded in "
+            "embedding_table_metadata."
         ),
         row_grain=(
-            f"One {document_kind} text chunk for one source XML row and embedding "
-            "model, keyed by (xml_id, model_name, chunk_index)."
+            f"One {document_kind} text chunk for one source XML row, keyed by "
+            "(xml_id, chunk_index)."
         ),
         useful_for=(f"semantic search over {document_kind} chunks",),
         columns={
@@ -105,12 +106,6 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
                 description="Source transcriptions.transcription_id, despite the xml_id name.",
                 caveats=(
                     f"For this table it must identify a transcriptions row whose type is {document_kind}; this is not database-enforced.",
-                ),
-            ),
-            "model_name": ColumnSemantics(
-                description="Embedding model identifier.",
-                caveats=(
-                    "Filter vector comparisons to one compatible model; dimensions may vary by model.",
                 ),
             ),
             "chunk_index": ColumnSemantics(
@@ -137,7 +132,7 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
                 caveats=("It is not a document identity.",),
             ),
             "embedding": ColumnSemantics(
-                description="pgvector value produced by model_name, with model-dependent dimension."
+                description="pgvector value produced by the model recorded in embedding_table_metadata."
             ),
             "updated_at": ColumnSemantics(
                 description="Time the stored embedding row was inserted or refreshed."
@@ -152,9 +147,6 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
                 description="Logical source-row relationship; it is not a foreign key.",
             ),
         ),
-        caveats=(
-            "Cosine and distance operations must not compare vectors from different models merely because dimensions match.",
-        ),
     )
 
 
@@ -165,9 +157,58 @@ TRANSLATION_EMBEDDINGS_SEMANTICS = _embedding_semantics(
     "translation_embeddings", "translation"
 )
 
+KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
+    table_name="keyword_embeddings",
+    description=(
+        "The keyword_embeddings table stores one vector for each distinct keyword "
+        "and optional qualifier string. Its unique model and vector size are "
+        "recorded in embedding_table_metadata."
+    ),
+    row_grain="One exact keyword string, keyed by keyword.",
+    useful_for=("semantic keyword candidate search",),
+    columns={
+        "keyword": ColumnSemantics(
+            description=(
+                "Exact text supplied to the embedding model: a keyword by itself, "
+                "or 'keyword, qualifier' when a qualifier is present."
+            )
+        ),
+        "embedding": ColumnSemantics(
+            description="pgvector value produced by the model recorded in embedding_table_metadata."
+        ),
+        "updated_at": ColumnSemantics(
+            description="Time the stored embedding row was inserted or refreshed."
+        ),
+    },
+)
+
+EMBEDDING_TABLE_METADATA_SEMANTICS = TableSemantics(
+    table_name="embedding_table_metadata",
+    description=(
+        "Configuration for each embeddings table, allowing consumers to discover "
+        "the single model and vector size used by that table."
+    ),
+    row_grain="One row per configured embeddings table, keyed by table_name.",
+    useful_for=("discovering embedding model compatibility",),
+    columns={
+        "table_name": ColumnSemantics(
+            description="Name of one of the three Scrapyrus embeddings tables."
+        ),
+        "model_name": ColumnSemantics(
+            description="Unique embedding model used for every vector in the table."
+        ),
+        "embedding_size": ColumnSemantics(
+            description="Number of scalar dimensions in every vector in the table.",
+            null_means="The table is configured but does not contain an embedding yet.",
+        ),
+    },
+)
+
 
 __all__ = [
     "TRANSCRIPTIONS_SEMANTICS",
+    "KEYWORD_EMBEDDINGS_SEMANTICS",
+    "EMBEDDING_TABLE_METADATA_SEMANTICS",
     "TRANSCRIPTION_EMBEDDINGS_SEMANTICS",
     "TRANSLATION_EMBEDDINGS_SEMANTICS",
 ]

@@ -18,6 +18,8 @@ from scrapyrus.semantics import (
     render_table_summary,
 )
 from scrapyrus.transcriptions.semantics import (
+    EMBEDDING_TABLE_METADATA_SEMANTICS,
+    KEYWORD_EMBEDDINGS_SEMANTICS,
     TRANSCRIPTIONS_SEMANTICS,
     TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
     TRANSLATION_EMBEDDINGS_SEMANTICS,
@@ -35,8 +37,10 @@ _CATALOG_COMPONENTS: dict[CatalogComponent, tuple[TableSemantics, ...]] = {
     ),
     "transcriptions": (TRANSCRIPTIONS_SEMANTICS,),
     "embeddings": (
+        EMBEDDING_TABLE_METADATA_SEMANTICS,
         TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
         TRANSLATION_EMBEDDINGS_SEMANTICS,
+        KEYWORD_EMBEDDINGS_SEMANTICS,
     ),
 }
 _CATALOG_ENTRIES = tuple(
@@ -47,7 +51,7 @@ _CATALOG_ENTRIES = tuple(
 
 
 def catalog_entries() -> tuple[TableSemantics, ...]:
-    """Return all nine semantic entries in deterministic producer order."""
+    """Return all semantic entries in deterministic producer order."""
 
     return _CATALOG_ENTRIES
 

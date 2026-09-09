@@ -21,6 +21,8 @@ from scrapyrus.transcriptions.core import (
 from scrapyrus.transcriptions.llms import LLMProviderBase, initialize_llm_provider
 from scrapyrus.semantics import publish_semantics
 from scrapyrus.transcriptions.semantics import (
+    EMBEDDING_TABLE_METADATA_SEMANTICS,
+    KEYWORD_EMBEDDINGS_SEMANTICS,
     TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
     TRANSLATION_EMBEDDINGS_SEMANTICS,
 )
@@ -28,19 +30,18 @@ from scrapyrus.transcriptions.semantics import (
 
 TRANSCRIPTION_EMBEDDINGS_TABLE = "transcription_embeddings"
 TRANSLATION_EMBEDDINGS_TABLE = "translation_embeddings"
+KEYWORD_EMBEDDINGS_TABLE = "keyword_embeddings"
+EMBEDDING_TABLE_METADATA_TABLE = "embedding_table_metadata"
 EMBEDDING_TABLES = {
-    "transcription": TRANSCRIPTION_EMBEDDINGS_TABLE,
-    "translation": TRANSLATION_EMBEDDINGS_TABLE,
+    "transcriptions": TRANSCRIPTION_EMBEDDINGS_TABLE,
+    "translations": TRANSLATION_EMBEDDINGS_TABLE,
 }
-EMBEDDING_KIND_ALIASES = {
-    "transcription": "transcription",
-    "translation": "translation",
+EMBEDDING_SOURCE_TYPES = {
     "transcriptions": "transcription",
     "translations": "translation",
 }
 EMBEDDING_DUMP_COLUMNS = (
     "xml_id",
-    "model_name",
     "chunk_index",
     "source_path",
     "tm_id",
@@ -50,6 +51,25 @@ EMBEDDING_DUMP_COLUMNS = (
     "embedding",
     "updated_at",
 )
+KEYWORD_EMBEDDING_DUMP_COLUMNS = (
+    "keyword",
+    "embedding",
+    "updated_at",
+)
+EXPORT_EMBEDDING_TABLES = {
+    **EMBEDDING_TABLES,
+    "keywords": KEYWORD_EMBEDDINGS_TABLE,
+}
+EMBEDDING_DUMP_COLUMNS_BY_KIND = {
+    "transcriptions": EMBEDDING_DUMP_COLUMNS,
+    "translations": EMBEDDING_DUMP_COLUMNS,
+    "keywords": KEYWORD_EMBEDDING_DUMP_COLUMNS,
+}
+EMBEDDING_DUMP_ORDER_BY = {
+    "transcriptions": ("xml_id", "chunk_index"),
+    "translations": ("xml_id", "chunk_index"),
+    "keywords": ("keyword",),
+}
 
 PGVECTOR_UNAVAILABLE_MESSAGE = (
     "PostgreSQL extension 'vector' is not available. Install pgvector on the "
@@ -71,6 +91,34 @@ class PgvectorUnavailableError(RuntimeError):
 
 class TranscriptionsUnavailableError(RuntimeError):
     """Raised when transcription XML has not been ingested into PostgreSQL."""
+
+
+class DocumentEmbeddingsUnavailableError(RuntimeError):
+    """Raised when a requested document embedding table does not exist."""
+
+
+class EmbeddingModelMismatchError(ValueError):
+    """Raised when an operation requests a table's non-configured model."""
+
+
+@dataclass(frozen=True)
+class EmbeddingTableMetadata:
+    """The unique embedding configuration associated with one data table."""
+
+    table_name: str
+    model_name: str
+    embedding_size: int | None
+
+
+@dataclass(frozen=True)
+class DocumentMatch:
+    """One source document nearest to an embedded free-text query."""
+
+    source_path: str
+    tm_id: str
+    language: str | None
+    document_text: str
+    similarity: float
 
 
 @dataclass(frozen=True)
@@ -109,12 +157,14 @@ class EmbeddingStore:
         progressbar: bool = True,
         /,
         *,
+        document_kind: str,
         stale_only: bool = False,
         sample: int | None = None,
         seed: int = 0,
         chunk_size: int = 500,
+        force: bool = False,
     ) -> int:
-        """Embed transcription/translation XML rows in PostgreSQL.
+        """Embed one kind of transcription XML row in PostgreSQL.
 
         Transcriptions always use the maximum text variant. Translations use
         their complete plain-text rendering. Rows are stored in separate tables.
@@ -125,16 +175,27 @@ class EmbeddingStore:
         Text size and overlap are measured in whitespace-delimited words.
         """
 
+        if document_kind not in EMBEDDING_TABLES:
+            raise ValueError(f"Unknown embedding document kind {document_kind!r}")
         if chunk_size < 1:
             raise ValueError("chunk_size must be at least 1")
 
         jobs: list[_EmbeddingJob] = []
-        seen_ids = {kind: set() for kind in EMBEDDING_TABLES}
+        seen_ids: set[int] = set()
+        table = EMBEDDING_TABLES[document_kind]
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 _ensure_embedding_schema(cursor)
+                metadata = _associate_embedding_model(
+                    cursor, table, self.modelname, force=force
+                )
                 try:
-                    sources = _select_xml_rows(cursor, sample=sample, seed=seed)
+                    sources = _select_xml_rows(
+                        cursor,
+                        document_kind=document_kind,
+                        sample=sample,
+                        seed=seed,
+                    )
                 except psycopg.errors.UndefinedTable as error:
                     raise TranscriptionsUnavailableError(
                         TRANSCRIPTIONS_UNAVAILABLE_MESSAGE
@@ -150,30 +211,23 @@ class EmbeddingStore:
                     else sources
                 )
                 for source in source_rows:
-                    document_kind = str(source["type"])
-                    if document_kind not in EMBEDDING_TABLES:
-                        continue
                     xml_id = int(source["transcription_id"])
                     document_text = _xml_to_embedding_text(
                         str(source["xml_content"]), document_kind
                     )
                     if not document_text.strip():
                         continue
-                    table = EMBEDDING_TABLES[document_kind]
-                    seen_ids[document_kind].add(xml_id)
+                    seen_ids.add(xml_id)
                     chunks = chunk_embedding_text(document_text, chunk_size)
-                    _delete_extra_chunks(
-                        cursor, table, xml_id, self.modelname, len(chunks)
-                    )
+                    _delete_extra_chunks(cursor, table, xml_id, len(chunks))
                     language = (
                         transcription_language(str(source["xml_content"]))
-                        if document_kind == "transcription"
+                        if document_kind == "transcriptions"
                         else source["language"]
                     )
                     for chunk_index, chunk in enumerate(chunks):
                         row = {
                             "xml_id": xml_id,
-                            "model_name": self.modelname,
                             "chunk_index": chunk_index,
                             "source_path": str(source["source_path"]),
                             "tm_id": str(source["tm_id"]),
@@ -188,7 +242,6 @@ class EmbeddingStore:
                             cursor,
                             table,
                             xml_id,
-                            self.modelname,
                             chunk_index,
                         )
                         current_source = (
@@ -206,11 +259,12 @@ class EmbeddingStore:
                     progressbar=progressbar,
                     progressbar_title="Embedding XML rows",
                 )
-                dimensions: dict[str, int] = {}
+                dimensions = metadata.embedding_size
                 for document in embedded:
                     dimension = len(document.embedding)
-                    previous = dimensions.setdefault(document.job.table, dimension)
-                    if previous != dimension:
+                    if dimensions is None:
+                        dimensions = dimension
+                    elif dimensions != dimension:
                         raise ValueError(
                             f"Embedding model {self.modelname!r} returned vectors "
                             "with inconsistent dimensions"
@@ -224,14 +278,10 @@ class EmbeddingStore:
                         },
                     )
 
-                for kind, table in EMBEDDING_TABLES.items():
-                    _delete_missing_source_rows(
-                        cursor, table, self.modelname, seen_ids[kind]
-                    )
-                    if table in dimensions:
-                        _recreate_embedding_index(
-                            cursor, table, self.modelname, dimensions[table]
-                        )
+                _delete_missing_source_rows(cursor, table, seen_ids)
+                if dimensions is not None:
+                    _set_embedding_size(cursor, table, self.modelname, dimensions)
+                    _recreate_embedding_index(cursor, table, dimensions)
 
         return len(embedded)
 
@@ -244,35 +294,38 @@ def update_embeddings(
     progressbar: bool = True,
     /,
     *,
+    document_kind: str,
     inference_server_url: str,
     modelname: str,
     api_key: str,
     chunk_size: int = 500,
+    force: bool = False,
 ) -> int:
     """Compute missing or stale embeddings for one model from database XML."""
 
     return EmbeddingStore(inference_server_url, modelname, api_key).setup_store(
-        conninfo, progressbar, stale_only=True, chunk_size=chunk_size
+        conninfo,
+        progressbar,
+        document_kind=document_kind,
+        stale_only=True,
+        chunk_size=chunk_size,
+        force=force,
     )
 
 
-def delete_embeddings(conninfo: str = "", /, *, modelname: str) -> int:
-    """Delete one model's transcription and translation embeddings."""
+def delete_embeddings(
+    conninfo: str = "", /, *, modelname: str, document_kind: str
+) -> int:
+    """Delete one model's embeddings for one document kind."""
 
-    deleted = 0
+    table = _embedding_table(document_kind)
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             _ensure_embedding_schema(cursor)
-            for table in EMBEDDING_TABLES.values():
-                _drop_embedding_index(cursor, table, modelname)
-                cursor.execute(
-                    sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
-                        sql.Identifier(table)
-                    ),
-                    (modelname,),
-                )
-                deleted += max(cursor.rowcount, 0)
-    return deleted
+            _require_embedding_model(cursor, table, modelname)
+            _drop_embedding_index(cursor, table)
+            cursor.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
+            return max(cursor.rowcount, 0)
 
 
 def dump_embeddings(
@@ -281,36 +334,33 @@ def dump_embeddings(
     /,
     *,
     modelname: str,
-    document_kind: str = "transcription",
+    document_kind: str,
 ) -> int:
     """Dump one model's embedding rows in PostgreSQL binary COPY format."""
 
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     table = _embedding_table(document_kind)
-    columns = _embedding_columns_sql()
+    columns = _embedding_columns_sql(document_kind)
+    ordering = _embedding_ordering_sql(document_kind)
 
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             _ensure_embedding_schema(cursor)
+            _require_embedding_model(cursor, table, modelname)
             cursor.execute(
-                sql.SQL("SELECT count(*) FROM {} WHERE model_name = %s").format(
-                    sql.Identifier(table)
-                ),
-                (modelname,),
+                sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
             )
             row_count = int(_first_column(cursor.fetchone()))
             with target.open("wb") as output:
                 with cursor.copy(
                     sql.SQL(
-                        "COPY (SELECT {columns} FROM {table} "
-                        "WHERE model_name = {modelname} "
-                        "ORDER BY xml_id, chunk_index) "
+                        "COPY (SELECT {columns} FROM {table} ORDER BY {ordering}) "
                         "TO STDOUT WITH (FORMAT binary)"
                     ).format(
                         columns=columns,
                         table=sql.Identifier(table),
-                        modelname=sql.Literal(modelname),
+                        ordering=ordering,
                     )
                 ) as copy:
                     for chunk in copy:
@@ -324,18 +374,21 @@ def import_embeddings(
     /,
     *,
     modelname: str,
-    document_kind: str = "transcription",
+    document_kind: str,
+    force: bool = False,
 ) -> int:
     """Import one model's embedding rows from PostgreSQL binary COPY format."""
 
     source = Path(source)
     table = _embedding_table(document_kind)
     temporary_table = f"{table}_import"
-    columns = _embedding_columns_sql()
+    columns = _embedding_columns_sql(document_kind)
+    ordering = _embedding_ordering_sql(document_kind)
 
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             _ensure_embedding_schema(cursor)
+            metadata = _associate_embedding_model(cursor, table, modelname, force=force)
             cursor.execute(
                 sql.SQL(
                     "CREATE TEMP TABLE {} "
@@ -356,39 +409,33 @@ def import_embeddings(
                             break
                         copy.write(chunk)
 
-            imported_models = _imported_model_names(cursor, temporary_table)
-            unexpected_models = [
-                imported_model
-                for imported_model in imported_models
-                if imported_model != modelname
-            ]
-            if unexpected_models:
-                raise ValueError(
-                    "Imported embeddings contain model names other than "
-                    f"{modelname!r}: {', '.join(unexpected_models)}"
-                )
-
             row_count, dimensions = _imported_embedding_stats(cursor, temporary_table)
-            _drop_embedding_index(cursor, table, modelname)
-            cursor.execute(
-                sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
-                    sql.Identifier(table)
-                ),
-                (modelname,),
-            )
+            if (
+                dimensions is not None
+                and metadata.embedding_size is not None
+                and dimensions != metadata.embedding_size
+            ):
+                raise ValueError(
+                    f"Imported embeddings have {dimensions} dimensions, but "
+                    f"{table!r} is configured for {metadata.embedding_size}"
+                )
+            _drop_embedding_index(cursor, table)
+            cursor.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
             cursor.execute(
                 sql.SQL(
                     "INSERT INTO {table} ({columns}) "
                     "SELECT {columns} FROM {temporary_table} "
-                    "ORDER BY xml_id, chunk_index"
+                    "ORDER BY {ordering}"
                 ).format(
                     table=sql.Identifier(table),
                     columns=columns,
                     temporary_table=sql.Identifier(temporary_table),
+                    ordering=ordering,
                 )
             )
             if dimensions is not None:
-                _recreate_embedding_index(cursor, table, modelname, dimensions)
+                _set_embedding_size(cursor, table, modelname, dimensions)
+                _recreate_embedding_index(cursor, table, dimensions)
     return row_count
 
 
@@ -402,23 +449,109 @@ def retrieve_embedding(
 ) -> tuple[float, ...] | None:
     """Return an embedding selected by model, kind, and XML source path."""
 
-    table = EMBEDDING_TABLES["translation" if translation else "transcription"]
+    table = EMBEDDING_TABLES["translations" if translation else "transcriptions"]
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
+            _require_embedding_model(cursor, table, modelname)
             cursor.execute(
                 sql.SQL(
                     "SELECT embedding::text FROM {} "
-                    "WHERE model_name = %s AND source_path = %s "
+                    "WHERE source_path = %s "
                     "ORDER BY xml_id, chunk_index LIMIT 1"
                 ).format(sql.Identifier(table)),
-                (modelname, _document_path(document_path)),
+                (_document_path(document_path),),
             )
             row = cursor.fetchone()
     return None if row is None else _parse_vector(_first_column(row))
 
 
+def find_similar_documents(
+    query: str,
+    conninfo: str = "",
+    /,
+    *,
+    document_kind: str,
+    inference_server_url: str,
+    modelname: str,
+    api_key: str,
+    top_k: int = 10,
+) -> tuple[DocumentMatch, ...]:
+    """Embed *query* and return the nearest stored source documents.
+
+    Chunked documents occur only once in the result, using their closest chunk
+    as the displayed text and as the document's similarity score.
+    """
+
+    if not query.strip():
+        raise ValueError("query must not be blank")
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
+
+    if document_kind not in EMBEDDING_TABLES:
+        choices = ", ".join(EMBEDDING_TABLES)
+        raise ValueError(
+            f"Cannot query embedding document kind {document_kind!r}. "
+            f"Expected one of: {choices}"
+        )
+    table = EMBEDDING_TABLES[document_kind]
+
+    provider = initialize_llm_provider(inference_server_url, modelname, api_key)
+    with psycopg.connect(conninfo) as connection:
+        with connection.cursor() as cursor:
+            metadata = _require_embedding_model(cursor, table, modelname)
+            count, minimum_dimensions, maximum_dimensions = (
+                _stored_document_embedding_stats(cursor, table)
+            )
+            if count == 0:
+                raise ValueError(
+                    f"No {document_kind} embeddings found for model {modelname!r}. "
+                    f"Run 'scrapyrus embeddings ingest {document_kind}' with the "
+                    "same model first."
+                )
+            if minimum_dimensions != maximum_dimensions:
+                raise ValueError(
+                    f"Stored {document_kind} embeddings for model {modelname!r} "
+                    "have inconsistent dimensions"
+                )
+            if metadata.embedding_size != minimum_dimensions:
+                raise ValueError(
+                    f"Stored metadata says {document_kind} embeddings have "
+                    f"{metadata.embedding_size} dimensions, but the vectors have "
+                    f"{minimum_dimensions}"
+                )
+
+            embedding = provider.embed(query)
+            if len(embedding) != minimum_dimensions:
+                raise ValueError(
+                    f"Query embedding has {len(embedding)} dimensions, but stored "
+                    f"{document_kind} embeddings for model {modelname!r} have "
+                    f"{minimum_dimensions}"
+                )
+            cursor.execute(
+                _nearest_documents_query(table, minimum_dimensions),
+                {
+                    "embedding": _vector_literal(embedding),
+                    "top_k": top_k,
+                },
+            )
+            return tuple(
+                DocumentMatch(
+                    source_path=str(_row_value(row, "source_path", 0)),
+                    tm_id=str(_row_value(row, "tm_id", 1)),
+                    language=(
+                        None
+                        if _row_value(row, "language", 2) is None
+                        else str(_row_value(row, "language", 2))
+                    ),
+                    document_text=str(_row_value(row, "document_text", 3)),
+                    similarity=float(_row_value(row, "similarity", 4)),
+                )
+                for row in cursor.fetchall()
+            )
+
+
 def _xml_to_embedding_text(xml: str, document_kind: str) -> str:
-    if document_kind == "translation":
+    if document_kind == "translations":
         return translation_epidoc_xml_to_text(xml)
     return epidoc_xml_to_text(xml, **MAXIMUM_TRANSCRIPTION_OPTIONS)
 
@@ -449,33 +582,108 @@ def chunk_embedding_text(document_text: str, chunk_size: int = 500) -> tuple[str
 
 
 def _embedding_table(document_kind: str) -> str:
-    try:
-        normalized_kind = EMBEDDING_KIND_ALIASES[document_kind]
-    except KeyError as error:
-        choices = ", ".join(EMBEDDING_KIND_ALIASES)
+    normalized_kind = _embedding_kind(document_kind)
+    return EXPORT_EMBEDDING_TABLES[normalized_kind]
+
+
+def _embedding_kind(document_kind: str) -> str:
+    if document_kind not in EXPORT_EMBEDDING_TABLES:
+        choices = ", ".join(EXPORT_EMBEDDING_TABLES)
         raise ValueError(
             f"Unknown embedding document kind {document_kind!r}. "
             f"Expected one of: {choices}"
+        )
+    return document_kind
+
+
+def _embedding_columns_sql(document_kind: str) -> sql.Composed:
+    columns = EMBEDDING_DUMP_COLUMNS_BY_KIND[_embedding_kind(document_kind)]
+    return sql.SQL(", ").join(sql.Identifier(column) for column in columns)
+
+
+def _embedding_ordering_sql(document_kind: str) -> sql.Composed:
+    ordering = EMBEDDING_DUMP_ORDER_BY[_embedding_kind(document_kind)]
+    return sql.SQL(", ").join(sql.Identifier(column) for column in ordering)
+
+
+def _stored_document_embedding_stats(cursor: Any, table: str) -> tuple[int, int, int]:
+    try:
+        cursor.execute(
+            sql.SQL(
+                "SELECT count(*), min(vector_dims(embedding)), "
+                "max(vector_dims(embedding)) FROM {}"
+            ).format(sql.Identifier(table)),
+        )
+    except psycopg.errors.UndefinedTable as error:
+        document_kind = (
+            "transcriptions"
+            if table == TRANSCRIPTION_EMBEDDINGS_TABLE
+            else "translations"
+        )
+        raise DocumentEmbeddingsUnavailableError(
+            f"PostgreSQL table {table!r} does not exist. Run "
+            f"'scrapyrus embeddings ingest {document_kind}' against this "
+            "database first."
         ) from error
-    return EMBEDDING_TABLES[normalized_kind]
+    row = cursor.fetchone()
+    count = int(_row_value(row, "count", 0))
+    if count == 0:
+        return 0, 0, 0
+    return (
+        count,
+        int(_row_value(row, "min", 1)),
+        int(_row_value(row, "max", 2)),
+    )
 
 
-def _embedding_columns_sql() -> sql.Composed:
-    return sql.SQL(", ").join(
-        sql.Identifier(column) for column in EMBEDDING_DUMP_COLUMNS
+def _nearest_documents_query(table: str, dimensions: int) -> sql.Composed:
+    if dimensions <= HNSW_VECTOR_MAX_DIMENSIONS:
+        vector_type = "vector"
+    elif dimensions <= HNSW_HALFVEC_MAX_DIMENSIONS:
+        vector_type = "halfvec"
+    else:
+        vector_type = None
+
+    if vector_type is None:
+        stored = sql.Identifier("embedding")
+        query = sql.SQL("{}::vector").format(sql.Placeholder("embedding"))
+    else:
+        cast = sql.SQL("{}({})").format(sql.SQL(vector_type), sql.Literal(dimensions))
+        stored = sql.SQL("{}::{}").format(sql.Identifier("embedding"), cast)
+        query = sql.SQL("{}::{}").format(sql.Placeholder("embedding"), cast)
+    distance = sql.SQL("{} <=> {}").format(stored, query)
+    return sql.SQL(
+        "WITH ranked_chunks AS ("
+        "SELECT xml_id, source_path, tm_id, language, document_text, chunk_index, "
+        "1 - ({distance}) AS similarity, "
+        "row_number() OVER (PARTITION BY xml_id ORDER BY {distance}, chunk_index) "
+        "AS chunk_rank FROM {table}"
+        ") SELECT source_path, tm_id, language, document_text, similarity "
+        "FROM ranked_chunks WHERE chunk_rank = 1 "
+        "ORDER BY similarity DESC, source_path, tm_id, xml_id LIMIT {top_k}"
+    ).format(
+        distance=distance,
+        table=sql.Identifier(table),
+        top_k=sql.Placeholder("top_k"),
     )
 
 
 def _select_xml_rows(
-    cursor: Any, *, sample: int | None = None, seed: int = 0
+    cursor: Any,
+    *,
+    document_kind: str,
+    sample: int | None = None,
+    seed: int = 0,
 ) -> tuple[dict[str, Any], ...]:
     if sample is None:
         cursor.execute(
             f"""
 SELECT transcription_id, source_path, tm_id, xml_content::text, type, language
 FROM {TRANSCRIPTIONS_TABLE}
+WHERE type = %s
 ORDER BY transcription_id
-"""
+""",
+            (EMBEDDING_SOURCE_TYPES[document_kind],),
         )
     else:
         cursor.execute(
@@ -492,9 +700,10 @@ WITH sampled_records AS (
 SELECT transcription_id, source_path, tm_id, xml_content::text, type, language
 FROM {TRANSCRIPTIONS_TABLE}
 JOIN sampled_records USING (tm_id)
+WHERE type = %s
 ORDER BY transcription_id
 """,
-            (seed, sample),
+            (seed, sample, EMBEDDING_SOURCE_TYPES[document_kind]),
         )
     keys = (
         "transcription_id",
@@ -517,12 +726,25 @@ def _ensure_embedding_schema(cursor: Any) -> None:
         if _is_missing_vector_extension_error(error):
             raise PgvectorUnavailableError(PGVECTOR_UNAVAILABLE_MESSAGE) from error
         raise
+    embedding_table_names = ", ".join(
+        repr(table) for table in EXPORT_EMBEDDING_TABLES.values()
+    )
+    cursor.execute(
+        f"""
+CREATE TABLE IF NOT EXISTS {EMBEDDING_TABLE_METADATA_TABLE} (
+    table_name text PRIMARY KEY,
+    model_name text NOT NULL,
+    embedding_size integer,
+    CHECK (table_name IN ({embedding_table_names})),
+    CHECK (embedding_size IS NULL OR embedding_size > 0)
+)
+"""
+    )
     for table in EMBEDDING_TABLES.values():
         cursor.execute(
             f"""
 CREATE TABLE IF NOT EXISTS {table} (
     xml_id bigint NOT NULL,
-    model_name text NOT NULL,
     chunk_index integer NOT NULL DEFAULT 0,
     source_path text NOT NULL,
     tm_id text NOT NULL,
@@ -531,48 +753,124 @@ CREATE TABLE IF NOT EXISTS {table} (
     input_hash text NOT NULL,
     embedding vector NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (xml_id, model_name, chunk_index)
+    PRIMARY KEY (xml_id, chunk_index)
 )
 """
         )
-        cursor.execute(
-            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
-            "chunk_index integer NOT NULL DEFAULT 0"
-        )
-        cursor.execute(
-            f"""
-DO $$
-DECLARE current_primary_key text;
-BEGIN
-    SELECT constraint_name INTO current_primary_key
-    FROM information_schema.table_constraints
-    WHERE table_schema = current_schema()
-      AND table_name = '{table}'
-      AND constraint_type = 'PRIMARY KEY';
-
-    IF current_primary_key IS NOT NULL AND NOT EXISTS (
-        SELECT 1
-        FROM information_schema.key_column_usage
-        WHERE table_schema = current_schema()
-          AND table_name = '{table}'
-          AND constraint_name = current_primary_key
-          AND column_name = 'chunk_index'
-    ) THEN
-        EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I',
-                       '{table}', current_primary_key);
-        ALTER TABLE {table}
-            ADD PRIMARY KEY (xml_id, model_name, chunk_index);
-    END IF;
-END $$
+    cursor.execute(
+        f"""
+CREATE TABLE IF NOT EXISTS {KEYWORD_EMBEDDINGS_TABLE} (
+    keyword text NOT NULL,
+    embedding vector NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (keyword)
+)
 """
-        )
+    )
     publish_semantics(
         cursor,
         (
+            EMBEDDING_TABLE_METADATA_SEMANTICS,
             TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
             TRANSLATION_EMBEDDINGS_SEMANTICS,
+            KEYWORD_EMBEDDINGS_SEMANTICS,
         ),
         component="embeddings",
+    )
+
+
+def embedding_table_metadata(cursor: Any, table: str) -> EmbeddingTableMetadata | None:
+    """Return the model configuration associated with an embeddings table."""
+
+    if table not in EXPORT_EMBEDDING_TABLES.values():
+        raise ValueError(f"Unknown embeddings table {table!r}")
+    cursor.execute(
+        f"SELECT table_name, model_name, embedding_size "
+        f"FROM {EMBEDDING_TABLE_METADATA_TABLE} WHERE table_name = %s",
+        (table,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    size = _row_value(row, "embedding_size", 2)
+    return EmbeddingTableMetadata(
+        str(_row_value(row, "table_name", 0)),
+        str(_row_value(row, "model_name", 1)),
+        None if size is None else int(size),
+    )
+
+
+def _associate_embedding_model(
+    cursor: Any, table: str, modelname: str, *, force: bool
+) -> EmbeddingTableMetadata:
+    cursor.execute(
+        f"INSERT INTO {EMBEDDING_TABLE_METADATA_TABLE} "
+        "(table_name, model_name) VALUES (%s, %s) "
+        "ON CONFLICT (table_name) DO NOTHING",
+        (table, modelname),
+    )
+    cursor.execute(
+        f"SELECT table_name, model_name, embedding_size "
+        f"FROM {EMBEDDING_TABLE_METADATA_TABLE} "
+        "WHERE table_name = %s FOR UPDATE",
+        (table,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError(f"Could not configure embeddings table {table!r}")
+    size = _row_value(row, "embedding_size", 2)
+    metadata = EmbeddingTableMetadata(
+        str(_row_value(row, "table_name", 0)),
+        str(_row_value(row, "model_name", 1)),
+        None if size is None else int(size),
+    )
+    if metadata.model_name == modelname:
+        return metadata
+    if not force:
+        raise EmbeddingModelMismatchError(
+            f"{table!r} uses embedding model {metadata.model_name!r}, not "
+            f"{modelname!r}. Pass --force to discard its embeddings and use the "
+            "new model."
+        )
+    _drop_embedding_index(cursor, table)
+    cursor.execute(sql.SQL("TRUNCATE {}").format(sql.Identifier(table)))
+    cursor.execute(
+        f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} "
+        "SET model_name = %s, embedding_size = NULL WHERE table_name = %s",
+        (modelname, table),
+    )
+    return EmbeddingTableMetadata(table, modelname, None)
+
+
+def _require_embedding_model(
+    cursor: Any, table: str, modelname: str
+) -> EmbeddingTableMetadata:
+    metadata = embedding_table_metadata(cursor, table)
+    if metadata is None:
+        raise ValueError(f"No embedding model is configured for {table!r}")
+    if metadata.model_name != modelname:
+        raise EmbeddingModelMismatchError(
+            f"{table!r} uses embedding model {metadata.model_name!r}, not {modelname!r}"
+        )
+    return metadata
+
+
+def _set_embedding_size(
+    cursor: Any, table: str, modelname: str, embedding_size: int
+) -> None:
+    metadata = _require_embedding_model(cursor, table, modelname)
+    if (
+        metadata.embedding_size is not None
+        and metadata.embedding_size != embedding_size
+    ):
+        raise ValueError(
+            f"Embedding model {modelname!r} returned {embedding_size}-dimensional "
+            f"vectors, but {table!r} is configured for {metadata.embedding_size}"
+        )
+    cursor.execute(
+        f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} SET embedding_size = %s "
+        "WHERE table_name = %s AND model_name = %s",
+        (embedding_size, table, modelname),
     )
 
 
@@ -584,14 +882,14 @@ def _is_missing_vector_extension_error(error: psycopg.Error) -> bool:
 
 
 def _select_stored_source(
-    cursor: Any, table: str, xml_id: int, modelname: str, chunk_index: int
+    cursor: Any, table: str, xml_id: int, chunk_index: int
 ) -> tuple[str, str, str, str | None] | None:
     cursor.execute(
         sql.SQL(
             "SELECT input_hash, source_path, tm_id, language FROM {} "
-            "WHERE xml_id = %s AND model_name = %s AND chunk_index = %s"
+            "WHERE xml_id = %s AND chunk_index = %s"
         ).format(sql.Identifier(table)),
-        (xml_id, modelname, chunk_index),
+        (xml_id, chunk_index),
     )
     row = cursor.fetchone()
     if row is None:
@@ -609,13 +907,13 @@ def _upsert_embedding(cursor: Any, table: str, row: dict[str, Any]) -> None:
         sql.SQL(
             """
 INSERT INTO {} (
-    xml_id, model_name, chunk_index, source_path, tm_id, language,
+    xml_id, chunk_index, source_path, tm_id, language,
     document_text, input_hash, embedding
 ) VALUES (
-    %(xml_id)s, %(model_name)s, %(chunk_index)s, %(source_path)s, %(tm_id)s, %(language)s,
+    %(xml_id)s, %(chunk_index)s, %(source_path)s, %(tm_id)s, %(language)s,
     %(document_text)s, %(input_hash)s, %(embedding)s::vector
 )
-ON CONFLICT (xml_id, model_name, chunk_index) DO UPDATE SET
+ON CONFLICT (xml_id, chunk_index) DO UPDATE SET
     source_path = EXCLUDED.source_path,
     tm_id = EXCLUDED.tm_id,
     language = EXCLUDED.language,
@@ -629,45 +927,40 @@ ON CONFLICT (xml_id, model_name, chunk_index) DO UPDATE SET
     )
 
 
-def _delete_missing_source_rows(
-    cursor: Any, table: str, modelname: str, seen_ids: set[int]
-) -> None:
+def _delete_missing_source_rows(cursor: Any, table: str, seen_ids: set[int]) -> None:
     cursor.execute(
-        sql.SQL(
-            "DELETE FROM {} WHERE model_name = %s AND NOT (xml_id = ANY(%s))"
-        ).format(sql.Identifier(table)),
-        (modelname, list(sorted(seen_ids))),
+        sql.SQL("DELETE FROM {} WHERE NOT (xml_id = ANY(%s))").format(
+            sql.Identifier(table)
+        ),
+        (list(sorted(seen_ids)),),
     )
 
 
 def _delete_extra_chunks(
-    cursor: Any, table: str, xml_id: int, modelname: str, chunk_count: int
+    cursor: Any, table: str, xml_id: int, chunk_count: int
 ) -> None:
     cursor.execute(
-        sql.SQL(
-            "DELETE FROM {} WHERE xml_id = %s AND model_name = %s AND chunk_index >= %s"
-        ).format(sql.Identifier(table)),
-        (xml_id, modelname, chunk_count),
+        sql.SQL("DELETE FROM {} WHERE xml_id = %s AND chunk_index >= %s").format(
+            sql.Identifier(table)
+        ),
+        (xml_id, chunk_count),
     )
 
 
-def _embedding_index_name(table: str, modelname: str) -> str:
-    digest = hashlib.sha256(modelname.encode("utf-8")).hexdigest()[:12]
-    return f"{table}_{digest}_hnsw_idx"
+def _embedding_index_name(table: str) -> str:
+    return f"{table}_hnsw_idx"
 
 
-def _drop_embedding_index(cursor: Any, table: str, modelname: str) -> None:
+def _drop_embedding_index(cursor: Any, table: str) -> None:
     cursor.execute(
         sql.SQL("DROP INDEX IF EXISTS {}").format(
-            sql.Identifier(_embedding_index_name(table, modelname))
+            sql.Identifier(_embedding_index_name(table))
         )
     )
 
 
-def _recreate_embedding_index(
-    cursor: Any, table: str, modelname: str, dimensions: int
-) -> None:
-    _drop_embedding_index(cursor, table, modelname)
+def _recreate_embedding_index(cursor: Any, table: str, dimensions: int) -> None:
+    _drop_embedding_index(cursor, table)
     if dimensions <= HNSW_VECTOR_MAX_DIMENSIONS:
         index_type = "vector"
         operator_class = "vector_cosine_ops"
@@ -677,27 +970,14 @@ def _recreate_embedding_index(
     else:
         return
     cursor.execute(
-        sql.SQL(
-            "CREATE INDEX {} ON {} USING hnsw "
-            "((embedding::{}({})) {}) WHERE model_name = {}"
-        ).format(
-            sql.Identifier(_embedding_index_name(table, modelname)),
+        sql.SQL("CREATE INDEX {} ON {} USING hnsw ((embedding::{}({})) {})").format(
+            sql.Identifier(_embedding_index_name(table)),
             sql.Identifier(table),
             sql.SQL(index_type),
             sql.Literal(dimensions),
             sql.SQL(operator_class),
-            sql.Literal(modelname),
         )
     )
-
-
-def _imported_model_names(cursor: Any, temporary_table: str) -> list[str]:
-    cursor.execute(
-        sql.SQL(
-            "SELECT model_name FROM {} GROUP BY model_name ORDER BY model_name"
-        ).format(sql.Identifier(temporary_table))
-    )
-    return [str(_first_column(row)) for row in cursor.fetchall()]
 
 
 def _imported_embedding_stats(

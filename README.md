@@ -148,16 +148,82 @@ scrapyrus metadata ingest
 scrapyrus transcriptions ingest
 
 # requires the vector extension; see "Enabling the vector extension" above
-scrapyrus embeddings ingest \
+scrapyrus embeddings ingest transcriptions \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+scrapyrus embeddings ingest translations \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
+
+Create a keyword embedding store from the distinct strings in the `keywords`
+table with the same inference settings:
+
+```
+scrapyrus embeddings ingest keywords \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+```
+
+Each embeddings table is associated with exactly one model. The association and
+embedding size are stored in `embedding_table_metadata`, and the data tables do
+not repeat the model on every row. On a fresh ingestion the command embeds every
+source row or keyword. The corresponding
+`embeddings update transcriptions`, `embeddings update translations`, and
+`embeddings update keywords` commands embed only missing or stale entries and
+remove entries whose source no longer exists.
+
+Ingest, update, and import refuse a model different from the table's configured
+model. Pass `--force` to one of those commands to discard the table's existing
+embeddings and associate it with the requested model.
+
+Each operation selects its collection through a subcommand. For example, export
+and import one model's keyword embeddings with:
+
+```
+scrapyrus embeddings dump keywords \
+    --model-name <model> keyword-embeddings.dump
+
+scrapyrus embeddings import keywords \
+    --model-name <model> keyword-embeddings.dump
+```
+
+Embed free text and print its top candidates with the query commands:
+
+```
+scrapyrus embeddings query keywords \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+
+scrapyrus embeddings query transcriptions \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+
+scrapyrus embeddings query translations \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+```
+
+Transcription and translation results are ranked by the closest chunk in each
+source document, so a chunked document appears at most once. The matching chunk
+is included in the output together with its source path, TM ID, and language.
+
+`scrapyrus embeddings evaluate transcriptions` evaluates transcription queries
+against translation candidates. `scrapyrus embeddings evaluate translations`
+evaluates translation queries against transcription candidates. Both tables
+must use the same unique model and embedding size. The Markdown report is
+written to standard output. The `dump`,
+`import`, and `delete` operation groups likewise provide `transcriptions`,
+`translations`, and `keywords` subcommands.
+
+The embedding ingestion and query commands accept `SCRAPYRUS_DATABASE_URL`,
+`SCRAPYRUS_EMBEDDINGS_URL`, `SCRAPYRUS_EMBEDDINGS_MODEL`, and
+`SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the corresponding options. The query
+must use the same model as the stored embeddings.
 
 The database must already exist and be reachable. Embedding ingestion reads the
 XML rows created by `transcriptions ingest`, so those commands must run in that
 order.
 
 Embedding commands additionally require the `vector` extension to be enabled in
-this database. Enable it before the first `embeddings ingest` run; without it the
+this database. Enable it before the first embedding ingestion; without it the
 command stops with `PostgreSQL extension 'vector' is not available`. Verify with:
 
 ```
@@ -170,8 +236,8 @@ Schema creation and import publish producer-owned table and column meanings to
 `public.scrapyrus_semantic_catalog` in the same transaction as the data schema.
 Metadata, transcriptions, and embeddings are independently published components,
 covering `papyri`, `principal_editions`, `keywords`, `orig_dates`, `orig_places`,
-`ancient_editions`, `transcriptions`, `transcription_embeddings`, and
-`translation_embeddings`.
+`ancient_editions`, `transcriptions`, `transcription_embeddings`,
+`translation_embeddings`, and `keyword_embeddings`.
 
 A PostgreSQL-only consumer can read the versioned JSONB contract with:
 
@@ -186,7 +252,7 @@ FROM public.scrapyrus_semantic_catalog
 ORDER BY schema_name, table_name;
 ```
 
-Publish all nine current definitions without rebuilding any data tables:
+Publish all current definitions without rebuilding any data tables:
 
 ```
 scrapyrus catalog
