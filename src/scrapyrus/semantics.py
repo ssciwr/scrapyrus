@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from importlib import metadata as importlib_metadata
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -303,7 +303,7 @@ def publish_semantics(
 ) -> None:
     """Create, upsert, and prune one component's catalog rows without committing."""
 
-    if component not in ("metadata", "transcriptions", "embeddings"):
+    if component not in get_args(CatalogComponent):
         raise ValueError(f"Unknown semantic catalog component: {component!r}")
     validate_catalog_entries(entries, require_relationship_targets=False)
     cursor.execute(
