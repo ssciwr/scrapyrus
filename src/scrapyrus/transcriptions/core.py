@@ -18,6 +18,8 @@ from scrapyrus.saxon_xml import (
     select_nodes,
     serialize_node,
 )
+from scrapyrus.semantics import publish_semantics
+from scrapyrus.transcriptions.semantics import TRANSCRIPTIONS_SEMANTICS
 
 
 _XSLT_DIR = Path(__file__).with_name("xslt")
@@ -74,6 +76,17 @@ TRANSCRIPTIONS_SCHEMA_SQL = f"""CREATE TABLE {TRANSCRIPTIONS_TABLE} (
 CREATE INDEX {TRANSCRIPTIONS_TABLE}_tm_id_idx
     ON {TRANSCRIPTIONS_TABLE} (tm_id);
 """
+
+
+def _create_transcriptions_schema(cursor: Any) -> None:
+    """Create the transcription table and publish its semantics transactionally."""
+
+    cursor.execute(TRANSCRIPTIONS_SCHEMA_SQL)
+    publish_semantics(
+        cursor,
+        (TRANSCRIPTIONS_SEMANTICS,),
+        component="transcriptions",
+    )
 
 
 def transcription_xml_snippet(
@@ -155,7 +168,7 @@ VALUES (
     with psycopg.connect(conninfo, **connect_kwargs) as connection:
         with connection.cursor() as cursor:
             cursor.execute(f"DROP TABLE IF EXISTS {TRANSCRIPTIONS_TABLE}")
-            cursor.execute(TRANSCRIPTIONS_SCHEMA_SQL)
+            _create_transcriptions_schema(cursor)
 
             records = iterate_idpdata_triples(
                 idp_data,
@@ -269,7 +282,7 @@ def import_transcriptions(
     with psycopg.connect(conninfo, **connect_kwargs) as connection:
         with connection.cursor() as cursor:
             cursor.execute(f"DROP TABLE IF EXISTS {TRANSCRIPTIONS_TABLE}")
-            cursor.execute(TRANSCRIPTIONS_SCHEMA_SQL)
+            _create_transcriptions_schema(cursor)
             cursor.execute(
                 sql.SQL(
                     "CREATE TEMP TABLE {temporary_table} (LIKE {table}) ON COMMIT DROP"

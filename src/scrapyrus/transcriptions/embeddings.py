@@ -19,6 +19,11 @@ from scrapyrus.transcriptions.core import (
     translation_epidoc_xml_to_text,
 )
 from scrapyrus.transcriptions.llms import LLMProviderBase, initialize_llm_provider
+from scrapyrus.semantics import publish_semantics
+from scrapyrus.transcriptions.semantics import (
+    TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
+    TRANSLATION_EMBEDDINGS_SEMANTICS,
+)
 
 
 TRANSCRIPTION_EMBEDDINGS_TABLE = "transcription_embeddings"
@@ -561,6 +566,14 @@ BEGIN
 END $$
 """
         )
+    publish_semantics(
+        cursor,
+        (
+            TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
+            TRANSLATION_EMBEDDINGS_SEMANTICS,
+        ),
+        component="embeddings",
+    )
 
 
 def _is_missing_vector_extension_error(error: psycopg.Error) -> bool:

@@ -8,7 +8,7 @@ from scrapyrus.saxon_xml import (
     normalized_text,
     parse_xml_text,
 )
-from scrapyrus.transcriptions import (
+from scrapyrus.transcriptions.core import (
     available_translation_languages,
     epidoc_xml_to_text,
     transcription_language,

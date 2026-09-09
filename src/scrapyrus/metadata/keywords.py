@@ -11,6 +11,7 @@ from scrapyrus.metadata.xmlutils import (
     optional_string,
     publication_idno_string,
 )
+from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSemantics
 
 
 KEYWORD_TERMS_XPATH = ".//tei:profileDesc/tei:textClass/tei:keywords/tei:term"
@@ -49,19 +50,48 @@ KEYWORDS_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS keywords_tm_id_idx ON keywords (tm_id);"
 )
 
-KEYWORDS_DESCRIPTION = """The keywords table contains one row for each normalized keyword term assigned
-to a papyrus record. It records the keyword vocabulary scheme, term type,
-cleaned keyword text, and whether the assignment was marked uncertain in the
-source metadata."""
-
-KEYWORDS_SEMANTIC_CATALOG = """Table: keywords
-Use this table for topical, genre, subject, language, and classification queries. Join to papyri on tm_id.
-keyword_id: Synthetic row identifier for an extracted keyword; not a stable external term ID.
-tm_id: Trismegistos document ID for the papyrus record that has this keyword.
-scheme: Source keyword vocabulary or classification scheme from the TEI keywords element.
-keyword_type: Category or type of the keyword term from the source metadata.
-keyword: Normalized keyword text after removing uncertainty markers; search this field for subjects, genres, and classifications.
-uncertain: True when the original keyword was marked with a question mark, meaning the assignment is uncertain."""
+KEYWORDS_SEMANTICS = TableSemantics(
+    table_name="keywords",
+    description=(
+        "The keywords table contains normalized keyword assignments and their "
+        "source classification and uncertainty metadata."
+    ),
+    row_grain="One normalized keyword assignment.",
+    useful_for=("topics, genres, subjects, languages, and classifications",),
+    columns={
+        "keyword_id": ColumnSemantics(
+            description="Synthetic extracted-keyword row identifier, not a stable external term ID."
+        ),
+        "tm_id": ColumnSemantics(
+            description="Trismegistos document ID of the record assigned this keyword."
+        ),
+        "scheme": ColumnSemantics(
+            description="Source keyword vocabulary or classification scheme from the TEI keywords element."
+        ),
+        "keyword_type": ColumnSemantics(
+            description="Category or type of the keyword term from the source metadata."
+        ),
+        "keyword": ColumnSemantics(
+            description="Cleaned keyword text after uncertainty markers are removed."
+        ),
+        "uncertain": ColumnSemantics(
+            description="Whether the source marked the assignment with a question mark.",
+            value_meanings={
+                "true": "the keyword assignment is uncertain",
+                "false": "the source did not mark the assignment uncertain",
+            },
+        ),
+    },
+    relationships=(
+        RelationshipSemantics(
+            target_table="papyri",
+            source_columns=("tm_id",),
+            target_columns=("tm_id",),
+            cardinality="many-to-many",
+            description="Logical, unenforced Trismegistos document-key join.",
+        ),
+    ),
+)
 
 
 class KeywordModelFactory:
@@ -128,15 +158,10 @@ class KeywordMetadataTable(MetadataTable):
     name = "keywords"
     order_by = ("keyword_id",)
     schema_sql = KEYWORDS_SCHEMA_SQL
+    semantics = KEYWORDS_SEMANTICS
 
     def index_sql(self) -> str:
         return KEYWORDS_INDEX_SQL
-
-    def description(self) -> str:
-        return KEYWORDS_DESCRIPTION
-
-    def semantic_catalog(self) -> str:
-        return KEYWORDS_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[KeywordModel]:

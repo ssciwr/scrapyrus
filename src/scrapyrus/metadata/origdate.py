@@ -11,6 +11,7 @@ from scrapyrus.metadata.xmlutils import (
     optional_string,
     publication_idno_string,
 )
+from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSemantics
 
 
 ORIG_DATE_NODES_XPATH = ".//tei:origDate"
@@ -69,25 +70,80 @@ ORIG_DATES_INDEX_SQL = """CREATE INDEX IF NOT EXISTS orig_dates_tm_id_idx ON ori
 CREATE INDEX IF NOT EXISTS orig_dates_not_before_year_idx ON orig_dates (not_before_year);
 CREATE INDEX IF NOT EXISTS orig_dates_not_after_year_idx ON orig_dates (not_after_year);"""
 
-ORIG_DATES_DESCRIPTION = """The orig_dates table contains one row for each original-date element with a
-machine-readable date or date range. It stores the source date text, parsed
-not-before and not-after bounds, certainty and precision markers, and whether
-the row represents an alternative dating."""
-
-ORIG_DATES_SEMANTIC_CATALOG = """Table: orig_dates
-Use this table for chronological queries about when a papyrus was written, composed, or dated. Join to papyri on tm_id.
-date_id: Synthetic row identifier for an extracted date statement; not an external date ID.
-tm_id: Trismegistos document ID for the papyrus record with this date.
-date_text: Human-readable date expression from the source metadata, such as a century, reign, or exact date label.
-certainty: Source confidence marker for the date assignment; low or medium values mean the date is less certain.
-precision: Source precision marker for how exact the date assignment is; low or medium values mean broader or less precise dating.
-not_before_year: Earliest possible year for the date range; negative values encode BCE years from TEI date attributes.
-not_before_month: Earliest possible month when the lower bound includes month precision.
-not_before_day: Earliest possible day when the lower bound includes day precision.
-not_after_year: Latest possible year for the date range; use together with not_before_year for interval queries.
-not_after_month: Latest possible month when the upper bound includes month precision.
-not_after_day: Latest possible day when the upper bound includes day precision.
-alternative: True when the source marks this as an alternative date; prefer alternative = false for primary dating unless alternatives are requested."""
+ORIG_DATES_SEMANTICS = TableSemantics(
+    table_name="orig_dates",
+    description=(
+        "The orig_dates table contains source date statements, machine-readable "
+        "range bounds, confidence and precision, and alternative-date status."
+    ),
+    row_grain="One extracted original-date statement with machine-readable bounds.",
+    useful_for=("chronological overlap and dating queries",),
+    columns={
+        "date_id": ColumnSemantics(
+            description="Synthetic extracted-date row identifier, not an external date ID."
+        ),
+        "tm_id": ColumnSemantics(
+            description="Trismegistos document ID of the dated papyrus record."
+        ),
+        "date_text": ColumnSemantics(
+            description="Human-readable source date expression such as a century, reign, or exact-date label.",
+            caveats=(
+                "Use range bounds rather than string matching for chronological overlap.",
+            ),
+        ),
+        "certainty": ColumnSemantics(
+            description="Source confidence marker for the date assignment.",
+            value_meanings={"low": "low confidence", "medium": "medium confidence"},
+            null_means="The source supplied no certainty marker.",
+        ),
+        "precision": ColumnSemantics(
+            description="Source marker for how exact the date assignment is.",
+            value_meanings={"low": "low precision", "medium": "medium precision"},
+            null_means="The source supplied no precision marker.",
+        ),
+        "not_before_year": ColumnSemantics(
+            description="Earliest possible year of the range; negative values encode BCE years.",
+            null_means="The machine-readable lower year boundary was unavailable.",
+        ),
+        "not_before_month": ColumnSemantics(
+            description="Month of the lower range boundary.",
+            null_means="The lower boundary has less than month precision.",
+        ),
+        "not_before_day": ColumnSemantics(
+            description="Day of the lower range boundary.",
+            null_means="The lower boundary has less than day precision.",
+        ),
+        "not_after_year": ColumnSemantics(
+            description="Latest possible year of the range; negative values encode BCE years.",
+            null_means="The machine-readable upper year boundary was unavailable.",
+        ),
+        "not_after_month": ColumnSemantics(
+            description="Month of the upper range boundary.",
+            null_means="The upper boundary has less than month precision.",
+        ),
+        "not_after_day": ColumnSemantics(
+            description="Day of the upper range boundary.",
+            null_means="The upper boundary has less than day precision.",
+        ),
+        "alternative": ColumnSemantics(
+            description="Whether this is an alternative rather than primary source dating.",
+            value_meanings={
+                "false": "primary dating selected by default",
+                "true": "an alternative dating retained from the source",
+            },
+        ),
+    },
+    relationships=(
+        RelationshipSemantics(
+            target_table="papyri",
+            source_columns=("tm_id",),
+            target_columns=("tm_id",),
+            cardinality="many-to-many",
+            description="Logical, unenforced Trismegistos document-key join.",
+        ),
+    ),
+    caveats=("Chronological overlap queries should use both range bounds.",),
+)
 
 
 class OrigDateModelFactory:
@@ -178,15 +234,10 @@ class OrigDateMetadataTable(MetadataTable):
     name = "orig_dates"
     order_by = ("date_id",)
     schema_sql = ORIG_DATES_SCHEMA_SQL
+    semantics = ORIG_DATES_SEMANTICS
 
     def index_sql(self) -> str:
         return ORIG_DATES_INDEX_SQL
-
-    def description(self) -> str:
-        return ORIG_DATES_DESCRIPTION
-
-    def semantic_catalog(self) -> str:
-        return ORIG_DATES_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[OrigDateModel]:

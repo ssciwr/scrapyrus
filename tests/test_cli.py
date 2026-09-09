@@ -116,6 +116,7 @@ def test_images_subcommand_uses_defaults(monkeypatch):
 
 def test_database_commands_use_shared_database_url_default_and_envvar():
     command_paths = (
+        ("catalog",),
         ("metadata", "ingest"),
         ("metadata", "dump"),
         ("transcriptions", "ingest"),
@@ -144,6 +145,26 @@ def test_database_commands_use_shared_database_url_default_and_envvar():
         assert database_options[0].envvar == DATABASE_URL_ENVVAR
         assert database_options[0].default == DEFAULT_DATABASE_URL
         assert not database_options[0].required
+
+
+def test_catalog_subcommand_publishes_all_semantics(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.publish_catalog",
+        lambda database_url: calls.append(database_url),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "catalog",
+            "--database-url",
+            "postgresql://database.example/scrapyrus",
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["postgresql://database.example/scrapyrus"]
 
 
 def test_metadata_ingest_subcommand_uses_postgresql_connection_defaults(monkeypatch):

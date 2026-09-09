@@ -11,6 +11,11 @@ from scrapyrus.metadata.xmlutils import (
     first_string,
     publication_idno_string,
 )
+from scrapyrus.semantics import (
+    ColumnSemantics,
+    RelationshipSemantics,
+    TableSemantics,
+)
 
 
 class PapyrusModel(BaseModel):
@@ -54,26 +59,88 @@ CREATE INDEX IF NOT EXISTS papyri_ldab_id_idx ON papyri (ldab_id);
 CREATE INDEX IF NOT EXISTS papyri_mp3_id_idx ON papyri (mp3_id);
 CREATE INDEX IF NOT EXISTS papyri_current_location_idx ON papyri (current_location);"""
 
-PAPYRI_DESCRIPTION = """The papyri table contains one row for each idp.data metadata XML record.
-It is the central table for papyrus records, with source provenance, the
-Trismegistos document identifier, related external identifiers, title, support
-material, and current holding location."""
-
-PAPYRI_SEMANTIC_CATALOG = """Table: papyri
-Use this as the central document table. Join auxiliary metadata tables on tm_id.
-source_path: Relative path to the idp.data metadata XML file; the table primary key and provenance for the source record.
-tm_id: Trismegistos document ID for the papyrus or text record; use this as the logical document key across metadata tables.
-dclp_id: Numeric DCLP identifier when the record belongs to the Digital Corpus of Literary Papyri.
-dclp_hybrid_id: DCLP hybrid identifier string from the source metadata.
-ddb_perseus_style_id: DDbDP identifier in Perseus-style form from the source metadata.
-ddb_filename: DDbDP filename for the associated documentary transcription when present.
-ddb_hybrid_id: DDbDP hybrid identifier string from the source metadata.
-hgv_id: HGV metadata identifier.
-ldab_id: LDAB identifier when the record is linked to the Leuven Database of Ancient Books.
-mp3_id: MP3 identifier when the source metadata provides one.
-title: Human-readable record title or publication title from the metadata.
-material: Lowercase support material, such as papyrus, ostracon, parchment, or other physical carrier.
-current_location: Current holding location, inventory context, collection, or institution text from the manuscript identifier."""
+PAPYRI_SEMANTICS = TableSemantics(
+    table_name="papyri",
+    description=(
+        "The papyri table contains metadata and provenance from idp.data XML "
+        "records, including external identifiers, title, material, and location."
+    ),
+    row_grain="One row per idp.data metadata XML record, identified by source_path.",
+    useful_for=(
+        "central metadata and provenance queries",
+        "linking records through Trismegistos document IDs",
+    ),
+    columns={
+        "source_path": ColumnSemantics(
+            description="Relative path to the idp.data metadata XML file and primary-key provenance for the source record."
+        ),
+        "tm_id": ColumnSemantics(
+            description="Trismegistos document ID used as the logical document key across Scrapyrus tables.",
+            caveats=(
+                "It is not the papyri primary key and is not unique in this table.",
+            ),
+        ),
+        "dclp_id": ColumnSemantics(
+            description="Numeric Digital Corpus of Literary Papyri identifier.",
+            null_means="The source record has no DCLP identifier.",
+        ),
+        "dclp_hybrid_id": ColumnSemantics(
+            description="DCLP hybrid identifier string from the source metadata.",
+            null_means="The source record has no DCLP hybrid identifier.",
+        ),
+        "ddb_perseus_style_id": ColumnSemantics(
+            description="DDbDP identifier in Perseus-style form from the source metadata.",
+            aliases=("DDbDP Perseus-style ID",),
+        ),
+        "ddb_filename": ColumnSemantics(
+            description="DDbDP filename for the associated documentary transcription when present."
+        ),
+        "ddb_hybrid_id": ColumnSemantics(
+            description="DDbDP hybrid identifier string from the source metadata."
+        ),
+        "hgv_id": ColumnSemantics(description="HGV metadata identifier."),
+        "ldab_id": ColumnSemantics(
+            description="Leuven Database of Ancient Books identifier when linked."
+        ),
+        "mp3_id": ColumnSemantics(
+            description="MP3 identifier supplied by the source metadata."
+        ),
+        "title": ColumnSemantics(
+            description="Human-readable record or publication title from the metadata."
+        ),
+        "material": ColumnSemantics(
+            description="Lowercase physical support material.",
+            examples=("papyrus", "ostracon", "parchment"),
+        ),
+        "current_location": ColumnSemantics(
+            description="Current holding location, inventory context, collection, or institution text from the manuscript identifier."
+        ),
+    },
+    relationships=tuple(
+        RelationshipSemantics(
+            target_table=target,
+            source_columns=("tm_id",),
+            target_columns=("tm_id",),
+            cardinality="many-to-many",
+            description=(
+                "Logical Trismegistos document-key join; rows can multiply because "
+                "neither side is guaranteed unique on tm_id."
+            ),
+        )
+        for target in (
+            "principal_editions",
+            "keywords",
+            "orig_dates",
+            "orig_places",
+            "ancient_editions",
+            "transcriptions",
+        )
+    ),
+    caveats=(
+        "Multiple source_path rows may share a tm_id; document counts may mean distinct tm_id values or metadata source records.",
+        "This is the central metadata table, but not necessarily one row per logical TM document.",
+    ),
+)
 
 
 class PapyrusModelFactory:
@@ -177,15 +244,10 @@ class PapyrusMetadataTable(MetadataTable):
     name = "papyri"
     order_by = ("source_path",)
     schema_sql = PAPYRI_SCHEMA_SQL
+    semantics = PAPYRI_SEMANTICS
 
     def index_sql(self) -> str:
         return PAPYRI_INDEX_SQL
-
-    def description(self) -> str:
-        return PAPYRI_DESCRIPTION
-
-    def semantic_catalog(self) -> str:
-        return PAPYRI_SEMANTIC_CATALOG
 
     @property
     def model_class(self) -> type[PapyrusModel]:

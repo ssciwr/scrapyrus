@@ -9,6 +9,7 @@ from scrapyrus.images import (
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.semantic_catalog import publish_catalog
 from scrapyrus.transcriptions.core import (
     dump_transcriptions,
     import_transcriptions,
@@ -118,6 +119,14 @@ def main(context: click.Context, idp_data: Path) -> None:
 
     context.ensure_object(dict)
     context.obj["idp_data"] = idp_data
+
+
+@main.command("catalog")
+@database_url
+def publish_semantic_catalog(database_url: str) -> None:
+    """Publish the current structured semantic catalog to PostgreSQL."""
+
+    publish_catalog(database_url)
 
 
 @main.command("images")
