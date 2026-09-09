@@ -89,6 +89,19 @@ def _create_transcriptions_schema(cursor: Any) -> None:
     )
 
 
+def _invalidate_dependent_embeddings(cursor: Any) -> None:
+    """Make old XML identities unavailable before rebuilding their source."""
+
+    cursor.execute(
+        "DO $$ BEGIN "
+        "IF to_regclass('embedding_table_metadata') IS NOT NULL THEN "
+        "UPDATE embedding_table_metadata SET publication_state = 'invalid' "
+        "WHERE table_name IN "
+        "('transcription_embeddings', 'translation_embeddings'); "
+        "END IF; END $$"
+    )
+
+
 def transcription_xml_snippet(
     transcription: Path,
     *,
@@ -167,6 +180,7 @@ VALUES (
 
     with psycopg.connect(conninfo, **connect_kwargs) as connection:
         with connection.cursor() as cursor:
+            _invalidate_dependent_embeddings(cursor)
             cursor.execute(f"DROP TABLE IF EXISTS {TRANSCRIPTIONS_TABLE}")
             _create_transcriptions_schema(cursor)
 
@@ -281,6 +295,7 @@ def import_transcriptions(
 
     with psycopg.connect(conninfo, **connect_kwargs) as connection:
         with connection.cursor() as cursor:
+            _invalidate_dependent_embeddings(cursor)
             cursor.execute(f"DROP TABLE IF EXISTS {TRANSCRIPTIONS_TABLE}")
             _create_transcriptions_schema(cursor)
             cursor.execute(

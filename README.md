@@ -162,17 +162,22 @@ scrapyrus embeddings ingest keywords \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
-Each embeddings table is associated with exactly one model. The association and
-embedding size are stored in `embedding_table_metadata`, and the data tables do
-not repeat the model on every row. On a fresh ingestion the command embeds every
-source row or keyword. The corresponding
+Each embeddings table has one complete embedding specification in
+`embedding_table_metadata`: provider, model, dimensions, effective compatibility
+options, optional endpoint profile, contract version, and publication state.
+Credentials and endpoint URLs are not stored. The data tables do not repeat the
+specification on every row. Ingestion uses LangChain's distinct document and
+query embedding methods. On a fresh ingestion the command embeds every source
+row or keyword. The corresponding
 `embeddings update transcriptions`, `embeddings update translations`, and
 `embeddings update keywords` commands embed only missing or stale entries and
 remove entries whose source no longer exists.
 
-Ingest, update, and import refuse a model different from the table's configured
-model. Pass `--force` to one of those commands to discard the table's existing
-embeddings and associate it with the requested model.
+Ingest and update refuse any specification change, even when model name and
+dimensions remain equal. Pass `--force` to discard old vectors before publishing
+the new specification. Publication changes from `building` to `ready` in the
+same transaction as reconciliation and indexing; rebuilding transcription
+sources marks both dependent text corpora `invalid`.
 
 Each operation selects its collection through a subcommand. For example, export
 and import one model's keyword embeddings with:
@@ -184,6 +189,11 @@ scrapyrus embeddings dump keywords \
 scrapyrus embeddings import keywords \
     --model-name <model> keyword-embeddings.dump
 ```
+
+Every binary dump has a required adjacent `.manifest.json` file containing its
+table kind, columns, row count, unique IDs, and complete non-secret embedding
+specification. Import validates the manifest, dimensions, and matching source
+rows before publication.
 
 Embed free text and print its top candidates with the query commands:
 
@@ -217,6 +227,18 @@ The embedding ingestion and query commands accept `SCRAPYRUS_DATABASE_URL`,
 `SCRAPYRUS_EMBEDDINGS_URL`, `SCRAPYRUS_EMBEDDINGS_MODEL`, and
 `SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the corresponding options. The query
 must use the same model as the stored embeddings.
+
+Hosted providers are inferred from their standard API hostname. Other URLs are
+treated as OpenAI-compatible vLLM and publish endpoint profile `vllm` by default;
+set `SCRAPYRUS_EMBEDDING_ENDPOINT_PROFILE` to the deployment profile name the
+assistant will resolve through `EMBEDDING_ENDPOINT_<PROFILE>`.
+
+Text chunks have deterministic unique IDs such as `transcriptions:42:0`.
+Embeddings are stored as `vector(n)` and indexed directly for up to 2,000
+dimensions. Sizes from 2,001 through 4,000 additionally use a generated,
+directly indexed `search_embedding halfvec(n)` while retaining full-precision
+vectors. Larger embeddings use exact cosine search without an HNSW index.
+The LangChain provider integrations are pinned by the committed `uv.lock`.
 
 The database must already exist and be reachable. Embedding ingestion reads the
 XML rows created by `transcriptions ingest`, so those commands must run in that

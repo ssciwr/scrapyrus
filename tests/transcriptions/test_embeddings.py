@@ -1,9 +1,11 @@
 import hashlib
+import json
 
 import psycopg
 import pytest
 
 from scrapyrus.transcriptions.embeddings import (
+    EMBEDDING_DUMP_COLUMNS,
     EMBEDDING_TABLES,
     EMBEDDING_TABLE_METADATA_TABLE,
     EXPORT_EMBEDDING_TABLES,
@@ -30,6 +32,31 @@ from scrapyrus.transcriptions.embeddings import (
 
 def _sql_text(query):
     return query if isinstance(query, str) else query.as_string()
+
+
+def _write_manifest(source, document_kind, *, dimensions=3):
+    columns = (
+        KEYWORD_EMBEDDING_DUMP_COLUMNS
+        if document_kind == "keywords"
+        else EMBEDDING_DUMP_COLUMNS
+    )
+    manifest = {
+        "format": "scrapyrus-embedding-dump-v1",
+        "document_kind": document_kind,
+        "columns": list(columns),
+        "row_count": 2,
+        "embedding_specification": {
+            "table_name": EXPORT_EMBEDDING_TABLES[document_kind],
+            "model_name": "model",
+            "embedding_size": dimensions,
+            "provider": "vllm",
+            "provider_options": {"check_embedding_ctx_length": False},
+            "endpoint_profile": "vllm",
+            "contract_version": 1,
+            "publication_state": "ready",
+        },
+    }
+    source.with_name(f"{source.name}.manifest.json").write_text(json.dumps(manifest))
 
 
 class RecordingCopy:
@@ -99,9 +126,11 @@ class RecordingCursor:
                 else (params[0], configured[0], configured[1])
             )
         elif query.startswith(f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} SET"):
-            if "embedding_size = NULL" in query:
-                self.metadata[params[1]] = (params[0], None)
-            else:
+            if "publication_state = %s" in query:
+                pass
+            elif "embedding_size = NULL" in query:
+                self.metadata[params[-1]] = (params[0], None)
+            elif "embedding_size = %s" in query:
                 self.metadata[params[1]] = (params[2], params[0])
 
     def copy(self, query):
@@ -138,9 +167,16 @@ class FakeProvider:
         self.embeddings = list(embeddings)
         self.inputs = []
 
-    def embed(self, text):
+    def embed_documents(self, texts):
+        results = []
+        for text in texts:
+            self.inputs.append(text)
+            results.append(list(self.embeddings.pop(0)))
+        return results
+
+    def embed_query(self, text):
         self.inputs.append(text)
-        return tuple(self.embeddings.pop(0))
+        return list(self.embeddings.pop(0))
 
 
 def test_maximum_transcription_variant_is_fixed(monkeypatch):
@@ -244,7 +280,7 @@ def test_find_similar_documents_embeds_query_and_returns_ranked_matches(monkeypa
         if "PARTITION BY xml_id" in query
     )
     assert "PARTITION BY xml_id" in nearest_query
-    assert '"embedding"::vector(2) <=> %(embedding)s::vector(2)' in nearest_query
+    assert '"embedding" <=> %(embedding)s::vector(2)' in nearest_query
     assert "WHERE chunk_rank = 1" in nearest_query
     assert nearest_params == {
         "embedding": "[0.25,0.75]",
@@ -541,7 +577,11 @@ def test_select_xml_rows_samples_deterministically_with_seed():
 def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
     rows = [(1, "a.xml", 1, "<div/>", "transcription", None)]
     current_hash = hashlib.sha256(b"Alpha").hexdigest()
-    cursor = RecordingCursor(rows=rows, results=[(current_hash, "a.xml", "1", None)])
+    cursor = RecordingCursor(
+        rows=rows,
+        results=[(current_hash, "a.xml", "1", None)],
+        metadata={"transcription_embeddings": ("model", 2)},
+    )
     monkeypatch.setattr(
         psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
     )
@@ -676,9 +716,10 @@ def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
 ):
     source = tmp_path / "transcription-embeddings.dump"
     source.write_bytes(b"PGCOPY\nbinary-data")
+    _write_manifest(source, "transcriptions")
     cursor = RecordingCursor(
         fetchall_results=[[("model",)]],
-        results=[(2, 3, 3)],
+        results=[(2, 3, 3), (0,)],
     )
     monkeypatch.setattr(
         psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
@@ -710,16 +751,18 @@ def test_import_embeddings_replaces_model_rows_and_rebuilds_index(
         for query, _ in cursor.executions
     )
     assert any(
-        "USING hnsw" in query and "vector(3)" in query for query, _ in cursor.executions
+        "USING hnsw" in query and "vector_cosine_ops" in query
+        for query, _ in cursor.executions
     )
 
 
 def test_import_embeddings_supports_keywords(tmp_path, monkeypatch):
     source = tmp_path / "keyword-embeddings.dump"
     source.write_bytes(b"keyword-data")
+    _write_manifest(source, "keywords")
     cursor = RecordingCursor(
         fetchall_results=[[("model",)]],
-        results=[(2, 3, 3)],
+        results=[(2, 3, 3), (0,)],
     )
     monkeypatch.setattr(
         psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
@@ -749,7 +792,8 @@ def test_import_embeddings_supports_keywords(tmp_path, monkeypatch):
         f'"{column}"' in insert_query for column in KEYWORD_EMBEDDING_DUMP_COLUMNS
     )
     assert any(
-        "USING hnsw" in query and "vector(3)" in query for query, _ in cursor.executions
+        "USING hnsw" in query and "vector_cosine_ops" in query
+        for query, _ in cursor.executions
     )
 
 
@@ -762,7 +806,7 @@ def test_high_dimensional_embeddings_use_halfvec_hnsw_index():
     query, params = cursor.executions[-1]
     assert params is None
     assert "USING hnsw" in query
-    assert "embedding::halfvec(2560)" in query
+    assert '"search_embedding" halfvec_cosine_ops' in query
     assert "halfvec_cosine_ops" in query
 
 

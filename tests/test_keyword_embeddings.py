@@ -52,9 +52,11 @@ class RecordingCursor:
                 else [(params[0], configured[0], configured[1])]
             )
         elif query.startswith(f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} SET"):
-            if "embedding_size = NULL" in query:
-                self.metadata[params[1]] = (params[0], None)
-            else:
+            if "publication_state = %s" in query:
+                pass
+            elif "embedding_size = NULL" in query:
+                self.metadata[params[-1]] = (params[0], None)
+            elif "embedding_size = %s" in query:
                 self.metadata[params[1]] = (params[2], params[0])
             self._result = []
         elif query.startswith("SELECT DISTINCT"):
@@ -94,9 +96,16 @@ class FakeProvider:
         self.embeddings = list(embeddings)
         self.inputs = []
 
-    def embed(self, text):
+    def embed_documents(self, texts):
+        results = []
+        for text in texts:
+            self.inputs.append(text)
+            results.append(list(self.embeddings.pop(0)))
+        return results
+
+    def embed_query(self, text):
         self.inputs.append(text)
-        return tuple(self.embeddings.pop(0))
+        return list(self.embeddings.pop(0))
 
 
 def test_keyword_schema_uses_keyword_as_identity(monkeypatch):
@@ -246,7 +255,7 @@ def test_find_similar_keywords_embeds_query_and_returns_ranked_matches(monkeypat
         for query, params in cursor.executions
         if "AS similarity" in query
     )
-    assert '"embedding"::vector(2) <=> %(embedding)s::vector(2)' in query
+    assert '"embedding" <=> %(embedding)s::vector(2)' in query
     assert "ORDER BY" in query
     assert params == {
         "embedding": "[0.40000000000000002,0.59999999999999998]",

@@ -172,10 +172,11 @@ def test_ingest_transcriptions_rebuilds_table_and_inserts_snippets(
         )
     ]
     assert iterator_calls == [(idp_data, False)]
-    assert _normalize_sql(cursor.executions[0][0]) == (
+    assert "publication_state = 'invalid'" in _normalize_sql(cursor.executions[0][0])
+    assert _normalize_sql(cursor.executions[1][0]) == (
         "DROP TABLE IF EXISTS transcriptions"
     )
-    schema = _normalize_sql(cursor.executions[1][0])
+    schema = _normalize_sql(cursor.executions[2][0])
     assert "xml_content xml NOT NULL" in schema
     assert "type IN ('transcription', 'translation')" in schema
     assert "language text" in schema
@@ -407,10 +408,11 @@ def test_import_transcriptions_rebuilds_table_from_dump(tmp_path, monkeypatch):
             {"application_name": "scrapyrus-test"},
         )
     ]
-    assert _normalize_sql(cursor.executions[0][0]) == (
+    assert "publication_state = 'invalid'" in _normalize_sql(cursor.executions[0][0])
+    assert _normalize_sql(cursor.executions[1][0]) == (
         "DROP TABLE IF EXISTS transcriptions"
     )
-    assert "CREATE TABLE transcriptions" in cursor.executions[1][0]
+    assert "CREATE TABLE transcriptions" in cursor.executions[2][0]
     assert any(
         params is not None and params[1:4] == ("transcriptions", "transcriptions", 1)
         for query, params in cursor.executions

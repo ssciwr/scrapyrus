@@ -3,24 +3,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any
 
+from langchain_core.embeddings import Embeddings
 import psycopg
 from psycopg import sql
 from tqdm import tqdm
 
 from scrapyrus.transcriptions.embeddings import (
+    EmbeddingTableMetadata,
     HNSW_HALFVEC_MAX_DIMENSIONS,
     HNSW_VECTOR_MAX_DIMENSIONS,
     KEYWORD_EMBEDDINGS_TABLE,
-    _associate_embedding_model,
+    _associate_embedding_specification,
     _ensure_embedding_schema,
+    initialize_llm_provider,
     _recreate_embedding_index,
     _require_embedding_model,
+    _require_compatible_specification,
     _set_embedding_size,
+    _set_publication_state,
     _vector_literal,
 )
-from scrapyrus.transcriptions.llms import LLMProviderBase, initialize_llm_provider
+from scrapyrus.transcriptions.embedding_clients import (
+    build_embedding_client,
+    effective_provider_options,
+    infer_embedding_provider,
+)
 
 
 KEYWORDS_TABLE = "keywords"
@@ -54,10 +64,46 @@ class KeywordMatch:
 class KeywordEmbeddingStore:
     """Store one embedding per distinct keyword/qualifier text and model."""
 
-    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
+    def __init__(
+        self,
+        inference_server_url: str,
+        modelname: str,
+        api_key: str,
+        *,
+        provider: str | None = None,
+        provider_options: dict[str, Any] | None = None,
+        endpoint_profile: str | None = None,
+    ) -> None:
         self.modelname = modelname
-        self.provider: LLMProviderBase = initialize_llm_provider(
-            inference_server_url, modelname, api_key
+        self.provider_name = provider or infer_embedding_provider(inference_server_url)
+        self.provider_options = effective_provider_options(
+            self.provider_name, provider_options
+        )
+        self.endpoint_profile = endpoint_profile
+        if self.provider_name == "vllm" and self.endpoint_profile is None:
+            self.endpoint_profile = os.getenv(
+                "SCRAPYRUS_EMBEDDING_ENDPOINT_PROFILE", "vllm"
+            )
+        self.provider: Embeddings = (
+            initialize_llm_provider(inference_server_url, modelname, api_key)
+            if provider is None and provider_options is None
+            else build_embedding_client(
+                provider=self.provider_name,
+                model_name=modelname,
+                api_key=api_key,
+                inference_server_url=inference_server_url,
+                provider_options=self.provider_options,
+            )
+        )
+
+    def _metadata(self) -> EmbeddingTableMetadata:
+        return EmbeddingTableMetadata(
+            KEYWORD_EMBEDDINGS_TABLE,
+            self.modelname,
+            None,
+            self.provider_name,
+            self.provider_options,
+            self.endpoint_profile,
         )
 
     def setup_store(
@@ -81,8 +127,8 @@ class KeywordEmbeddingStore:
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 _ensure_keyword_embedding_schema(cursor)
-                metadata = _associate_embedding_model(
-                    cursor, KEYWORD_EMBEDDINGS_TABLE, self.modelname, force=force
+                metadata = _associate_embedding_specification(
+                    cursor, self._metadata(), force=force
                 )
                 keywords = _select_keywords(cursor)
                 stored_dimensions = _select_stored_keyword_dimensions(cursor)
@@ -114,7 +160,7 @@ class KeywordEmbeddingStore:
                         f"embedding size {expected_dimensions}"
                     )
                 for keyword in terms:
-                    embedding = self.provider.embed(keyword)
+                    embedding = tuple(self.provider.embed_documents([keyword])[0])
                     if expected_dimensions is None:
                         expected_dimensions = len(embedding)
                     elif len(embedding) != expected_dimensions:
@@ -129,18 +175,24 @@ class KeywordEmbeddingStore:
                     )
 
                 _delete_stale_keyword_embeddings(cursor)
-                if expected_dimensions is not None:
-                    _set_embedding_size(
-                        cursor,
-                        KEYWORD_EMBEDDINGS_TABLE,
-                        self.modelname,
-                        expected_dimensions,
+                if expected_dimensions is None:
+                    expected_dimensions = len(
+                        self.provider.embed_query(
+                            "Scrapyrus empty-corpus dimension readiness probe"
+                        )
                     )
-                    _recreate_embedding_index(
-                        cursor,
-                        KEYWORD_EMBEDDINGS_TABLE,
-                        expected_dimensions,
-                    )
+                _set_embedding_size(
+                    cursor,
+                    KEYWORD_EMBEDDINGS_TABLE,
+                    self.modelname,
+                    expected_dimensions,
+                )
+                _recreate_embedding_index(
+                    cursor,
+                    KEYWORD_EMBEDDINGS_TABLE,
+                    expected_dimensions,
+                )
+                _set_publication_state(cursor, KEYWORD_EMBEDDINGS_TABLE, "ready")
 
         return len(pending)
 
@@ -162,11 +214,14 @@ def find_similar_keywords(
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
 
-    provider = initialize_llm_provider(inference_server_url, modelname, api_key)
+    query_store = KeywordEmbeddingStore(inference_server_url, modelname, api_key)
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             metadata = _require_embedding_model(
                 cursor, KEYWORD_EMBEDDINGS_TABLE, modelname
+            )
+            _require_compatible_specification(
+                cursor, KEYWORD_EMBEDDINGS_TABLE, query_store._metadata()
             )
             count, minimum_dimensions, maximum_dimensions = (
                 _stored_keyword_embedding_stats(cursor)
@@ -187,7 +242,7 @@ def find_similar_keywords(
                     f"size {metadata.embedding_size}"
                 )
 
-            embedding = provider.embed(query)
+            embedding = tuple(query_store.provider.embed_query(query))
             if len(embedding) != minimum_dimensions:
                 raise ValueError(
                     f"Query embedding has {len(embedding)} dimensions, but stored "
@@ -304,19 +359,17 @@ FROM {KEYWORD_EMBEDDINGS_TABLE}
 
 def _nearest_keywords_query(dimensions: int) -> sql.Composed:
     if dimensions <= HNSW_VECTOR_MAX_DIMENSIONS:
-        vector_type = "vector"
-    elif dimensions <= HNSW_HALFVEC_MAX_DIMENSIONS:
-        vector_type = "halfvec"
-    else:
-        vector_type = None
-
-    if vector_type is None:
         stored = sql.Identifier("embedding")
-        query = sql.SQL("{}::vector").format(sql.Placeholder("embedding"))
+        query_type = "vector"
+    elif dimensions <= HNSW_HALFVEC_MAX_DIMENSIONS:
+        stored = sql.Identifier("search_embedding")
+        query_type = "halfvec"
     else:
-        cast = sql.SQL("{}({})").format(sql.SQL(vector_type), sql.Literal(dimensions))
-        stored = sql.SQL("{}::{}").format(sql.Identifier("embedding"), cast)
-        query = sql.SQL("{}::{}").format(sql.Placeholder("embedding"), cast)
+        stored = sql.Identifier("embedding")
+        query_type = "vector"
+
+    cast = sql.SQL("{}({})").format(sql.SQL(query_type), sql.Literal(dimensions))
+    query = sql.SQL("{}::{}").format(sql.Placeholder("embedding"), cast)
     distance = sql.SQL("{} <=> {}").format(stored, query)
     return sql.SQL(
         "SELECT keyword, 1 - ({distance}) AS similarity "

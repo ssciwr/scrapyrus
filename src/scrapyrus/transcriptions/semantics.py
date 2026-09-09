@@ -102,6 +102,12 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
         ),
         useful_for=(f"semantic search over {document_kind} chunks",),
         columns={
+            "chunk_id": ColumnSemantics(
+                description=(
+                    "Globally unique deterministic retrieval identity formed from "
+                    "corpus kind, xml_id, and chunk_index."
+                )
+            ),
             "xml_id": ColumnSemantics(
                 description="Source transcriptions.transcription_id, despite the xml_id name.",
                 caveats=(
@@ -200,6 +206,25 @@ EMBEDDING_TABLE_METADATA_SEMANTICS = TableSemantics(
         "embedding_size": ColumnSemantics(
             description="Number of scalar dimensions in every vector in the table.",
             null_means="The table is configured but does not contain an embedding yet.",
+        ),
+        "provider": ColumnSemantics(
+            description="Allowlisted LangChain embedding provider integration."
+        ),
+        "provider_options": ColumnSemantics(
+            description=(
+                "Validated JSON object of compatibility-affecting effective options; "
+                "operational settings and secrets are excluded."
+            )
+        ),
+        "endpoint_profile": ColumnSemantics(
+            description="Deployment profile used to resolve a self-hosted endpoint.",
+            null_means="The provider uses its standard hosted endpoint.",
+        ),
+        "contract_version": ColumnSemantics(
+            description="Version of the fixed producer-consumer table contract."
+        ),
+        "publication_state": ColumnSemantics(
+            description="Publication lifecycle state: building, ready, or invalid."
         ),
     },
 )

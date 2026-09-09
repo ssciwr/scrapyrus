@@ -123,7 +123,17 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
         validate_semantic_columns(entry, tuple(table_type().model_class.model_fields))
     validate_semantic_columns(entries[6], TRANSCRIPTION_COLUMNS)
     validate_semantic_columns(
-        entries[7], ("table_name", "model_name", "embedding_size")
+        entries[7],
+        (
+            "table_name",
+            "model_name",
+            "embedding_size",
+            "provider",
+            "provider_options",
+            "endpoint_profile",
+            "contract_version",
+            "publication_state",
+        ),
     )
     validate_semantic_columns(entries[8], EMBEDDING_DUMP_COLUMNS)
     validate_semantic_columns(entries[9], EMBEDDING_DUMP_COLUMNS)
