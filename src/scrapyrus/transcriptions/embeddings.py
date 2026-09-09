@@ -681,32 +681,6 @@ def _validate_imported_sources(
         )
 
 
-def retrieve_embedding(
-    conninfo: str = "",
-    /,
-    *,
-    modelname: str,
-    document_path: str | Path,
-    translation: bool = False,
-) -> tuple[float, ...] | None:
-    """Return an embedding selected by model, kind, and XML source path."""
-
-    table = EMBEDDING_TABLES["translations" if translation else "transcriptions"]
-    with psycopg.connect(conninfo) as connection:
-        with connection.cursor() as cursor:
-            _require_embedding_model(cursor, table, modelname)
-            cursor.execute(
-                sql.SQL(
-                    "SELECT embedding::text FROM {} "
-                    "WHERE source_path = %s "
-                    "ORDER BY xml_id, chunk_index LIMIT 1"
-                ).format(sql.Identifier(table)),
-                (_document_path(document_path),),
-            )
-            row = cursor.fetchone()
-    return None if row is None else _parse_vector(_first_column(row))
-
-
 def find_similar_documents(
     query: str,
     conninfo: str = "",
@@ -1200,25 +1174,6 @@ def _associate_embedding_specification(
     return specification
 
 
-def _associate_embedding_model(
-    cursor: Any, table: str, modelname: str, *, force: bool
-) -> EmbeddingTableMetadata:
-    """Compatibility wrapper for callers which have not selected a provider."""
-
-    return _associate_embedding_specification(
-        cursor,
-        EmbeddingTableMetadata(
-            table,
-            modelname,
-            None,
-            "vllm",
-            {"check_embedding_ctx_length": False},
-            "vllm",
-        ),
-        force=force,
-    )
-
-
 def _require_compatible_specification(
     cursor: Any, table: str, requested: EmbeddingTableMetadata
 ) -> EmbeddingTableMetadata:
@@ -1537,17 +1492,6 @@ def _document_path(path: str | Path) -> str:
 
 def _vector_literal(embedding: tuple[float, ...]) -> str:
     return "[" + ",".join(format(value, ".17g") for value in embedding) + "]"
-
-
-def _parse_vector(value: Any) -> tuple[float, ...]:
-    if isinstance(value, str):
-        text = value.strip()
-        if not text.startswith("[") or not text.endswith("]"):
-            raise ValueError(f"Could not parse vector value: {value!r}")
-        return tuple(float(item) for item in text[1:-1].split(",") if item)
-    if isinstance(value, (list, tuple)):
-        return tuple(float(item) for item in value)
-    raise TypeError(f"Unsupported vector value: {value!r}")
 
 
 def _first_column(row: Any) -> Any:

@@ -14,6 +14,7 @@ from scrapyrus.transcriptions.embeddings import (
     DocumentMatch,
     EmbeddingModelMismatchError,
     EmbeddingStore,
+    EmbeddingTableMetadata,
     TranscriptionsUnavailableError,
     chunk_embedding_text,
     dump_embeddings,
@@ -24,9 +25,8 @@ from scrapyrus.transcriptions.embeddings import (
     _xml_to_embedding_text,
     delete_embeddings,
     import_embeddings,
-    retrieve_embedding,
     update_embeddings,
-    _associate_embedding_model,
+    _associate_embedding_specification,
 )
 
 
@@ -610,28 +610,6 @@ def test_update_embeddings_only_embeds_stale_rows(monkeypatch):
     )
 
 
-def test_retrieve_embedding_uses_separate_kind_table(monkeypatch):
-    cursor = RecordingCursor(
-        results=[("[0.25,0.5]",)],
-        metadata={"translation_embeddings": ("model", 2)},
-    )
-    monkeypatch.setattr(
-        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
-    )
-
-    result = retrieve_embedding(
-        "postgresql://db",
-        modelname="model",
-        document_path="HGV/46.xml",
-        translation=True,
-    )
-
-    assert result == (0.25, 0.5)
-    assert any(
-        'FROM "translation_embeddings"' in query for query, _ in cursor.executions
-    )
-
-
 def test_delete_embeddings_deletes_model_from_selected_table(monkeypatch):
     cursor = RecordingCursor(
         rowcount=3, metadata={"translation_embeddings": ("model", 2)}
@@ -821,15 +799,19 @@ def test_embeddings_above_hnsw_dimension_limits_are_stored_without_index():
 
 def test_associating_different_model_requires_force_and_force_discards_rows():
     cursor = RecordingCursor(metadata={"translation_embeddings": ("old-model", 3)})
+    specification = EmbeddingTableMetadata(
+        "translation_embeddings",
+        "new-model",
+        None,
+        "vllm",
+        {"check_embedding_ctx_length": False},
+        "vllm",
+    )
 
     with pytest.raises(EmbeddingModelMismatchError, match="Pass --force"):
-        _associate_embedding_model(
-            cursor, "translation_embeddings", "new-model", force=False
-        )
+        _associate_embedding_specification(cursor, specification, force=False)
 
-    metadata = _associate_embedding_model(
-        cursor, "translation_embeddings", "new-model", force=True
-    )
+    metadata = _associate_embedding_specification(cursor, specification, force=True)
 
     assert metadata.model_name == "new-model"
     assert metadata.embedding_size is None

@@ -171,28 +171,6 @@ class TableSemantics(BaseModel):
         return self
 
 
-def validate_semantic_columns(
-    semantics: TableSemantics,
-    expected_columns: tuple[str, ...],
-) -> None:
-    """Require exact agreement between data columns and semantic column keys."""
-
-    expected = set(expected_columns)
-    actual = set(semantics.columns)
-    missing = sorted(expected - actual)
-    unexpected = sorted(actual - expected)
-    if missing or unexpected:
-        details = []
-        if missing:
-            details.append(f"missing: {', '.join(missing)}")
-        if unexpected:
-            details.append(f"unexpected: {', '.join(unexpected)}")
-        raise ValueError(
-            f"Semantic columns for {semantics.schema_name}.{semantics.table_name} "
-            f"do not match the data columns ({'; '.join(details)})"
-        )
-
-
 def validate_catalog_entries(
     entries: tuple[TableSemantics, ...],
     *,
@@ -234,59 +212,6 @@ def validate_catalog_entries(
                 )
     if errors:
         raise ValueError("Invalid semantic relationships: " + "; ".join(errors))
-
-
-def render_table_summary(entries: tuple[TableSemantics, ...]) -> str:
-    """Render deterministic human-readable descriptions for several tables."""
-
-    return "\n\n".join(entry.description for entry in entries)
-
-
-def render_catalog_entry(entry: TableSemantics) -> str:
-    """Render one structured semantic entry as deterministic prose."""
-
-    lines = [
-        f"Table: {entry.table_name}",
-        entry.description,
-        f"Row grain: {entry.row_grain}",
-    ]
-    if entry.useful_for:
-        lines.append(f"Useful for: {'; '.join(entry.useful_for)}")
-    if entry.aliases:
-        lines.append(f"Aliases: {', '.join(entry.aliases)}")
-    for name, column in entry.columns.items():
-        detail = column.description
-        if column.aliases:
-            detail += f" Aliases: {', '.join(column.aliases)}."
-        if column.value_meanings:
-            meanings = "; ".join(
-                f"{value} = {meaning}"
-                for value, meaning in column.value_meanings.items()
-            )
-            detail += f" Values: {meanings}."
-        if column.null_means is not None:
-            detail += f" Null means: {column.null_means}."
-        if column.examples:
-            detail += f" Examples: {', '.join(column.examples)}."
-        if column.caveats:
-            detail += f" Caveats: {'; '.join(column.caveats)}."
-        lines.append(f"{name}: {detail}")
-    for relationship in entry.relationships:
-        source = ", ".join(relationship.source_columns)
-        target = ", ".join(relationship.target_columns)
-        enforcement = (
-            "database-enforced"
-            if relationship.enforced_by_database
-            else "not database-enforced"
-        )
-        lines.append(
-            f"Relationship: ({source}) -> {relationship.target_schema}."
-            f"{relationship.target_table} ({target}); {relationship.cardinality}; "
-            f"{enforcement}. {relationship.description}"
-        )
-    if entry.caveats:
-        lines.extend(f"Caveat: {caveat}" for caveat in entry.caveats)
-    return "\n".join(lines)
 
 
 def producer_version() -> str:

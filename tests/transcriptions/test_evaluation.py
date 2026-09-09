@@ -3,8 +3,8 @@ import psycopg
 from scrapyrus.transcriptions.evaluation import (
     EmbeddingEvaluation,
     LanguageEmbeddingEvaluation,
+    _evaluate_embeddings_model,
     evaluate_embeddings,
-    evaluate_embeddings_model,
 )
 
 
@@ -47,18 +47,14 @@ class Connection:
         return self._cursor
 
 
-def test_evaluation_uses_separate_embedding_tables_and_stored_language(
-    tmp_path, monkeypatch
-):
+def test_evaluation_uses_separate_embedding_tables_and_stored_language():
     cursor = Cursor()
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-    output = tmp_path / "report.md"
 
-    evaluation = evaluate_embeddings_model(
-        "postgresql://db",
+    evaluation = _evaluate_embeddings_model(
+        cursor,
+        "model",
         query_kind="transcriptions",
-        modelname="model",
-        output_file=output,
+        progressbar=True,
     )
 
     assert evaluation.transcription_count == 2
@@ -85,7 +81,7 @@ def test_evaluation_uses_separate_embedding_tables_and_stored_language(
     assert "min(candidates.embedding <=> query_chunks.embedding)" in sql
     candidate_params = cursor.executions[-1][1]
     assert candidate_params["embeddings"] == ["[1,0,0]", "[0.9,0.1,0]"]
-    report = output.read_text()
+    report = evaluation.to_markdown()
     assert report.startswith("# Embedding Evaluation: `model`")
     assert "| MRR | 1.0000 | 1 | 100.00% |" in report
     assert "- Transcription chunks: 3" in report
@@ -93,18 +89,16 @@ def test_evaluation_uses_separate_embedding_tables_and_stored_language(
     assert "| 2-3 chunks | MRR | 1.0000 | 1 | 100.00% |" in report
 
 
-def test_evaluation_can_use_translations_as_queries(monkeypatch):
+def test_evaluation_can_use_translations_as_queries():
     cursor = Cursor()
     cursor.fetchall_results = [
         [("1", "hgv/1.xml", "en", ["[1,0,0]", "[0.9,0.1,0]"])],
         [("1", "ddb/1.xml")],
     ]
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-
-    evaluation = evaluate_embeddings_model(
-        "postgresql://db",
+    evaluation = _evaluate_embeddings_model(
+        cursor,
+        "model",
         query_kind="translations",
-        modelname="model",
         progressbar=False,
     )
 
@@ -123,11 +117,10 @@ def test_evaluation_shows_progress_for_retrieval_queries(monkeypatch):
         progress.update(iterable=iterable, total=total, unit=unit, desc=desc)
         return iterable
 
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
     monkeypatch.setattr("scrapyrus.transcriptions.evaluation.tqdm", fake_tqdm)
 
-    evaluate_embeddings_model(
-        "postgresql://db", query_kind="transcriptions", modelname="sample"
+    _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
     )
 
     assert progress["total"] == 1
@@ -137,16 +130,15 @@ def test_evaluation_shows_progress_for_retrieval_queries(monkeypatch):
 
 def test_evaluation_can_disable_progress(monkeypatch):
     cursor = Cursor()
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
     monkeypatch.setattr(
         "scrapyrus.transcriptions.evaluation.tqdm",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()),
     )
 
-    evaluate_embeddings_model(
-        "postgresql://db",
+    _evaluate_embeddings_model(
+        cursor,
+        "sample",
         query_kind="transcriptions",
-        modelname="sample",
         progressbar=False,
     )
 
@@ -173,7 +165,7 @@ def test_markdown_renders_collection_counts():
     assert "| MRR | 1.5000 | 2 | 75.00% |" in report
 
 
-def test_evaluation_calculates_mean_reciprocal_rank(monkeypatch):
+def test_evaluation_calculates_mean_reciprocal_rank():
     cursor = Cursor()
     cursor.fetchone_results = [(2, 2, 0, 3, 3), (2, 2, 0, 3, 3)]
     cursor.fetchall_results = [
@@ -184,10 +176,8 @@ def test_evaluation_calculates_mean_reciprocal_rank(monkeypatch):
         [("2", "hgv/2.xml"), ("1", "hgv/1.xml")],
         [("2", "hgv/2.xml"), ("1", "hgv/1.xml")],
     ]
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-
-    evaluation = evaluate_embeddings_model(
-        "postgresql://db", query_kind="transcriptions", modelname="sample"
+    evaluation = _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
     )
 
     assert evaluation.reciprocal_rank_sum == 1.5
@@ -197,7 +187,7 @@ def test_evaluation_calculates_mean_reciprocal_rank(monkeypatch):
     assert evaluation.language_results["greek"].mrr == 0.75
 
 
-def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window(monkeypatch):
+def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window():
     cursor = Cursor()
     cursor.fetchone_results = [(1, 1, 0, 3, 3), (6, 6, 0, 3, 3), (6,)]
     cursor.fetchall_results = [
@@ -210,10 +200,8 @@ def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window(monkeypatch):
             ("6", "hgv/6.xml"),
         ],
     ]
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-
-    evaluation = evaluate_embeddings_model(
-        "postgresql://db", query_kind="transcriptions", modelname="sample"
+    evaluation = _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
     )
 
     assert evaluation.recall_at[5] == 0.0
@@ -221,17 +209,15 @@ def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window(monkeypatch):
     assert "row_number()" in cursor.executions[-1][0]
 
 
-def test_evaluation_accepts_partial_embedding_collections(monkeypatch):
+def test_evaluation_accepts_partial_embedding_collections():
     cursor = Cursor()
     cursor.fetchone_results = [(3, 3, 0, 3, 3), (1, 1, 0, 3, 3)]
     cursor.fetchall_results = [
         [("1", "ddb/1.xml", "grc", "[1,0,0]")],
         [("1", "hgv/1.xml")],
     ]
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-
-    evaluation = evaluate_embeddings_model(
-        "postgresql://db", query_kind="transcriptions", modelname="sample"
+    evaluation = _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
     )
 
     assert evaluation.transcription_count == 3

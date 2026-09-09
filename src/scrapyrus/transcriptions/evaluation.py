@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -267,36 +266,6 @@ def evaluate_embeddings(
                 tm_ids=tm_ids,
             )
     print(evaluation.to_markdown(), end="")
-    return evaluation
-
-
-def evaluate_embeddings_model(
-    conninfo: str = "",
-    /,
-    *,
-    query_kind: str,
-    modelname: str,
-    output_file: str | Path | None = None,
-    progressbar: bool = True,
-    sample: int | None = None,
-    seed: int = 0,
-) -> EmbeddingEvaluation:
-    """Evaluate cross-collection retrieval for one stored model."""
-
-    _evaluation_tables(query_kind)
-    with psycopg.connect(conninfo) as connection:
-        with connection.cursor() as cursor:
-            tm_ids = _select_sample_tm_ids(cursor, sample=sample, seed=seed)
-            evaluation = _evaluate_embeddings_model(
-                cursor,
-                modelname,
-                query_kind=query_kind,
-                progressbar=progressbar,
-                tm_ids=tm_ids,
-            )
-
-    if output_file is not None:
-        Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
     return evaluation
 
 
