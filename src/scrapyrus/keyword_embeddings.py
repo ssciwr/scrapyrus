@@ -23,7 +23,6 @@ from scrapyrus.transcriptions.embeddings import (
     _require_embedding_model,
     _require_compatible_specification,
     _set_embedding_size,
-    _set_publication_state,
     _vector_literal,
 )
 from scrapyrus.transcriptions.embedding_clients import (
@@ -192,7 +191,6 @@ class KeywordEmbeddingStore:
                     KEYWORD_EMBEDDINGS_TABLE,
                     expected_dimensions,
                 )
-                _set_publication_state(cursor, KEYWORD_EMBEDDINGS_TABLE, "ready")
 
         return len(pending)
 

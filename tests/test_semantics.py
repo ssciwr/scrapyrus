@@ -127,7 +127,6 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
         "provider_options",
         "endpoint_profile",
         "contract_version",
-        "publication_state",
     }
     assert set(entries[8].columns) == set(EMBEDDING_DUMP_COLUMNS)
     assert set(entries[9].columns) == set(EMBEDDING_DUMP_COLUMNS)

@@ -164,7 +164,7 @@ scrapyrus embeddings ingest keywords \
 
 Each embeddings table has one complete embedding specification in
 `embedding_table_metadata`: provider, model, dimensions, effective compatibility
-options, optional endpoint profile, contract version, and publication state.
+options, optional endpoint profile, and contract version.
 Credentials and endpoint URLs are not stored. The data tables do not repeat the
 specification on every row. Ingestion uses LangChain's distinct document and
 query embedding methods. On a fresh ingestion the command embeds every source
@@ -175,9 +175,9 @@ remove entries whose source no longer exists.
 
 Ingest and update refuse any specification change, even when model name and
 dimensions remain equal. Pass `--force` to discard old vectors before publishing
-the new specification. Publication changes from `building` to `ready` in the
-same transaction as reconciliation and indexing; rebuilding transcription
-sources marks both dependent text corpora `invalid`.
+the new specification. Reconciliation, dimension metadata, and index changes
+commit in one transaction. Stop consumers while rebuilding source data and its
+dependent embeddings.
 
 Each operation selects its collection through a subcommand. For example, export
 and import one model's keyword embeddings with:

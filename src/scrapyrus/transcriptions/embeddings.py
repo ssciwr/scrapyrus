@@ -94,7 +94,6 @@ TRANSCRIPTIONS_UNAVAILABLE_MESSAGE = (
 HNSW_VECTOR_MAX_DIMENSIONS = 2_000
 HNSW_HALFVEC_MAX_DIMENSIONS = 4_000
 EMBEDDING_CONTRACT_VERSION = 1
-PUBLICATION_STATES = frozenset({"building", "ready", "invalid"})
 
 
 def initialize_llm_provider(
@@ -139,7 +138,6 @@ class EmbeddingTableMetadata:
     provider_options: dict[str, Any] | None = None
     endpoint_profile: str | None = None
     contract_version: int = EMBEDDING_CONTRACT_VERSION
-    publication_state: str = "building"
 
     def specification_dict(self) -> dict[str, Any]:
         """Return the complete, non-secret specification for a dump manifest."""
@@ -152,7 +150,6 @@ class EmbeddingTableMetadata:
             "provider_options": self.provider_options or {},
             "endpoint_profile": self.endpoint_profile,
             "contract_version": self.contract_version,
-            "publication_state": self.publication_state,
         }
 
 
@@ -370,7 +367,6 @@ class EmbeddingStore:
                     )
                 _set_embedding_size(cursor, table, self.modelname, dimensions)
                 _recreate_embedding_index(cursor, table, dimensions)
-                _set_publication_state(cursor, table, "ready")
 
         return len(embedded)
 
@@ -416,7 +412,6 @@ def delete_embeddings(
             _drop_embedding_index(cursor, table)
             cursor.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
             deleted = max(cursor.rowcount, 0)
-            _set_publication_state(cursor, table, "invalid")
             return deleted
 
 
@@ -440,8 +435,6 @@ def dump_embeddings(
         with connection.cursor() as cursor:
             _ensure_embedding_schema(cursor)
             metadata = _require_embedding_model(cursor, table, modelname)
-            if metadata.publication_state != "ready":
-                raise ValueError(f"Embedding table {table!r} is not ready to export")
             cursor.execute(
                 sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
             )
@@ -557,7 +550,6 @@ def import_embeddings(
             published_dimensions = dimensions or specification.embedding_size
             _set_embedding_size(cursor, table, modelname, published_dimensions)
             _recreate_embedding_index(cursor, table, published_dimensions)
-            _set_publication_state(cursor, table, "ready")
     return row_count
 
 
@@ -609,12 +601,9 @@ def _metadata_from_manifest(value: dict[str, Any]) -> EmbeddingTableMetadata:
         "provider_options",
         "endpoint_profile",
         "contract_version",
-        "publication_state",
     }
     if set(value) != required:
         raise ValueError("Embedding dump specification fields are incomplete")
-    if value["publication_state"] != "ready":
-        raise ValueError("Embedding dump was not exported from a ready publication")
     size = value["embedding_size"]
     if not isinstance(size, int) or isinstance(size, bool) or size < 1:
         raise ValueError("Embedding dump has an invalid embedding size")
@@ -648,7 +637,6 @@ def _metadata_from_manifest(value: dict[str, Any]) -> EmbeddingTableMetadata:
             else str(value["endpoint_profile"])
         ),
         contract_version=version,
-        publication_state="building",
     )
 
 
@@ -959,11 +947,9 @@ CREATE TABLE IF NOT EXISTS {EMBEDDING_TABLE_METADATA_TABLE} (
     provider_options jsonb NOT NULL DEFAULT '{{}}'::jsonb,
     endpoint_profile text,
     contract_version integer NOT NULL DEFAULT {EMBEDDING_CONTRACT_VERSION},
-    publication_state text NOT NULL DEFAULT 'invalid',
     CHECK (table_name IN ({embedding_table_names})),
     CHECK (embedding_size IS NULL OR embedding_size > 0),
-    CHECK (provider IS NULL OR provider IN ({embedding_providers})),
-    CHECK (publication_state IN ('building', 'ready', 'invalid'))
+    CHECK (provider IS NULL OR provider IN ({embedding_providers}))
 )
 """
     )
@@ -972,8 +958,7 @@ CREATE TABLE IF NOT EXISTS {EMBEDDING_TABLE_METADATA_TABLE} (
         "ADD COLUMN IF NOT EXISTS provider text, "
         "ADD COLUMN IF NOT EXISTS provider_options jsonb NOT NULL DEFAULT '{}'::jsonb, "
         "ADD COLUMN IF NOT EXISTS endpoint_profile text, "
-        f"ADD COLUMN IF NOT EXISTS contract_version integer NOT NULL DEFAULT {EMBEDDING_CONTRACT_VERSION}, "
-        "ADD COLUMN IF NOT EXISTS publication_state text NOT NULL DEFAULT 'invalid'"
+        f"ADD COLUMN IF NOT EXISTS contract_version integer NOT NULL DEFAULT {EMBEDDING_CONTRACT_VERSION}"
     )
     for table in EMBEDDING_TABLES.values():
         corpus = (
@@ -1040,7 +1025,7 @@ def embedding_table_metadata(cursor: Any, table: str) -> EmbeddingTableMetadata 
         raise ValueError(f"Unknown embeddings table {table!r}")
     cursor.execute(
         f"SELECT table_name, model_name, embedding_size, provider, "
-        "provider_options, endpoint_profile, contract_version, publication_state "
+        "provider_options, endpoint_profile, contract_version "
         f"FROM {EMBEDDING_TABLE_METADATA_TABLE} WHERE table_name = %s",
         (table,),
     )
@@ -1060,7 +1045,6 @@ def _metadata_from_row(row: Any) -> EmbeddingTableMetadata:
             "vllm",
             {"check_embedding_ctx_length": False},
             "vllm",
-            publication_state="ready",
         )
     options = _row_value(row, "provider_options", 4)
     if isinstance(options, str):
@@ -1081,7 +1065,6 @@ def _metadata_from_row(row: Any) -> EmbeddingTableMetadata:
             else str(_row_value(row, "endpoint_profile", 5))
         ),
         contract_version=int(_row_value(row, "contract_version", 6)),
-        publication_state=str(_row_value(row, "publication_state", 7)),
     )
 
 
@@ -1112,8 +1095,8 @@ def _associate_embedding_specification(
     cursor.execute(
         f"INSERT INTO {EMBEDDING_TABLE_METADATA_TABLE} "
         "(table_name, model_name, provider, provider_options, endpoint_profile, "
-        "contract_version, publication_state) "
-        "VALUES (%s, %s, %s, %s::jsonb, %s, %s, 'building') "
+        "contract_version) "
+        "VALUES (%s, %s, %s, %s::jsonb, %s, %s) "
         "ON CONFLICT (table_name) DO NOTHING",
         (
             table,
@@ -1126,7 +1109,7 @@ def _associate_embedding_specification(
     )
     cursor.execute(
         f"SELECT table_name, model_name, embedding_size, provider, "
-        "provider_options, endpoint_profile, contract_version, publication_state "
+        "provider_options, endpoint_profile, contract_version "
         f"FROM {EMBEDDING_TABLE_METADATA_TABLE} "
         "WHERE table_name = %s FOR UPDATE",
         (table,),
@@ -1136,7 +1119,6 @@ def _associate_embedding_specification(
         raise RuntimeError(f"Could not configure embeddings table {table!r}")
     metadata = _metadata_from_row(row)
     if _same_embedding_specification(metadata, specification):
-        _set_publication_state(cursor, table, "building")
         return metadata
     if not force:
         raise EmbeddingModelMismatchError(
@@ -1160,7 +1142,7 @@ def _associate_embedding_specification(
         f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} "
         "SET model_name = %s, embedding_size = NULL, provider = %s, "
         "provider_options = %s::jsonb, endpoint_profile = %s, "
-        "contract_version = %s, publication_state = 'building' "
+        "contract_version = %s "
         "WHERE table_name = %s",
         (
             specification.model_name,
@@ -1180,10 +1162,6 @@ def _require_compatible_specification(
     metadata = embedding_table_metadata(cursor, table)
     if metadata is None:
         raise ValueError(f"No embedding specification is configured for {table!r}")
-    if metadata.publication_state != "ready":
-        raise ValueError(
-            f"Embedding table {table!r} is {metadata.publication_state!r}, not ready"
-        )
     comparable = EmbeddingTableMetadata(
         **{**requested.__dict__, "embedding_size": metadata.embedding_size}
     )
@@ -1225,16 +1203,6 @@ def _set_embedding_size(
         (embedding_size, table, modelname),
     )
     _dimension_embedding_columns(cursor, table, embedding_size)
-
-
-def _set_publication_state(cursor: Any, table: str, state: str) -> None:
-    if state not in PUBLICATION_STATES:
-        raise ValueError(f"Unknown embedding publication state {state!r}")
-    cursor.execute(
-        f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} SET publication_state = %s "
-        "WHERE table_name = %s",
-        (state, table),
-    )
 
 
 def _dimension_embedding_columns(cursor: Any, table: str, dimensions: int) -> None:

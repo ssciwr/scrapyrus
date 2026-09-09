@@ -52,9 +52,7 @@ class RecordingCursor:
                 else [(params[0], configured[0], configured[1])]
             )
         elif query.startswith(f"UPDATE {EMBEDDING_TABLE_METADATA_TABLE} SET"):
-            if "publication_state = %s" in query:
-                pass
-            elif "embedding_size = NULL" in query:
+            if "embedding_size = NULL" in query:
                 self.metadata[params[-1]] = (params[0], None)
             elif "embedding_size = %s" in query:
                 self.metadata[params[1]] = (params[2], params[0])

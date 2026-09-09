@@ -223,9 +223,6 @@ EMBEDDING_TABLE_METADATA_SEMANTICS = TableSemantics(
         "contract_version": ColumnSemantics(
             description="Version of the fixed producer-consumer table contract."
         ),
-        "publication_state": ColumnSemantics(
-            description="Publication lifecycle state: building, ready, or invalid."
-        ),
     },
 )
 
