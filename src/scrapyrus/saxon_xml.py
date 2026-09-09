@@ -49,14 +49,6 @@ def saxon_qname(name: str) -> str:
     return name
 
 
-def namespace_uri(name: str | None) -> str:
-    """Return the namespace URI from a Saxon EQName, or ``""`` if absent."""
-
-    if name is not None and name.startswith("Q{"):
-        return name[2:].partition("}")[0]
-    return ""
-
-
 def display_name(name: str | None) -> str:
     """Return a readable local name, preserving the standard ``xml:`` prefix."""
 
@@ -171,12 +163,6 @@ def attribute_value(
 
     value = node.get_attribute_value(saxon_qname(name))
     return default if value is None else value
-
-
-def normalized_text(node: PyXdmNode) -> str:
-    """Return whitespace-normalized descendant text for *node*."""
-
-    return " ".join(node.string_value.split())
 
 
 def select_nodes(

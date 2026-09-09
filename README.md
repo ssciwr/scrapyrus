@@ -148,16 +148,104 @@ scrapyrus metadata ingest
 scrapyrus transcriptions ingest
 
 # requires the vector extension; see "Enabling the vector extension" above
-scrapyrus embeddings ingest \
+scrapyrus embeddings ingest transcriptions \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+scrapyrus embeddings ingest translations \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
+
+Create a keyword embedding store from the distinct strings in the `keywords`
+table with the same inference settings:
+
+```
+scrapyrus embeddings ingest keywords \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+```
+
+Each embeddings table has one complete embedding specification in
+`embedding_table_metadata`: provider, model, dimensions, effective compatibility
+options, optional endpoint profile, and contract version.
+Credentials and endpoint URLs are not stored. The data tables do not repeat the
+specification on every row. Ingestion uses LangChain's distinct document and
+query embedding methods. On a fresh ingestion the command embeds every source
+row or keyword. The corresponding
+`embeddings update transcriptions`, `embeddings update translations`, and
+`embeddings update keywords` commands embed only missing or stale entries and
+remove entries whose source no longer exists.
+
+Ingest and update refuse any specification change, even when model name and
+dimensions remain equal. Pass `--force` to discard old vectors before publishing
+the new specification. Reconciliation, dimension metadata, and index changes
+commit in one transaction. Stop consumers while rebuilding source data and its
+dependent embeddings.
+
+Each operation selects its collection through a subcommand. For example, export
+and import one model's keyword embeddings with:
+
+```
+scrapyrus embeddings dump keywords \
+    --model-name <model> keyword-embeddings.dump
+
+scrapyrus embeddings import keywords \
+    --model-name <model> keyword-embeddings.dump
+```
+
+Every binary dump has a required adjacent `.manifest.json` file containing its
+table kind, columns, row count, unique IDs, and complete non-secret embedding
+specification. Import validates the manifest, dimensions, and matching source
+rows before publication.
+
+Embed free text and print its top candidates with the query commands:
+
+```
+scrapyrus embeddings query keywords \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+
+scrapyrus embeddings query transcriptions \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+
+scrapyrus embeddings query translations \
+    "sale of a house" --top-k 10 \
+    --inference-server-url <url> --model-name <model> --api-key <key>
+```
+
+Transcription and translation results are ranked by the closest chunk in each
+source document, so a chunked document appears at most once. The matching chunk
+is included in the output together with its source path, TM ID, and language.
+
+`scrapyrus embeddings evaluate transcriptions` evaluates transcription queries
+against translation candidates. `scrapyrus embeddings evaluate translations`
+evaluates translation queries against transcription candidates. Both tables
+must use the same unique model and embedding size. The Markdown report is
+written to standard output. The `dump`,
+`import`, and `delete` operation groups likewise provide `transcriptions`,
+`translations`, and `keywords` subcommands.
+
+The embedding ingestion and query commands accept `SCRAPYRUS_DATABASE_URL`,
+`SCRAPYRUS_EMBEDDINGS_URL`, `SCRAPYRUS_EMBEDDINGS_MODEL`, and
+`SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the corresponding options. The query
+must use the same model as the stored embeddings.
+
+Hosted providers are inferred from their standard API hostname. Other URLs are
+treated as OpenAI-compatible vLLM and publish endpoint profile `vllm` by default;
+set `SCRAPYRUS_EMBEDDING_ENDPOINT_PROFILE` to the deployment profile name the
+assistant will resolve through `EMBEDDING_ENDPOINT_<PROFILE>`.
+
+Text chunks have deterministic unique IDs such as `transcriptions:42:0`.
+Embeddings are stored as `vector(n)` and indexed directly for up to 2,000
+dimensions. Sizes from 2,001 through 4,000 additionally use a generated,
+directly indexed `search_embedding halfvec(n)` while retaining full-precision
+vectors. Larger embeddings use exact cosine search without an HNSW index.
+The LangChain provider integrations are pinned by the committed `uv.lock`.
 
 The database must already exist and be reachable. Embedding ingestion reads the
 XML rows created by `transcriptions ingest`, so those commands must run in that
 order.
 
 Embedding commands additionally require the `vector` extension to be enabled in
-this database. Enable it before the first `embeddings ingest` run; without it the
+this database. Enable it before the first embedding ingestion; without it the
 command stops with `PostgreSQL extension 'vector' is not available`. Verify with:
 
 ```
@@ -170,8 +258,8 @@ Schema creation and import publish producer-owned table and column meanings to
 `public.scrapyrus_semantic_catalog` in the same transaction as the data schema.
 Metadata, transcriptions, and embeddings are independently published components,
 covering `papyri`, `principal_editions`, `keywords`, `orig_dates`, `orig_places`,
-`ancient_editions`, `transcriptions`, `transcription_embeddings`, and
-`translation_embeddings`.
+`ancient_editions`, `transcriptions`, `transcription_embeddings`,
+`translation_embeddings`, and `keyword_embeddings`.
 
 A PostgreSQL-only consumer can read the versioned JSONB contract with:
 
@@ -186,7 +274,7 @@ FROM public.scrapyrus_semantic_catalog
 ORDER BY schema_name, table_name;
 ```
 
-Publish all nine current definitions without rebuilding any data tables:
+Publish all current definitions without rebuilding any data tables:
 
 ```
 scrapyrus catalog
