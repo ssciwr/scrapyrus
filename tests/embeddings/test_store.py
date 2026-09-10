@@ -438,6 +438,33 @@ def test_malformed_client_batch_is_rejected_before_writing(database, client):
     assert connection.outcomes == ["rollback"]
 
 
+def test_voyageai_ingestion_sends_up_to_64_inputs_per_request(database):
+    cursor, _ = database
+    cursor.all_results = [[(f"term-{index}",) for index in range(129)]]
+    cursor.one_results = [(0, None, None)]
+
+    class BatchClient:
+        def __init__(self):
+            self.batches = []
+
+        def embed_documents(self, texts):
+            self.batches.append(list(texts))
+            return [[float(text.removeprefix("term-")), 0.0] for text in texts]
+
+        def embed_query(self, text):
+            return [0.0, 0.0]
+
+    client = BatchClient()
+    store = EmbeddingStore(
+        corpus="keywords",
+        client=client,
+        specification=specification(provider="voyageai", endpoint_profile=None),
+    )
+
+    assert store.ingest(progressbar=False) == 129
+    assert [len(batch) for batch in client.batches] == [64, 64, 1]
+
+
 def test_ingestion_closes_the_progress_bar_when_the_client_fails(
     database, client, monkeypatch
 ):
