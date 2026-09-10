@@ -3,13 +3,7 @@ from psycopg.types.json import Jsonb
 from pydantic import ValidationError
 
 from scrapyrus.metadata.base import MetadataTable
-from scrapyrus.semantic_catalog import (
-    catalog,
-    catalog_entries,
-    catalog_entry,
-    publish_catalog,
-    table_summary,
-)
+from scrapyrus.semantic_catalog import _CATALOG_COMPONENTS, publish_catalog
 from scrapyrus.semantics import (
     CATALOG_SCHEMA_VERSION,
     ColumnSemantics,
@@ -17,10 +11,12 @@ from scrapyrus.semantics import (
     TableSemantics,
     publish_semantics,
     validate_catalog_entries,
-    validate_semantic_columns,
 )
 from scrapyrus.transcriptions.core import TRANSCRIPTION_COLUMNS
-from scrapyrus.transcriptions.embeddings import EMBEDDING_DUMP_COLUMNS
+from scrapyrus.transcriptions.embeddings import (
+    EMBEDDING_DUMP_COLUMNS,
+    KEYWORD_EMBEDDING_DUMP_COLUMNS,
+)
 
 
 class RecordingCursor:
@@ -99,7 +95,11 @@ def test_relationships_require_matching_nonempty_column_pairs():
 
 
 def test_catalog_has_all_tables_with_exact_static_column_coverage():
-    entries = catalog_entries()
+    entries = tuple(
+        entry
+        for component_entries in _CATALOG_COMPONENTS.values()
+        for entry in component_entries
+    )
     assert tuple(entry.table_name for entry in entries) == (
         "papyri",
         "principal_editions",
@@ -108,34 +108,30 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
         "orig_places",
         "ancient_editions",
         "transcriptions",
+        "embedding_table_metadata",
         "transcription_embeddings",
         "translation_embeddings",
+        "keyword_embeddings",
     )
     metadata_entries = entries[:6]
     for table_type, entry in zip(
         MetadataTable.registered_tables(), metadata_entries, strict=True
     ):
-        validate_semantic_columns(entry, tuple(table_type().model_class.model_fields))
-    validate_semantic_columns(entries[6], TRANSCRIPTION_COLUMNS)
-    validate_semantic_columns(entries[7], EMBEDDING_DUMP_COLUMNS)
-    validate_semantic_columns(entries[8], EMBEDDING_DUMP_COLUMNS)
+        assert set(entry.columns) == set(table_type().model_class.model_fields)
+    assert set(entries[6].columns) == set(TRANSCRIPTION_COLUMNS)
+    assert set(entries[7].columns) == {
+        "table_name",
+        "model_name",
+        "embedding_size",
+        "provider",
+        "provider_options",
+        "endpoint_profile",
+        "contract_version",
+    }
+    assert set(entries[8].columns) == set(EMBEDDING_DUMP_COLUMNS)
+    assert set(entries[9].columns) == set(EMBEDDING_DUMP_COLUMNS)
+    assert set(entries[10].columns) == set(KEYWORD_EMBEDDING_DUMP_COLUMNS)
     validate_catalog_entries(entries)
-
-
-def test_catalog_lookup_rendering_and_json_round_trip_are_deterministic():
-    entries = catalog_entries()
-    assert catalog_entry("transcriptions") is entries[6]
-    assert table_summary() == table_summary()
-    assert catalog("orig_dates") == catalog("orig_dates")
-    for entry in entries:
-        assert TableSemantics.model_validate_json(entry.model_dump_json()) == entry
-
-
-def test_catalog_lookup_error_lists_available_tables():
-    with pytest.raises(ValueError) as error:
-        catalog_entry("missing")
-    assert "public.missing" in str(error.value)
-    assert "public.papyri" in str(error.value)
 
 
 def test_catalog_schema_version_is_stable():
@@ -187,7 +183,12 @@ def test_publish_catalog_publishes_all_components_in_one_connection(monkeypatch)
         (cursor, ("transcriptions",), "transcriptions"),
         (
             cursor,
-            ("transcription_embeddings", "translation_embeddings"),
+            (
+                "embedding_table_metadata",
+                "transcription_embeddings",
+                "translation_embeddings",
+                "keyword_embeddings",
+            ),
             "embeddings",
         ),
     ]

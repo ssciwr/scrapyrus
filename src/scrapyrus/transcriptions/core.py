@@ -433,32 +433,6 @@ def _xml_to_stored_text(xml_content: str, document_type: str) -> str:
     return epidoc_xml_to_text(xml_content, **MAXIMUM_TRANSCRIPTION_OPTIONS)
 
 
-def available_translation_languages(epidoc_xml: str | bytes | Path) -> list[str]:
-    """Return unique translation ``xml:lang`` values in document order."""
-
-    with PySaxonProcessor(license=False) as proc:
-        document = _parse_epidoc_xml(proc, epidoc_xml)
-        language_values = [
-            node.string_value
-            for node in select_nodes(
-                proc,
-                document,
-                ".//*[local-name() = 'div'][@type = 'translation']"
-                "[not(ancestor::*[local-name() = 'div'][@type = 'translation'])]"
-                " /@*[local-name() = 'lang' and "
-                "namespace-uri() = 'http://www.w3.org/XML/1998/namespace']",
-            )
-        ]
-
-    seen = set()
-    unique_languages = []
-    for language in language_values:
-        if language and language not in seen:
-            seen.add(language)
-            unique_languages.append(language)
-    return unique_languages
-
-
 def _parse_epidoc_xml(proc: PySaxonProcessor, epidoc_xml: str | bytes | Path):
     if isinstance(epidoc_xml, Path):
         return parse_xml_document(proc, epidoc_xml)
