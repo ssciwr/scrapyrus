@@ -25,6 +25,9 @@ from scrapyrus.semantics import publish_semantics
 from scrapyrus.transcriptions.embedding_clients import (
     SUPPORTED_EMBEDDING_PROVIDERS,
     build_embedding_client,
+    embed_documents_with_backoff,
+    embed_query_with_backoff,
+    embedding_request_batches,
     effective_provider_options,
     infer_embedding_provider,
 )
@@ -361,8 +364,10 @@ class EmbeddingStore:
                 _delete_missing_source_rows(cursor, table, seen_ids)
                 if dimensions is None:
                     dimensions = len(
-                        self.provider.embed_query(
-                            "Scrapyrus empty-corpus dimension readiness probe"
+                        embed_query_with_backoff(
+                            self.provider,
+                            "Scrapyrus empty-corpus dimension readiness probe",
+                            self.provider_name,
                         )
                     )
                 _set_embedding_size(cursor, table, self.modelname, dimensions)
@@ -371,7 +376,9 @@ class EmbeddingStore:
         return len(embedded)
 
     def _embed(self, text: str) -> tuple[float, ...]:
-        result = self.provider.embed_documents([text])[0]
+        result = embed_documents_with_backoff(
+            self.provider, [text], self.provider_name
+        )[0]
         return tuple(float(value) for value in result)
 
 
@@ -727,7 +734,11 @@ def find_similar_documents(
             _require_compatible_specification(
                 cursor, table, query_store._metadata(table)
             )
-            embedding = tuple(query_store.provider.embed_query(query))
+            embedding = tuple(
+                embed_query_with_backoff(
+                    query_store.provider, query, query_store.provider_name
+                )
+            )
             if len(embedding) != minimum_dimensions:
                 raise ValueError(
                     f"Query embedding has {len(embedding)} dimensions, but stored "
@@ -1362,24 +1373,60 @@ def _embed_documents(
     jobs: Sequence[_EmbeddingJob], *, progressbar: bool, progressbar_title: str
 ) -> list[_EmbeddedDocument]:
     progress = (
-        tqdm(total=len(jobs), unit="request", desc=progressbar_title)
+        tqdm(total=len(jobs), unit="text", desc=progressbar_title)
         if progressbar
         else None
     )
     completed: list[_EmbeddedDocument] = []
     skipped: list[_SkippedEmbeddingDocument] = []
     try:
-        for job in jobs:
-            result = _embed_document(job, progress)
-            (
-                skipped if isinstance(result, _SkippedEmbeddingDocument) else completed
-            ).append(result)
+        provider_name = jobs[0].store.provider_name if jobs else ""
+        for batch in embedding_request_batches(jobs, provider_name):
+            for result in _embed_document_batch(batch, progress):
+                (
+                    skipped
+                    if isinstance(result, _SkippedEmbeddingDocument)
+                    else completed
+                ).append(result)
     finally:
         if progress is not None:
             progress.close()
     for item in skipped:
         print(item.message, flush=True)
     return completed
+
+
+def _embed_document_batch(
+    jobs: Sequence[_EmbeddingJob], progress: Any | None
+) -> list[_EmbeddedDocument | _SkippedEmbeddingDocument]:
+    try:
+        embeddings = embed_documents_with_backoff(
+            jobs[0].store.provider,
+            [job.row["document_text"] for job in jobs],
+            jobs[0].store.provider_name,
+        )
+    except Exception as error:
+        if len(jobs) > 1 and _is_skippable_embedding_error(error):
+            return [_embed_document(job, progress) for job in jobs]
+        if not _is_skippable_embedding_error(error):
+            raise
+        results: list[_EmbeddedDocument | _SkippedEmbeddingDocument] = [
+            _SkippedEmbeddingDocument(job, _skipped_embedding_message(job, error))
+            for job in jobs
+        ]
+    else:
+        if len(embeddings) != len(jobs):
+            raise ValueError(
+                f"Embedding provider returned {len(embeddings)} vectors for "
+                f"{len(jobs)} texts"
+            )
+        results = [
+            _EmbeddedDocument(job, tuple(float(value) for value in embedding))
+            for job, embedding in zip(jobs, embeddings, strict=True)
+        ]
+    if progress is not None:
+        progress.update(len(jobs))
+    return results
 
 
 def _embed_document(

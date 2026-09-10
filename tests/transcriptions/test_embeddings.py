@@ -27,6 +27,8 @@ from scrapyrus.transcriptions.embeddings import (
     import_embeddings,
     update_embeddings,
     _associate_embedding_specification,
+    _embed_documents,
+    _EmbeddingJob,
 )
 
 
@@ -163,8 +165,10 @@ class FakeProvider:
     def __init__(self, embeddings):
         self.embeddings = list(embeddings)
         self.inputs = []
+        self.batches = []
 
     def embed_documents(self, texts):
+        self.batches.append(list(texts))
         results = []
         for text in texts:
             self.inputs.append(text)
@@ -487,7 +491,7 @@ def test_setup_store_reports_xml_preparation_progress(monkeypatch):
     prepared_rows, total, unit, description = progress_calls[0]
     assert len(prepared_rows) == 1
     assert (total, unit, description) == (1, "row", "Preparing XML rows")
-    assert progress_calls[1][1:] == (1, "request", "Embedding XML rows")
+    assert progress_calls[1][1:] == (1, "text", "Embedding XML rows")
 
 
 def test_setup_store_embeds_chunks_with_indices(monkeypatch):
@@ -532,6 +536,37 @@ def test_setup_store_embeds_chunks_with_indices(monkeypatch):
         "chunk_index >= %s" in query and params == (1, 2)
         for query, params in cursor.executions
     )
+
+
+def test_voyageai_embedding_requests_contain_up_to_64_texts():
+    provider = FakeProvider([[float(index)] for index in range(129)])
+    store = object.__new__(EmbeddingStore)
+    store.provider_name = "voyageai"
+    store.provider = provider
+    jobs = [
+        _EmbeddingJob(
+            index,
+            store,
+            {
+                "xml_id": index,
+                "source_path": f"{index}.xml",
+                "document_text": f"text-{index}",
+            },
+            "transcription_embeddings",
+        )
+        for index in range(129)
+    ]
+
+    embedded = _embed_documents(
+        jobs,
+        progressbar=False,
+        progressbar_title="Embedding XML rows",
+    )
+
+    assert [len(batch) for batch in provider.batches] == [64, 64, 1]
+    assert [document.embedding for document in embedded] == [
+        (float(index),) for index in range(129)
+    ]
 
 
 def test_setup_store_reports_missing_transcriptions_table(monkeypatch):

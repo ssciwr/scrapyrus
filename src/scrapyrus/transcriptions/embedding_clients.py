@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, cast
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from itertools import batched
+import logging
+import time
+from typing import Any, TypeVar, cast
 from urllib.parse import urlparse
 
 from langchain_core.embeddings import Embeddings
@@ -12,6 +15,69 @@ from langchain_core.embeddings import Embeddings
 SUPPORTED_EMBEDDING_PROVIDERS = frozenset(
     {"openai", "vllm", "voyageai", "mistralai", "huggingface"}
 )
+VOYAGEAI_EMBEDDING_BATCH_SIZE = 64
+VOYAGEAI_RATE_LIMIT_MAX_RETRIES = 7
+VOYAGEAI_RATE_LIMIT_MAX_DELAY_SECONDS = 16
+
+
+logger = logging.getLogger(__name__)
+
+
+_BatchItem = TypeVar("_BatchItem")
+_EmbeddingResult = TypeVar("_EmbeddingResult")
+
+
+def embedding_request_batches(
+    items: Iterable[_BatchItem], provider: str
+) -> Iterator[tuple[_BatchItem, ...]]:
+    """Group VoyageAI inputs into regular requests, preserving other behavior."""
+
+    batch_size = VOYAGEAI_EMBEDDING_BATCH_SIZE if provider == "voyageai" else 1
+    return batched(items, batch_size)
+
+
+def embed_documents_with_backoff(
+    client: Embeddings, texts: list[str], provider: str
+) -> list[list[float]]:
+    """Embed documents, retrying VoyageAI rate limits with exponential backoff."""
+
+    return _call_with_rate_limit_backoff(
+        lambda: client.embed_documents(texts), provider
+    )
+
+
+def embed_query_with_backoff(
+    client: Embeddings, text: str, provider: str
+) -> list[float]:
+    """Embed a query, retrying VoyageAI rate limits with exponential backoff."""
+
+    return _call_with_rate_limit_backoff(lambda: client.embed_query(text), provider)
+
+
+def _call_with_rate_limit_backoff(
+    operation: Callable[[], _EmbeddingResult], provider: str
+) -> _EmbeddingResult:
+    if provider != "voyageai":
+        return operation()
+
+    from voyageai.error import RateLimitError
+
+    retries = 0
+    while True:
+        try:
+            return operation()
+        except RateLimitError:
+            if retries >= VOYAGEAI_RATE_LIMIT_MAX_RETRIES:
+                raise
+            delay = min(2**retries, VOYAGEAI_RATE_LIMIT_MAX_DELAY_SECONDS)
+            retries += 1
+            logger.warning(
+                "VoyageAI rate limit reached; retrying in %d seconds (%d/%d)",
+                delay,
+                retries,
+                VOYAGEAI_RATE_LIMIT_MAX_RETRIES,
+            )
+            time.sleep(delay)
 
 
 def infer_embedding_provider(inference_server_url: str) -> str:
@@ -61,7 +127,7 @@ def effective_provider_options(
         supplied.setdefault("check_embedding_ctx_length", False)
     elif provider == "voyageai":
         supplied.setdefault("truncation", True)
-        supplied.setdefault("batch_size", 1000)
+        supplied.setdefault("batch_size", VOYAGEAI_EMBEDDING_BATCH_SIZE)
         supplied.setdefault("document_input_type", "document")
         supplied.setdefault("query_input_type", "query")
         if supplied["document_input_type"] != "document":

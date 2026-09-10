@@ -93,8 +93,10 @@ class FakeProvider:
     def __init__(self, embeddings):
         self.embeddings = list(embeddings)
         self.inputs = []
+        self.batches = []
 
     def embed_documents(self, texts):
+        self.batches.append(list(texts))
         results = []
         for text in texts:
             self.inputs.append(text)
@@ -198,6 +200,33 @@ def test_ingest_store_reembeds_existing_keywords(monkeypatch):
 
     assert count == 1
     assert provider.inputs == ["alpha"]
+
+
+def test_keyword_store_sends_each_embedding_batch_in_one_request(monkeypatch):
+    cursor = RecordingCursor(keyword_rows=[("alpha",), ("beta",)])
+    provider = FakeProvider([[0.1, 0.2], [0.3, 0.4]])
+    monkeypatch.setattr(
+        psycopg, "connect", lambda conninfo: RecordingConnection(cursor)
+    )
+    monkeypatch.setattr(
+        "scrapyrus.keyword_embeddings.initialize_llm_provider",
+        lambda *args: provider,
+    )
+    monkeypatch.setattr(
+        "scrapyrus.keyword_embeddings.embedding_request_batches",
+        lambda items, provider_name: (tuple(items),),
+    )
+    monkeypatch.setattr(
+        "scrapyrus.keyword_embeddings._recreate_embedding_index",
+        lambda *args: None,
+    )
+
+    count = KeywordEmbeddingStore("https://example", "model", "key").setup_store(
+        "postgresql://db", False
+    )
+
+    assert count == 2
+    assert provider.batches == [["alpha", "beta"]]
 
 
 def test_setup_store_rejects_changed_embedding_dimensions(monkeypatch):

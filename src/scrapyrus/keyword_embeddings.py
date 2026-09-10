@@ -27,6 +27,9 @@ from scrapyrus.transcriptions.embeddings import (
 )
 from scrapyrus.transcriptions.embedding_clients import (
     build_embedding_client,
+    embed_documents_with_backoff,
+    embed_query_with_backoff,
+    embedding_request_batches,
     effective_provider_options,
     infer_embedding_provider,
 )
@@ -158,26 +161,37 @@ class KeywordEmbeddingStore:
                         "Stored keyword vectors do not match the configured "
                         f"embedding size {expected_dimensions}"
                     )
-                for keyword in terms:
-                    embedding = tuple(self.provider.embed_documents([keyword])[0])
-                    if expected_dimensions is None:
-                        expected_dimensions = len(embedding)
-                    elif len(embedding) != expected_dimensions:
-                        raise ValueError(
-                            f"Embedding model {self.modelname!r} returned vectors "
-                            "with inconsistent dimensions"
-                        )
-                    _upsert_keyword_embedding(
-                        cursor,
-                        keyword=keyword,
-                        embedding=embedding,
+                for batch in embedding_request_batches(terms, self.provider_name):
+                    embeddings = embed_documents_with_backoff(
+                        self.provider, list(batch), self.provider_name
                     )
+                    if len(embeddings) != len(batch):
+                        raise ValueError(
+                            f"Embedding provider returned {len(embeddings)} vectors "
+                            f"for {len(batch)} texts"
+                        )
+                    for keyword, values in zip(batch, embeddings, strict=True):
+                        embedding = tuple(float(value) for value in values)
+                        if expected_dimensions is None:
+                            expected_dimensions = len(embedding)
+                        elif len(embedding) != expected_dimensions:
+                            raise ValueError(
+                                f"Embedding model {self.modelname!r} returned vectors "
+                                "with inconsistent dimensions"
+                            )
+                        _upsert_keyword_embedding(
+                            cursor,
+                            keyword=keyword,
+                            embedding=embedding,
+                        )
 
                 _delete_stale_keyword_embeddings(cursor)
                 if expected_dimensions is None:
                     expected_dimensions = len(
-                        self.provider.embed_query(
-                            "Scrapyrus empty-corpus dimension readiness probe"
+                        embed_query_with_backoff(
+                            self.provider,
+                            "Scrapyrus empty-corpus dimension readiness probe",
+                            self.provider_name,
                         )
                     )
                 _set_embedding_size(
@@ -240,7 +254,11 @@ def find_similar_keywords(
                     f"size {metadata.embedding_size}"
                 )
 
-            embedding = tuple(query_store.provider.embed_query(query))
+            embedding = tuple(
+                embed_query_with_backoff(
+                    query_store.provider, query, query_store.provider_name
+                )
+            )
             if len(embedding) != minimum_dimensions:
                 raise ValueError(
                     f"Query embedding has {len(embedding)} dimensions, but stored "
