@@ -341,18 +341,23 @@ Omitting `--volume` stores the data inside the container's writable layer, where
 
 ### Moving the database
 
-The database can be moved to another PostgreSQL instance with the dump and
-restore scripts. Set `SCRAPYRUS_DATABASE_URL` to the source for the dump, then
-to the target for the restore:
+The database can be moved to another PostgreSQL instance with a complete
+custom-format dump. Set `SCRAPYRUS_DATABASE_URL` to the source for the dump,
+then to the target for the import:
 
 ```
-SCRAPYRUS_DATABASE_URL=<source-url> scripts/postgres_dump.sh scrapyrus.dump
-SCRAPYRUS_DATABASE_URL=<target-url> scripts/postgres_restore.sh scrapyrus.dump
+SCRAPYRUS_DATABASE_URL=<source-url> scrapyrus dump scrapyrus.dump
+SCRAPYRUS_DATABASE_URL=<target-url> scrapyrus import scrapyrus.dump
 ```
+
+Both commands default to `scrapyrus.dump` when the file argument is omitted and
+require `pg_dump` or `pg_restore`, respectively, on `PATH`. Dump refuses to
+overwrite an existing file. Import validates the archive first and restores it
+in a single transaction.
 
 The target database must already exist and be empty, and its server must have
 the `vector` extension available. Source roles must also exist on the target;
-otherwise, pass `--no-owner` to the restore script to make the target connection
+otherwise, pass `--no-owner` to `scrapyrus import` to make the target connection
 user own the restored objects and omit source privileges. Keep the source
 database until the restored database has been verified.
 

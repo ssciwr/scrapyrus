@@ -1,8 +1,10 @@
 from pathlib import Path
 import re
+import subprocess
 
 import click
 
+from scrapyrus.database_archive import dump_database, import_database
 from scrapyrus.images import (
     DEFAULT_BROKEN_IMAGE_FILE,
     image_log_file,
@@ -110,6 +112,62 @@ def main(context: click.Context, idp_data: Path) -> None:
 
     context.ensure_object(dict)
     context.obj["idp_data"] = idp_data
+
+
+def _database_archive_error(error: OSError | subprocess.CalledProcessError) -> str:
+    if isinstance(error, subprocess.CalledProcessError):
+        return f"{error.cmd[0]} failed with exit code {error.returncode}"
+    if isinstance(error, FileNotFoundError) and error.filename:
+        return f"{error.filename} is not installed or not on PATH"
+    return str(error)
+
+
+@main.command("dump")
+@database_url
+@click.argument(
+    "output_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("scrapyrus.dump"),
+)
+def dump_postgresql_database(database_url: str, output_file: Path) -> None:
+    """Dump the complete PostgreSQL database to a custom-format archive."""
+
+    try:
+        dump_database(output_file, database_url)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(_database_archive_error(error)) from error
+    click.echo(f"Database dump written to {output_file}")
+
+
+@main.command("import")
+@database_url
+@click.option(
+    "--no-owner",
+    is_flag=True,
+    help="Use the target database user as owner and omit source privileges.",
+)
+@click.argument(
+    "input_file",
+    type=click.Path(
+        path_type=Path,
+        dir_okay=False,
+        exists=True,
+        readable=True,
+    ),
+    default=Path("scrapyrus.dump"),
+)
+def import_postgresql_database(
+    database_url: str,
+    no_owner: bool,
+    input_file: Path,
+) -> None:
+    """Restore a complete archive into an existing PostgreSQL database."""
+
+    try:
+        import_database(input_file, database_url, no_owner=no_owner)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(_database_archive_error(error)) from error
+    click.echo(f"Database restored from {input_file}")
 
 
 @main.command("catalog")

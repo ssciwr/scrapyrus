@@ -117,6 +117,8 @@ def test_images_subcommand_uses_defaults(monkeypatch):
 def test_database_commands_use_shared_database_url_default_and_envvar():
     command_paths = (
         ("catalog",),
+        ("dump",),
+        ("import",),
         ("metadata", "ingest"),
         ("metadata", "dump"),
         ("transcriptions", "ingest"),
@@ -203,6 +205,101 @@ def test_catalog_subcommand_publishes_all_semantics(monkeypatch):
 
     assert result.exit_code == 0
     assert calls == ["postgresql://database.example/scrapyrus"]
+
+
+def test_database_dump_subcommand_creates_full_archive(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_database",
+        lambda output_file, database_url: calls.append((output_file, database_url)),
+    )
+    output = tmp_path / "database.dump"
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "dump",
+            "--database-url",
+            "postgresql://database.example/scrapyrus",
+            str(output),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [(output, "postgresql://database.example/scrapyrus")]
+    assert result.output == f"Database dump written to {output}\n"
+
+
+def test_database_import_subcommand_restores_full_archive(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.import_database",
+        lambda input_file, database_url, *, no_owner: calls.append(
+            (input_file, database_url, no_owner)
+        ),
+    )
+    source = tmp_path / "database.dump"
+    source.write_bytes(b"postgres archive")
+
+    result = CliRunner().invoke(
+        main,
+        (
+            "import",
+            "--database-url",
+            "postgresql://database.example/scrapyrus",
+            "--no-owner",
+            str(source),
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert calls == [(source, "postgresql://database.example/scrapyrus", True)]
+    assert result.output == f"Database restored from {source}\n"
+
+
+def test_database_archive_subcommands_use_default_filename_and_connection(
+    monkeypatch,
+):
+    dump_calls = []
+    import_calls = []
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_database",
+        lambda output_file, database_url: dump_calls.append(
+            (output_file, database_url)
+        ),
+    )
+    monkeypatch.setattr(
+        "scrapyrus.__main__.import_database",
+        lambda input_file, database_url, *, no_owner: import_calls.append(
+            (input_file, database_url, no_owner)
+        ),
+    )
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        dump_result = runner.invoke(main, ("dump",))
+        Path("scrapyrus.dump").touch()
+        import_result = runner.invoke(main, ("import",))
+
+    assert dump_result.exit_code == 0
+    assert import_result.exit_code == 0
+    assert dump_calls == [(Path("scrapyrus.dump"), DEFAULT_DATABASE_URL)]
+    assert import_calls == [(Path("scrapyrus.dump"), DEFAULT_DATABASE_URL, False)]
+
+
+def test_database_dump_reports_missing_pg_dump(monkeypatch):
+    def missing_pg_dump(output_file, database_url):
+        raise FileNotFoundError(2, "No such file or directory", "pg_dump")
+
+    monkeypatch.setattr(
+        "scrapyrus.__main__.dump_database",
+        missing_pg_dump,
+    )
+
+    result = CliRunner().invoke(main, ("dump",))
+
+    assert result.exit_code == 1
+    assert result.output == "Error: pg_dump is not installed or not on PATH\n"
 
 
 def test_metadata_ingest_subcommand_uses_postgresql_connection_defaults(monkeypatch):
