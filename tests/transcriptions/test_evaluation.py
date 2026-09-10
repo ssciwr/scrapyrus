@@ -3,8 +3,8 @@ import psycopg
 from scrapyrus.transcriptions.evaluation import (
     EmbeddingEvaluation,
     LanguageEmbeddingEvaluation,
+    _evaluate_embeddings_model,
     evaluate_embeddings,
-    evaluate_embeddings_model,
 )
 
 
@@ -47,15 +47,14 @@ class Connection:
         return self._cursor
 
 
-def test_evaluation_uses_separate_embedding_tables_and_stored_language(
-    tmp_path, monkeypatch
-):
+def test_evaluation_uses_separate_embedding_tables_and_stored_language():
     cursor = Cursor()
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-    output = tmp_path / "report.md"
 
-    evaluation = evaluate_embeddings_model(
-        "postgresql://db", modelname="model", output_file=output
+    evaluation = _evaluate_embeddings_model(
+        cursor,
+        "model",
+        query_kind="transcriptions",
+        progressbar=True,
     )
 
     assert evaluation.transcription_count == 2
@@ -76,17 +75,38 @@ def test_evaluation_uses_separate_embedding_tables_and_stored_language(
     assert "translation_embeddings" in sql
     assert "embedding_configurations" not in sql
     assert "array_agg(" in sql
-    assert "GROUP BY transcriptions.tm_id" in sql
+    assert "FROM transcription_embeddings AS queries" in sql
+    assert "GROUP BY queries.tm_id" in sql
     assert "GROUP BY candidates.tm_id" in sql
     assert "min(candidates.embedding <=> query_chunks.embedding)" in sql
     candidate_params = cursor.executions[-1][1]
     assert candidate_params["embeddings"] == ["[1,0,0]", "[0.9,0.1,0]"]
-    report = output.read_text()
+    report = evaluation.to_markdown()
     assert report.startswith("# Embedding Evaluation: `model`")
     assert "| MRR | 1.0000 | 1 | 100.00% |" in report
     assert "- Transcription chunks: 3" in report
     assert "## Metrics by Transcription Chunk Count" in report
     assert "| 2-3 chunks | MRR | 1.0000 | 1 | 100.00% |" in report
+
+
+def test_evaluation_can_use_translations_as_queries():
+    cursor = Cursor()
+    cursor.fetchall_results = [
+        [("1", "hgv/1.xml", "en", ["[1,0,0]", "[0.9,0.1,0]"])],
+        [("1", "ddb/1.xml")],
+    ]
+    evaluation = _evaluate_embeddings_model(
+        cursor,
+        "model",
+        query_kind="translations",
+        progressbar=False,
+    )
+
+    sql = "\n".join(query for query, _ in cursor.executions)
+    assert "FROM translation_embeddings AS queries" in sql
+    assert "FROM transcription_embeddings AS candidates" in sql
+    assert evaluation.query_kind == "translations"
+    assert evaluation.language_results["en"].recall_at[1] == 1.0
 
 
 def test_evaluation_shows_progress_for_retrieval_queries(monkeypatch):
@@ -97,10 +117,11 @@ def test_evaluation_shows_progress_for_retrieval_queries(monkeypatch):
         progress.update(iterable=iterable, total=total, unit=unit, desc=desc)
         return iterable
 
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
     monkeypatch.setattr("scrapyrus.transcriptions.evaluation.tqdm", fake_tqdm)
 
-    evaluate_embeddings_model("postgresql://db", modelname="sample")
+    _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
+    )
 
     assert progress["total"] == 1
     assert progress["unit"] == "document"
@@ -109,13 +130,17 @@ def test_evaluation_shows_progress_for_retrieval_queries(monkeypatch):
 
 def test_evaluation_can_disable_progress(monkeypatch):
     cursor = Cursor()
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
     monkeypatch.setattr(
         "scrapyrus.transcriptions.evaluation.tqdm",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()),
     )
 
-    evaluate_embeddings_model("postgresql://db", modelname="sample", progressbar=False)
+    _evaluate_embeddings_model(
+        cursor,
+        "sample",
+        query_kind="transcriptions",
+        progressbar=False,
+    )
 
 
 def test_markdown_renders_collection_counts():
@@ -130,6 +155,7 @@ def test_markdown_renders_collection_counts():
         language_results={
             "greek": LanguageEmbeddingEvaluation("greek", 2, {1: 1}, 1.5)
         },
+        query_kind="transcriptions",
     )
 
     report = result.to_markdown()
@@ -139,7 +165,7 @@ def test_markdown_renders_collection_counts():
     assert "| MRR | 1.5000 | 2 | 75.00% |" in report
 
 
-def test_evaluation_calculates_mean_reciprocal_rank(monkeypatch):
+def test_evaluation_calculates_mean_reciprocal_rank():
     cursor = Cursor()
     cursor.fetchone_results = [(2, 2, 0, 3, 3), (2, 2, 0, 3, 3)]
     cursor.fetchall_results = [
@@ -150,9 +176,9 @@ def test_evaluation_calculates_mean_reciprocal_rank(monkeypatch):
         [("2", "hgv/2.xml"), ("1", "hgv/1.xml")],
         [("2", "hgv/2.xml"), ("1", "hgv/1.xml")],
     ]
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-
-    evaluation = evaluate_embeddings_model("postgresql://db", modelname="sample")
+    evaluation = _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
+    )
 
     assert evaluation.reciprocal_rank_sum == 1.5
     assert evaluation.mrr == 0.75
@@ -161,7 +187,7 @@ def test_evaluation_calculates_mean_reciprocal_rank(monkeypatch):
     assert evaluation.language_results["greek"].mrr == 0.75
 
 
-def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window(monkeypatch):
+def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window():
     cursor = Cursor()
     cursor.fetchone_results = [(1, 1, 0, 3, 3), (6, 6, 0, 3, 3), (6,)]
     cursor.fetchall_results = [
@@ -174,25 +200,25 @@ def test_evaluation_uses_exact_rank_for_mrr_outside_recall_window(monkeypatch):
             ("6", "hgv/6.xml"),
         ],
     ]
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-
-    evaluation = evaluate_embeddings_model("postgresql://db", modelname="sample")
+    evaluation = _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
+    )
 
     assert evaluation.recall_at[5] == 0.0
     assert evaluation.mrr == 1 / 6
     assert "row_number()" in cursor.executions[-1][0]
 
 
-def test_evaluation_accepts_partial_embedding_collections(monkeypatch):
+def test_evaluation_accepts_partial_embedding_collections():
     cursor = Cursor()
     cursor.fetchone_results = [(3, 3, 0, 3, 3), (1, 1, 0, 3, 3)]
     cursor.fetchall_results = [
         [("1", "ddb/1.xml", "grc", "[1,0,0]")],
         [("1", "hgv/1.xml")],
     ]
-    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-
-    evaluation = evaluate_embeddings_model("postgresql://db", modelname="sample")
+    evaluation = _evaluate_embeddings_model(
+        cursor, "sample", query_kind="transcriptions", progressbar=True
+    )
 
     assert evaluation.transcription_count == 3
     assert evaluation.translation_count == 1
@@ -200,67 +226,83 @@ def test_evaluation_accepts_partial_embedding_collections(monkeypatch):
     assert evaluation.recall_at[5] == 1.0
 
 
-def test_evaluation_runs_for_all_models_with_embeddings(tmp_path, monkeypatch):
+def test_evaluation_runs_for_unique_configured_model_and_prints_report(
+    capsys, monkeypatch
+):
     cursor = Cursor()
     cursor.fetchone_results = [
-        (1, 1, 0, 2, 2),
-        (1, 1, 0, 2, 2),
+        ("transcription_embeddings", "alpha", 2),
+        ("translation_embeddings", "alpha", 2),
         (1, 1, 0, 2, 2),
         (1, 1, 0, 2, 2),
     ]
     cursor.fetchall_results = [
-        [("alpha",), ("beta",)],
         [("1", "ddb/1.xml", "grc", "[1,0]")],
         [("1", "hgv/1.xml")],
-        [("2", "ddb/2.xml", "la", "[0,1]")],
-        [("3", "hgv/3.xml"), ("2", "hgv/2.xml")],
     ]
     monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-    output = tmp_path / "report.md"
 
-    evaluation = evaluate_embeddings("postgresql://db", output_file=output)
+    evaluation = evaluate_embeddings("postgresql://db", query_kind="transcriptions")
 
-    assert [result.modelname for result in evaluation.results] == ["alpha", "beta"]
-    assert evaluation.results[0].recall_at[1] == 1.0
-    assert evaluation.results[1].recall_at[1] == 0.0
-    assert evaluation.results[1].recall_at[2] == 1.0
+    assert evaluation.modelname == "alpha"
+    assert evaluation.recall_at[1] == 1.0
     sql = "\n".join(query for query, _ in cursor.executions)
-    assert "GROUP BY transcriptions.model_name" in sql
-    report = output.read_text()
-    assert report.startswith("# Embedding Evaluations")
-    assert "| `alpha` | 1 | 1 | 1 | 2 | 100.00%" in report
-    assert "## Embedding Evaluation: `beta`" in report
+    assert "GROUP BY transcriptions.model_name" not in sql
+    report = capsys.readouterr().out
+    assert report.startswith("# Embedding Evaluation: `alpha`")
+    assert "| recall@1 | 1 | 1 | 100.00% |" in report
 
 
-def test_evaluation_uses_shared_ingest_sample_for_all_models(tmp_path, monkeypatch):
+def test_evaluation_rejects_different_table_models(monkeypatch):
     cursor = Cursor()
-    cursor.fetchone_results = [(1, 1, 0, 2, 2), (1, 1, 0, 2, 2)]
+    cursor.fetchone_results = [
+        ("transcription_embeddings", "alpha", 2),
+        ("translation_embeddings", "beta", 2),
+    ]
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+
+    try:
+        evaluate_embeddings(
+            "postgresql://db", query_kind="transcriptions", progressbar=False
+        )
+    except ValueError as error:
+        assert "different models" in str(error)
+    else:
+        raise AssertionError("Expected different embedding models to be rejected")
+
+
+def test_evaluation_uses_shared_ingest_sample(capsys, monkeypatch):
+    cursor = Cursor()
+    cursor.fetchone_results = [
+        ("transcription_embeddings", "alpha", 2),
+        ("translation_embeddings", "alpha", 2),
+        (1, 1, 0, 2, 2),
+        (1, 1, 0, 2, 2),
+    ]
     cursor.fetchall_results = [
         [("17",), ("42",)],
-        [("alpha",)],
         [("17", "ddb/17.xml", "grc", "[1,0]")],
         [("17", "hgv/17.xml")],
     ]
     monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
-    output = tmp_path / "report.md"
 
     evaluation = evaluate_embeddings(
-        "postgresql://db", output_file=output, sample=2, seed=23
+        "postgresql://db",
+        query_kind="transcriptions",
+        sample=2,
+        seed=23,
     )
 
-    assert evaluation.sample == 2
-    assert evaluation.seed == 23
+    assert evaluation.modelname == "alpha"
     assert cursor.executions[0][1] == (23, 2)
     assert (
         "ORDER BY md5(tm_id::text || ':' || (%s)::text), tm_id"
         in cursor.executions[0][0]
     )
-    scoped_executions = cursor.executions[1:5]
+    scoped_executions = cursor.executions[3:6]
     assert all(
         any(value == ["17", "42"] for value in params)
         for _, params in scoped_executions
     )
-    assert cursor.executions[5][1]["tm_ids"] == ["17", "42"]
-    report = output.read_text()
-    assert "- Requested paired-record sample: 2" in report
-    assert "- Sample seed: 23" in report
+    assert cursor.executions[6][1]["tm_ids"] == ["17", "42"]
+    assert capsys.readouterr().out.startswith("# Embedding Evaluation: `alpha`")

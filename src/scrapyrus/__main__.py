@@ -1,14 +1,22 @@
 from pathlib import Path
 import re
+import subprocess
 
 import click
 
+from scrapyrus.database_archive import dump_database, import_database
 from scrapyrus.images import (
     DEFAULT_BROKEN_IMAGE_FILE,
     image_log_file,
     scrape_images,
 )
 from scrapyrus.ingestion import dump_metadata_tables, ingest_metadata
+from scrapyrus.keyword_embeddings import (
+    KeywordEmbeddingStore,
+    KeywordEmbeddingsUnavailableError,
+    KeywordsUnavailableError,
+    find_similar_keywords,
+)
 from scrapyrus.semantic_catalog import publish_catalog
 from scrapyrus.transcriptions.core import (
     dump_transcriptions,
@@ -16,12 +24,13 @@ from scrapyrus.transcriptions.core import (
     ingest_transcriptions,
 )
 from scrapyrus.transcriptions.embeddings import (
-    EMBEDDING_KIND_ALIASES,
+    DocumentEmbeddingsUnavailableError,
     EmbeddingStore,
     PgvectorUnavailableError,
     TranscriptionsUnavailableError,
     delete_embeddings,
     dump_embeddings,
+    find_similar_documents,
     import_embeddings,
     update_embeddings,
 )
@@ -95,22 +104,6 @@ def embedding_model_options(function):
     return _apply_options(function, _embedding_model_options())
 
 
-def embedding_kind_options(function):
-    return _apply_options(
-        function,
-        [
-            click.option(
-                "--kind",
-                "document_kind",
-                type=click.Choice(tuple(EMBEDDING_KIND_ALIASES)),
-                default="transcription",
-                show_default=True,
-                help="Embedding table to use.",
-            )
-        ],
-    )
-
-
 @click.group()
 @idp_data
 @click.pass_context
@@ -119,6 +112,62 @@ def main(context: click.Context, idp_data: Path) -> None:
 
     context.ensure_object(dict)
     context.obj["idp_data"] = idp_data
+
+
+def _database_archive_error(error: OSError | subprocess.CalledProcessError) -> str:
+    if isinstance(error, subprocess.CalledProcessError):
+        return f"{error.cmd[0]} failed with exit code {error.returncode}"
+    if isinstance(error, FileNotFoundError) and error.filename:
+        return f"{error.filename} is not installed or not on PATH"
+    return str(error)
+
+
+@main.command("dump")
+@database_url
+@click.argument(
+    "output_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("scrapyrus.dump"),
+)
+def dump_postgresql_database(database_url: str, output_file: Path) -> None:
+    """Dump the complete PostgreSQL database to a custom-format archive."""
+
+    try:
+        dump_database(output_file, database_url)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(_database_archive_error(error)) from error
+    click.echo(f"Database dump written to {output_file}")
+
+
+@main.command("import")
+@database_url
+@click.option(
+    "--no-owner",
+    is_flag=True,
+    help="Use the target database user as owner and omit source privileges.",
+)
+@click.argument(
+    "input_file",
+    type=click.Path(
+        path_type=Path,
+        dir_okay=False,
+        exists=True,
+        readable=True,
+    ),
+    default=Path("scrapyrus.dump"),
+)
+def import_postgresql_database(
+    database_url: str,
+    no_owner: bool,
+    input_file: Path,
+) -> None:
+    """Restore a complete archive into an existing PostgreSQL database."""
+
+    try:
+        import_database(input_file, database_url, no_owner=no_owner)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(_database_archive_error(error)) from error
+    click.echo(f"Database restored from {input_file}")
 
 
 @main.command("catalog")
@@ -333,42 +382,62 @@ def lemmatize(database_url: str, progress: bool, max_words: int) -> None:
 
 @main.group("embeddings")
 def embeddings() -> None:
-    """Work with transcription and translation embeddings."""
+    """Work with transcription, translation, and keyword embeddings."""
 
 
-@embeddings.command("ingest")
-@database_url
-@embedding_client_options
-@embedding_model_options
-@click.option(
-    "--sample",
-    type=click.IntRange(min=1),
-    help=(
-        "Randomly select this many records that have both a transcription "
-        "and a translation."
-    ),
-)
-@click.option(
-    "--seed",
-    type=int,
-    default=0,
-    show_default=True,
-    help="Seed used to make --sample selection deterministic.",
-)
-@click.option(
-    "--chunk-size",
-    type=click.IntRange(min=1),
-    default=500,
-    show_default=True,
-    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
-)
-@click.option(
-    "--progress/--no-progress",
-    default=True,
-    show_default=True,
-    help="Show progress bars while embedding database XML rows.",
-)
-def ingest_embeddings(
+@embeddings.group("ingest")
+def ingest_embedding_rows() -> None:
+    """Create embeddings from source data."""
+
+
+def _text_ingestion_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            embedding_client_options,
+            embedding_model_options,
+            click.option(
+                "--sample",
+                type=click.IntRange(min=1),
+                help=(
+                    "Randomly select this many records that have both a "
+                    "transcription and a translation."
+                ),
+            ),
+            click.option(
+                "--seed",
+                type=int,
+                default=0,
+                show_default=True,
+                help="Seed used to make --sample selection deterministic.",
+            ),
+            click.option(
+                "--chunk-size",
+                type=click.IntRange(min=1),
+                default=500,
+                show_default=True,
+                help=(
+                    "Maximum words per embedding chunk; adjacent chunks overlap by 10%."
+                ),
+            ),
+            click.option(
+                "--progress/--no-progress",
+                default=True,
+                show_default=True,
+                help="Show progress bars while embedding database XML rows.",
+            ),
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table is configured for another model.",
+            ),
+        ],
+    )
+
+
+def _ingest_text_embeddings(
+    document_kind: str,
     database_url: str,
     inference_server_url: str,
     model_name: str,
@@ -377,56 +446,104 @@ def ingest_embeddings(
     seed: int,
     chunk_size: int,
     progress: bool,
+    force: bool,
 ) -> None:
-    """Embed transcription and translation XML rows in PostgreSQL."""
-
     store = EmbeddingStore(inference_server_url, model_name, api_key)
     try:
         store.setup_store(
             database_url,
             progress,
+            document_kind=document_kind,
             sample=sample,
             seed=seed,
             chunk_size=chunk_size,
+            force=force,
         )
-    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
+    except (
+        PgvectorUnavailableError,
+        TranscriptionsUnavailableError,
+        ValueError,
+    ) as error:
         raise click.ClickException(str(error)) from error
 
 
-@embeddings.command("delete")
+@ingest_embedding_rows.command("transcriptions")
+@_text_ingestion_options
+def ingest_transcription_embeddings(**options) -> None:
+    """Embed transcription XML rows in PostgreSQL."""
+
+    _ingest_text_embeddings("transcriptions", **options)
+
+
+@ingest_embedding_rows.command("translations")
+@_text_ingestion_options
+def ingest_translation_embeddings(**options) -> None:
+    """Embed translation XML rows in PostgreSQL."""
+
+    _ingest_text_embeddings("translations", **options)
+
+
+@ingest_embedding_rows.command("keywords")
 @database_url
+@embedding_client_options
 @embedding_model_options
-def delete_embedding_model(
-    database_url: str,
-    model_name: str,
-) -> None:
-    """Delete one model's transcription and translation embeddings."""
-
-    delete_embeddings(database_url, modelname=model_name)
-
-
-@embeddings.command("dump")
-@database_url
-@embedding_model_options
-@embedding_kind_options
-@click.argument(
-    "output_file",
-    type=click.Path(path_type=Path, dir_okay=False),
-    required=False,
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar while embedding distinct keyword strings.",
 )
-def dump_embedding_rows(
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Discard embeddings if the table is configured for another model.",
+)
+def ingest_keyword_embeddings(
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    progress: bool,
+    force: bool,
+) -> None:
+    """Embed distinct metadata keyword strings in PostgreSQL."""
+
+    store = KeywordEmbeddingStore(inference_server_url, model_name, api_key)
+    try:
+        store.setup_store(database_url, progress, stale_only=False, force=force)
+    except (PgvectorUnavailableError, KeywordsUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+
+@embeddings.group("dump")
+def dump_embedding_rows() -> None:
+    """Dump embeddings in PostgreSQL binary COPY format."""
+
+
+def _dump_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            embedding_model_options,
+            click.argument(
+                "output_file",
+                type=click.Path(path_type=Path, dir_okay=False),
+                required=False,
+            ),
+        ],
+    )
+
+
+def _dump_embeddings(
+    document_kind: str,
     database_url: str,
     model_name: str,
-    document_kind: str,
     output_file: Path | None,
 ) -> None:
-    """Dump one model's embeddings in PostgreSQL binary COPY format."""
-
     if output_file is None:
-        canonical_kind = EMBEDDING_KIND_ALIASES[document_kind]
         filename_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model_name).strip("-")
-        output_file = Path(f"{canonical_kind}-embeddings-{filename_model}.dump")
-
+        output_file = Path(f"{document_kind}-embeddings-{filename_model}.dump")
     try:
         dump_embeddings(
             output_file,
@@ -438,120 +555,434 @@ def dump_embedding_rows(
         raise click.ClickException(str(error)) from error
 
 
-@embeddings.command("import")
-@database_url
-@embedding_model_options
-@embedding_kind_options
-@click.argument(
-    "input_file",
-    type=click.Path(path_type=Path, dir_okay=False, exists=True, readable=True),
-)
-def import_embedding_rows(
+@dump_embedding_rows.command("transcriptions")
+@_dump_options
+def dump_transcription_embeddings(**options) -> None:
+    """Dump transcription embeddings for one model."""
+
+    _dump_embeddings("transcriptions", **options)
+
+
+@dump_embedding_rows.command("translations")
+@_dump_options
+def dump_translation_embeddings(**options) -> None:
+    """Dump translation embeddings for one model."""
+
+    _dump_embeddings("translations", **options)
+
+
+@dump_embedding_rows.command("keywords")
+@_dump_options
+def dump_keyword_embeddings(**options) -> None:
+    """Dump keyword embeddings for one model."""
+
+    _dump_embeddings("keywords", **options)
+
+
+@embeddings.group("import")
+def import_embedding_rows() -> None:
+    """Import embeddings from PostgreSQL binary COPY format."""
+
+
+def _import_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            embedding_model_options,
+            click.argument(
+                "input_file",
+                type=click.Path(
+                    path_type=Path, dir_okay=False, exists=True, readable=True
+                ),
+            ),
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table is configured for another model.",
+            ),
+        ],
+    )
+
+
+def _import_embeddings(
+    document_kind: str,
     database_url: str,
     model_name: str,
-    document_kind: str,
     input_file: Path,
+    force: bool,
 ) -> None:
-    """Import one model's embeddings from PostgreSQL binary COPY format."""
-
     try:
         import_embeddings(
             input_file,
             database_url,
             modelname=model_name,
             document_kind=document_kind,
+            force=force,
         )
     except (PgvectorUnavailableError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
-@embeddings.command("update")
-@database_url
-@embedding_client_options
-@embedding_model_options
-@click.option(
-    "--chunk-size",
-    type=click.IntRange(min=1),
-    default=500,
-    show_default=True,
-    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
-)
-@click.option(
-    "--progress/--no-progress",
-    default=True,
-    show_default=True,
-    help="Show progress bars while embedding stale database XML rows.",
-)
-def update_embedding_rows(
+@import_embedding_rows.command("transcriptions")
+@_import_options
+def import_transcription_embeddings(**options) -> None:
+    """Import transcription embeddings for one model."""
+
+    _import_embeddings("transcriptions", **options)
+
+
+@import_embedding_rows.command("translations")
+@_import_options
+def import_translation_embeddings(**options) -> None:
+    """Import translation embeddings for one model."""
+
+    _import_embeddings("translations", **options)
+
+
+@import_embedding_rows.command("keywords")
+@_import_options
+def import_keyword_embeddings(**options) -> None:
+    """Import keyword embeddings for one model."""
+
+    _import_embeddings("keywords", **options)
+
+
+@embeddings.group("update")
+def update_embedding_rows() -> None:
+    """Compute missing or stale embeddings."""
+
+
+def _text_update_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            embedding_client_options,
+            embedding_model_options,
+            click.option(
+                "--chunk-size",
+                type=click.IntRange(min=1),
+                default=500,
+                show_default=True,
+                help=(
+                    "Maximum words per embedding chunk; adjacent chunks overlap by 10%."
+                ),
+            ),
+            click.option(
+                "--progress/--no-progress",
+                default=True,
+                show_default=True,
+                help="Show progress bars while embedding stale database XML rows.",
+            ),
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table is configured for another model.",
+            ),
+        ],
+    )
+
+
+def _update_text_embeddings(
+    document_kind: str,
     database_url: str,
     inference_server_url: str,
     model_name: str,
     api_key: str,
     chunk_size: int,
     progress: bool,
+    force: bool,
 ) -> None:
-    """Compute missing or stale embeddings for one model."""
-
     try:
         update_embeddings(
             database_url,
             progress,
+            document_kind=document_kind,
             inference_server_url=inference_server_url,
             modelname=model_name,
             api_key=api_key,
             chunk_size=chunk_size,
+            force=force,
         )
-    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
+    except (
+        PgvectorUnavailableError,
+        TranscriptionsUnavailableError,
+        ValueError,
+    ) as error:
         raise click.ClickException(str(error)) from error
 
 
-@embeddings.command("evaluate")
+@update_embedding_rows.command("transcriptions")
+@_text_update_options
+def update_transcription_embeddings(**options) -> None:
+    """Update transcription embeddings for one model."""
+
+    _update_text_embeddings("transcriptions", **options)
+
+
+@update_embedding_rows.command("translations")
+@_text_update_options
+def update_translation_embeddings(**options) -> None:
+    """Update translation embeddings for one model."""
+
+    _update_text_embeddings("translations", **options)
+
+
+@update_embedding_rows.command("keywords")
 @database_url
-@click.option(
-    "--sample",
-    type=click.IntRange(min=1),
-    help=(
-        "Randomly select this many records that have both a transcription "
-        "and a translation."
-    ),
-)
-@click.option(
-    "--seed",
-    type=int,
-    default=0,
-    show_default=True,
-    help="Seed used to make --sample selection deterministic.",
-)
-@click.option(
-    "--output",
-    "output_file",
-    type=click.Path(path_type=Path, dir_okay=False),
-    default=Path("embedding-evaluation.md"),
-    show_default=True,
-    help="Markdown file to write evaluation findings to.",
-)
+@embedding_client_options
+@embedding_model_options
 @click.option(
     "--progress/--no-progress",
     default=True,
     show_default=True,
-    help="Show progress bars while evaluating embedding retrieval.",
+    help="Show a progress bar while embedding new keyword strings.",
 )
-def evaluate_embedding_model(
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Discard embeddings if the table is configured for another model.",
+)
+def update_keyword_embeddings(
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    progress: bool,
+    force: bool,
+) -> None:
+    """Update keyword embeddings for one model."""
+
+    store = KeywordEmbeddingStore(inference_server_url, model_name, api_key)
+    try:
+        store.setup_store(database_url, progress, stale_only=True, force=force)
+    except (PgvectorUnavailableError, KeywordsUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+
+@embeddings.group("delete")
+def delete_embedding_rows() -> None:
+    """Delete embeddings for one model."""
+
+
+def _delete_embeddings(document_kind: str, database_url: str, model_name: str) -> None:
+    try:
+        delete_embeddings(
+            database_url,
+            modelname=model_name,
+            document_kind=document_kind,
+        )
+    except PgvectorUnavailableError as error:
+        raise click.ClickException(str(error)) from error
+
+
+@delete_embedding_rows.command("transcriptions")
+@database_url
+@embedding_model_options
+def delete_transcription_embeddings(database_url: str, model_name: str) -> None:
+    """Delete transcription embeddings for one model."""
+
+    _delete_embeddings("transcriptions", database_url, model_name)
+
+
+@delete_embedding_rows.command("translations")
+@database_url
+@embedding_model_options
+def delete_translation_embeddings(database_url: str, model_name: str) -> None:
+    """Delete translation embeddings for one model."""
+
+    _delete_embeddings("translations", database_url, model_name)
+
+
+@delete_embedding_rows.command("keywords")
+@database_url
+@embedding_model_options
+def delete_keyword_embeddings(database_url: str, model_name: str) -> None:
+    """Delete keyword embeddings for one model."""
+
+    _delete_embeddings("keywords", database_url, model_name)
+
+
+@embeddings.group("query")
+def query_embedding_rows() -> None:
+    """Find stored embeddings nearest to free text."""
+
+
+def _embedding_query_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            embedding_client_options,
+            embedding_model_options,
+            click.option(
+                "--top-k",
+                type=click.IntRange(min=1),
+                default=10,
+                show_default=True,
+                help="Number of nearest candidates to print.",
+            ),
+            click.argument("query"),
+        ],
+    )
+
+
+def _tsv_field(value: object | None) -> str:
+    return "" if value is None else " ".join(str(value).split())
+
+
+def _query_text_embeddings(
+    document_kind: str,
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    top_k: int,
+    query: str,
+) -> None:
+    try:
+        matches = find_similar_documents(
+            query,
+            database_url,
+            document_kind=document_kind,
+            inference_server_url=inference_server_url,
+            modelname=model_name,
+            api_key=api_key,
+            top_k=top_k,
+        )
+    except (DocumentEmbeddingsUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    click.echo("rank\tsimilarity\ttm_id\tlanguage\tsource_path\ttext")
+    for rank, match in enumerate(matches, start=1):
+        click.echo(
+            "\t".join(
+                (
+                    str(rank),
+                    f"{match.similarity:.6f}",
+                    _tsv_field(match.tm_id),
+                    _tsv_field(match.language),
+                    _tsv_field(match.source_path),
+                    _tsv_field(match.document_text),
+                )
+            )
+        )
+
+
+@query_embedding_rows.command("transcriptions")
+@_embedding_query_options
+def query_transcription_embeddings(**options) -> None:
+    """Embed QUERY and print its nearest stored transcriptions."""
+
+    _query_text_embeddings("transcriptions", **options)
+
+
+@query_embedding_rows.command("translations")
+@_embedding_query_options
+def query_translation_embeddings(**options) -> None:
+    """Embed QUERY and print its nearest stored translations."""
+
+    _query_text_embeddings("translations", **options)
+
+
+@query_embedding_rows.command("keywords")
+@_embedding_query_options
+def query_keyword_embeddings(
+    database_url: str,
+    inference_server_url: str,
+    model_name: str,
+    api_key: str,
+    top_k: int,
+    query: str,
+) -> None:
+    """Embed QUERY and print its nearest stored keyword candidates."""
+
+    try:
+        matches = find_similar_keywords(
+            query,
+            database_url,
+            inference_server_url=inference_server_url,
+            modelname=model_name,
+            api_key=api_key,
+            top_k=top_k,
+        )
+    except (KeywordEmbeddingsUnavailableError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+
+    click.echo("rank\tsimilarity\tkeyword")
+    for rank, match in enumerate(matches, start=1):
+        click.echo(f"{rank}\t{match.similarity:.6f}\t{match.keyword}")
+
+
+@embeddings.group("evaluate")
+def evaluate_embedding_rows() -> None:
+    """Evaluate embedding retrieval."""
+
+
+def _text_evaluation_options(function):
+    return _apply_options(
+        function,
+        [
+            database_url,
+            click.option(
+                "--sample",
+                type=click.IntRange(min=1),
+                help=(
+                    "Randomly select this many records that have both a "
+                    "transcription and a translation."
+                ),
+            ),
+            click.option(
+                "--seed",
+                type=int,
+                default=0,
+                show_default=True,
+                help="Seed used to make --sample selection deterministic.",
+            ),
+            click.option(
+                "--progress/--no-progress",
+                default=True,
+                show_default=True,
+                help="Show progress bars while evaluating embedding retrieval.",
+            ),
+        ],
+    )
+
+
+def _evaluate_text_embeddings(
+    query_kind: str,
     database_url: str,
     sample: int | None,
     seed: int,
-    output_file: Path,
     progress: bool,
 ) -> None:
-    """Evaluate transcription-to-translation embedding retrieval."""
+    try:
+        evaluate_embeddings(
+            database_url,
+            query_kind=query_kind,
+            progressbar=progress,
+            sample=sample,
+            seed=seed,
+        )
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
 
-    evaluate_embeddings(
-        database_url,
-        output_file=output_file,
-        progressbar=progress,
-        sample=sample,
-        seed=seed,
-    )
+
+@evaluate_embedding_rows.command("transcriptions")
+@_text_evaluation_options
+def evaluate_transcription_embeddings(**options) -> None:
+    """Evaluate transcription queries against translation embeddings."""
+
+    _evaluate_text_embeddings("transcriptions", **options)
+
+
+@evaluate_embedding_rows.command("translations")
+@_text_evaluation_options
+def evaluate_translation_embeddings(**options) -> None:
+    """Evaluate translation queries against transcription embeddings."""
+
+    _evaluate_text_embeddings("translations", **options)
 
 
 if __name__ == "__main__":

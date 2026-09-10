@@ -4,12 +4,9 @@ from scrapyrus.saxon_xml import (
     attribute_value,
     direct_children,
     document_element,
-    namespace_uri,
-    normalized_text,
     parse_xml_text,
 )
 from scrapyrus.transcriptions.core import (
-    available_translation_languages,
     epidoc_xml_to_text,
     transcription_language,
     transcription_xml_snippet,
@@ -38,9 +35,9 @@ def test_transcription_xml_snippet_returns_edition_as_string(tmp_path):
     with PySaxonProcessor(license=False) as proc:
         edition = _parse_snippet(proc, snippet)
         assert edition.local_name == "div"
-        assert namespace_uri(edition.name) == ""
+        assert edition.name == "div"
         assert attribute_value(edition, "type") == "edition"
-        assert normalized_text(direct_children(edition, "ab")[0]) == "Text"
+        assert direct_children(edition, "ab")[0].string_value.strip() == "Text"
 
 
 def test_transcription_xml_snippet_can_retain_namespaces(tmp_path):
@@ -55,11 +52,11 @@ def test_transcription_xml_snippet_can_retain_namespaces(tmp_path):
     with PySaxonProcessor(license=False) as proc:
         edition = _parse_snippet(proc, snippet)
         assert edition.local_name == "div"
-        assert namespace_uri(edition.name) == "http://www.tei-c.org/ns/1.0"
+        assert edition.name == "Q{http://www.tei-c.org/ns/1.0}div"
         assert (
-            normalized_text(
-                direct_children(edition, "{http://www.tei-c.org/ns/1.0}ab")[0]
-            )
+            direct_children(edition, "{http://www.tei-c.org/ns/1.0}ab")[
+                0
+            ].string_value.strip()
             == "Text"
         )
 
@@ -254,31 +251,3 @@ def test_translation_epidoc_xml_to_text_accepts_paths_and_snippets(tmp_path):
 
     assert translation_epidoc_xml_to_text(translation) == "Text."
     assert translation_epidoc_xml_to_text(snippet) == "Snippet."
-
-
-def test_available_translation_languages_returns_unique_languages_in_order():
-    xml = """<TEI xmlns="http://www.tei-c.org/ns/1.0">
-    <text><body>
-        <div xml:lang="de" type="translation"><p>Deutsch.</p></div>
-        <div xml:lang="en" type="translation"><p>English one.</p></div>
-        <div xml:lang="en" type="translation"><p>English two.</p></div>
-        <div type="translation"><p>No language.</p></div>
-        <div xml:lang="fr" type="translation">
-            <div xml:lang="it" type="textpart"><p>Nested textpart.</p></div>
-        </div>
-    </body></text>
-    </TEI>"""
-
-    assert available_translation_languages(xml) == ["de", "en", "fr"]
-
-
-def test_available_translation_languages_accepts_paths(tmp_path):
-    translation = tmp_path / "translation.xml"
-    translation.write_text(
-        '<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>'
-        '<div xml:lang="en" type="translation"><p>Text.</p></div>'
-        "</body></text></TEI>",
-        encoding="utf-8",
-    )
-
-    assert available_translation_languages(translation) == ["en"]
