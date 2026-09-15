@@ -9,11 +9,11 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
         table_name=table_name,
         description=(
             f"The {table_name} table stores {document_kind} text chunks and "
-            "model-specific vector embeddings."
+            "vector embeddings from the table's configured model."
         ),
         row_grain=(
-            f"One {document_kind} text chunk for one source XML row and embedding "
-            "model, keyed by (xml_id, model_name, chunk_index)."
+            f"One {document_kind} text chunk for one source XML row, "
+            "keyed by (xml_id, chunk_index)."
         ),
         useful_for=(f"semantic search over {document_kind} chunks",),
         columns={
@@ -21,12 +21,6 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
                 description="Source transcriptions.transcription_id, despite the xml_id name.",
                 caveats=(
                     f"For this table it must identify a transcriptions row whose type is {document_kind}; this is not database-enforced.",
-                ),
-            ),
-            "model_name": ColumnSemantics(
-                description="Embedding model identifier.",
-                caveats=(
-                    "Filter vector comparisons to one compatible model; dimensions may vary by model.",
                 ),
             ),
             "chunk_index": ColumnSemantics(
@@ -53,7 +47,7 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
                 caveats=("It is not a document identity.",),
             ),
             "embedding": ColumnSemantics(
-                description="pgvector value produced by model_name, with model-dependent dimension."
+                description="pgvector value produced by the model in embedding_table_metadata, with model-dependent dimension."
             ),
             "updated_at": ColumnSemantics(
                 description="Time the stored embedding row was inserted or refreshed."
@@ -87,9 +81,7 @@ KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
         "The keyword_embeddings table stores one model-specific vector for each "
         "distinct keyword and optional qualifier string."
     ),
-    row_grain=(
-        "One exact keyword string and embedding model, keyed by (keyword, model_name)."
-    ),
+    row_grain=("One exact keyword string, keyed by keyword."),
     useful_for=("semantic keyword candidate search",),
     columns={
         "keyword": ColumnSemantics(
@@ -98,14 +90,8 @@ KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
                 "or 'keyword, qualifier' when a qualifier is present."
             )
         ),
-        "model_name": ColumnSemantics(
-            description="Embedding model identifier.",
-            caveats=(
-                "Filter vector comparisons to one compatible model; dimensions may vary by model.",
-            ),
-        ),
         "embedding": ColumnSemantics(
-            description="pgvector value produced by model_name for keyword."
+            description="pgvector value produced by the model in embedding_table_metadata for keyword."
         ),
         "updated_at": ColumnSemantics(
             description="Time the stored embedding row was inserted or refreshed."
@@ -114,4 +100,22 @@ KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
     caveats=(
         "Cosine and distance operations must not compare vectors from different models.",
     ),
+)
+
+
+EMBEDDING_TABLE_METADATA_SEMANTICS = TableSemantics(
+    table_name="embedding_table_metadata",
+    description="Model configuration for each embedding corpus table.",
+    row_grain="One model configuration per embedding table, keyed by table_name.",
+    useful_for=("checking model compatibility before comparing vectors",),
+    columns={
+        "table_name": ColumnSemantics(description="Embedding corpus table name."),
+        "model_name": ColumnSemantics(
+            description="The single embedding model used by this table."
+        ),
+        "embedding_size": ColumnSemantics(
+            description="Configured vector dimension, or NULL until the first vectors are stored."
+        ),
+    },
+    caveats=("Matching vector dimensions alone do not establish model compatibility.",),
 )

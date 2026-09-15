@@ -154,6 +154,13 @@ scrapyrus embeddings ingest translations \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
+Each embedding table is configured for a single model, recorded together with
+its vector dimension in `embedding_table_metadata`. Ingest, update, and import
+reject a different model unless `--force` is supplied; replacing a model
+discards that corpus's existing vectors and index. Deletion retains the model
+configuration and dimension. Binary dumps contain corpus records; the model
+used to produce them must be supplied when importing.
+
 Create a keyword embedding store from the distinct strings in the `keywords`
 table with the same inference settings:
 
@@ -201,7 +208,9 @@ is included in the output together with its source path, TM ID, and language.
 
 `scrapyrus embeddings evaluate transcriptions` evaluates transcription queries
 against translation candidates. `scrapyrus embeddings evaluate translations`
-evaluates translation queries against transcription candidates. The `dump`,
+evaluates translation queries against transcription candidates. Both tables
+must use the same model and dimension. Evaluation prints a single Markdown
+report to stdout; redirect it to a file to save the findings. The `dump`,
 `import`, and `delete` operation groups likewise provide `transcriptions`,
 `translations`, and `keywords` subcommands.
 

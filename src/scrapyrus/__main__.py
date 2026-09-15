@@ -358,7 +358,7 @@ def _run_embedding_operation(operation: str, corpus_name: str, **options) -> Non
                 target = Path(f"{corpus_name}-embeddings-{filename_model}.dump")
             store.dump(target, conninfo)
         elif operation == "import":
-            store.import_dump(options["input_file"], conninfo)
+            store.import_dump(options["input_file"], conninfo, force=options["force"])
         elif operation == "query":
             matches = store.query(options["query"], conninfo, top_k=options["top_k"])
             keyword_results = not isinstance(EMBEDDING_CORPORA[corpus_name], XmlCorpus)
@@ -457,6 +457,14 @@ def _embedding_command(operation: str, corpus_name: str):
                 ),
             )
         )
+    if operation in {"ingest", "update", "import"}:
+        options.append(
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table is configured for another model.",
+            )
+        )
     return click.command(corpus_name)(_apply_options(command, options))
 
 
@@ -474,47 +482,36 @@ def evaluate_embedding_rows() -> None:
     """Evaluate embedding retrieval."""
 
 
-def _text_evaluation_options(default_output: str):
+def _text_evaluation_options(function):
     """Build a decorator for shared text evaluation options."""
 
-    def decorator(function):
-        return _apply_options(
-            function,
-            [
-                database_url,
-                click.option(
-                    "--sample",
-                    type=click.IntRange(min=1),
-                    help=(
-                        "Randomly select this many records that have both a "
-                        "transcription and a translation."
-                    ),
+    return _apply_options(
+        function,
+        [
+            database_url,
+            click.option(
+                "--sample",
+                type=click.IntRange(min=1),
+                help=(
+                    "Randomly select this many records that have both a "
+                    "transcription and a translation."
                 ),
-                click.option(
-                    "--seed",
-                    type=int,
-                    default=0,
-                    show_default=True,
-                    help="Seed used to make --sample selection deterministic.",
-                ),
-                click.option(
-                    "--output",
-                    "output_file",
-                    type=click.Path(path_type=Path, dir_okay=False),
-                    default=Path(default_output),
-                    show_default=True,
-                    help="Markdown file to write evaluation findings to.",
-                ),
-                click.option(
-                    "--progress/--no-progress",
-                    default=True,
-                    show_default=True,
-                    help="Show progress bars while evaluating embedding retrieval.",
-                ),
-            ],
-        )
-
-    return decorator
+            ),
+            click.option(
+                "--seed",
+                type=int,
+                default=0,
+                show_default=True,
+                help="Seed used to make --sample selection deterministic.",
+            ),
+            click.option(
+                "--progress/--no-progress",
+                default=True,
+                show_default=True,
+                help="Show progress bars while evaluating embedding retrieval.",
+            ),
+        ],
+    )
 
 
 def _evaluate_text_embeddings(
@@ -522,7 +519,6 @@ def _evaluate_text_embeddings(
     database_url: str,
     sample: int | None,
     seed: int,
-    output_file: Path,
     progress: bool,
 ) -> None:
     """Run text embedding evaluation and report CLI errors."""
@@ -530,17 +526,16 @@ def _evaluate_text_embeddings(
         evaluate_embeddings(
             database_url,
             query_kind=query_kind,
-            output_file=output_file,
             progressbar=progress,
             sample=sample,
             seed=seed,
         )
-    except ValueError as error:
+    except (EmbeddingsUnavailableError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
 @evaluate_embedding_rows.command("transcriptions")
-@_text_evaluation_options("transcription-embedding-evaluation.md")
+@_text_evaluation_options
 def evaluate_transcription_embeddings(**options) -> None:
     """Evaluate transcription queries against translation embeddings."""
 
@@ -548,7 +543,7 @@ def evaluate_transcription_embeddings(**options) -> None:
 
 
 @evaluate_embedding_rows.command("translations")
-@_text_evaluation_options("translation-embedding-evaluation.md")
+@_text_evaluation_options
 def evaluate_translation_embeddings(**options) -> None:
     """Evaluate translation queries against transcription embeddings."""
 

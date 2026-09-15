@@ -8,7 +8,7 @@ import psycopg
 from tqdm import tqdm
 
 from scrapyrus.embeddings.corpora import EMBEDDING_CORPORA, XmlCorpus
-from scrapyrus.embeddings.schema import row_value
+from scrapyrus.embeddings.schema import embedding_table_metadata, row_value
 from scrapyrus.transcriptions.core import TRANSCRIPTIONS_TABLE
 
 RECALL_RANKS = (1, 2, 3, 4, 5)
@@ -203,127 +203,53 @@ class EmbeddingEvaluation:
         return "\n".join(lines) + "\n"
 
 
-@dataclass(frozen=True)
-class EmbeddingsEvaluation:
-    results: tuple[EmbeddingEvaluation, ...]
-    query_kind: str
-    sample: int | None = None
-    seed: int = 0
-
-    def to_markdown(self) -> str:
-        lines = [
-            "# Embedding Evaluations",
-            "",
-            f"- Query collection: {self.query_kind.title()}",
-            "",
-        ]
-        if self.sample is not None:
-            lines.extend(
-                [
-                    "## Scope",
-                    "",
-                    f"- Requested paired-record sample: {self.sample}",
-                    f"- Sample seed: {self.seed}",
-                    "",
-                ]
-            )
-        lines.extend(
-            [
-                "## Summary",
-                "",
-                "| Model | Transcriptions | Translations | Paired | Dimensions | "
-                + " | ".join(f"recall@{rank}" for rank in RECALL_RANKS)
-                + " |",
-                "| --- | ---: | ---: | ---: | ---: | "
-                + " | ".join("---:" for _ in RECALL_RANKS)
-                + " |",
-            ]
-        )
-        for result in self.results:
-            lines.append(
-                f"| {_markdown_code(result.model_name)} | {result.transcription_count} | "
-                f"{result.translation_count} | {result.evaluated_count} | "
-                f"{result.embedding_dimensions} | "
-                + " | ".join(f"{result.recall_at[rank]:.2%}" for rank in RECALL_RANKS)
-                + " |"
-            )
-        for result in self.results:
-            lines.extend(["", result.to_markdown(heading_level=2).rstrip()])
-        return "\n".join(lines) + "\n"
-
-
 def evaluate_embeddings(
     conninfo: str = "",
     /,
     *,
     query_kind: str,
-    output_file: str | Path | None = None,
-    progressbar: bool = True,
-    sample: int | None = None,
-    seed: int = 0,
-) -> EmbeddingsEvaluation:
-    """Evaluate cross-collection retrieval for every stored model.
-
-    When ``sample`` is set, use the same deterministic paired-record selection
-    as embedding ingestion and restrict every model's queries and candidates to
-    that shared scope.
-    """
-
-    _evaluation_tables(query_kind)
-    with psycopg.connect(conninfo) as connection:
-        with connection.cursor() as cursor:
-            tm_ids = _select_sample_tm_ids(cursor, sample=sample, seed=seed)
-            model_names = _select_embedding_model_names(cursor, tm_ids=tm_ids)
-            if not model_names:
-                raise ValueError(
-                    "No models have both transcription and translation embeddings"
-                )
-            results = tuple(
-                _evaluate_embeddings_model(
-                    cursor,
-                    model_name,
-                    query_kind=query_kind,
-                    progressbar=progressbar,
-                    tm_ids=tm_ids,
-                )
-                for model_name in model_names
-            )
-
-    evaluation = EmbeddingsEvaluation(
-        results, query_kind=query_kind, sample=sample, seed=seed
-    )
-    if output_file is not None:
-        Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
-    return evaluation
-
-
-def evaluate_embeddings_model(
-    conninfo: str = "",
-    /,
-    *,
-    query_kind: str,
-    model_name: str,
-    output_file: str | Path | None = None,
     progressbar: bool = True,
     sample: int | None = None,
     seed: int = 0,
 ) -> EmbeddingEvaluation:
-    """Evaluate cross-collection retrieval for one stored model."""
+    """Evaluate the tables' compatible model and print its Markdown report.
 
+    Sampling uses ingestion's deterministic paired-record selection and scopes
+    both query and candidate documents to that selection.
+    """
     _evaluation_tables(query_kind)
+    if sample is not None and sample < 1:
+        raise ValueError("sample must be at least 1")
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             tm_ids = _select_sample_tm_ids(cursor, sample=sample, seed=seed)
+            transcription = embedding_table_metadata(
+                cursor, EMBEDDING_CORPORA["transcriptions"]
+            )
+            translation = embedding_table_metadata(
+                cursor, EMBEDDING_CORPORA["translations"]
+            )
+            if transcription is None or translation is None:
+                raise ValueError(
+                    "Both transcription and translation embedding tables must have a configured model"
+                )
+            if transcription.model_name != translation.model_name:
+                raise ValueError(
+                    "Transcription and translation embedding tables use different models"
+                )
+            if transcription.embedding_size != translation.embedding_size:
+                raise ValueError(
+                    "Transcription and translation embedding tables use different dimensions"
+                )
             evaluation = _evaluate_embeddings_model(
                 cursor,
-                model_name,
+                transcription.model_name,
                 query_kind=query_kind,
                 progressbar=progressbar,
                 tm_ids=tm_ids,
+                dimensions=transcription.embedding_size,
             )
-
-    if output_file is not None:
-        Path(output_file).write_text(evaluation.to_markdown(), encoding="utf-8")
+    print(evaluation.to_markdown(), end="", flush=True)
     return evaluation
 
 
@@ -334,17 +260,17 @@ def _evaluate_embeddings_model(
     query_kind: str,
     progressbar: bool,
     tm_ids: tuple[str, ...] | None = None,
+    dimensions: int | None,
 ) -> EmbeddingEvaluation:
     """Compute retrieval metrics for one embedding model."""
     query_table, candidate_table = _evaluation_tables(query_kind)
     transcription_stats = _collection_stats(
         cursor,
         EMBEDDING_CORPORA["transcriptions"].table_name,
-        model_name,
         tm_ids=tm_ids,
     )
     translation_stats = _collection_stats(
-        cursor, EMBEDDING_CORPORA["translations"].table_name, model_name, tm_ids=tm_ids
+        cursor, EMBEDDING_CORPORA["translations"].table_name, tm_ids=tm_ids
     )
     if not transcription_stats.document_count:
         raise ValueError(f"No transcription embeddings found for model {model_name!r}")
@@ -355,9 +281,12 @@ def _evaluate_embeddings_model(
             f"Transcription embeddings have {transcription_stats.dimensions} dimensions, "
             f"but translation embeddings have {translation_stats.dimensions}"
         )
+    if transcription_stats.dimensions != dimensions:
+        raise ValueError(
+            "Stored vector dimensions disagree with embedding table metadata"
+        )
     queries = _select_retrieval_queries(
         cursor,
-        model_name,
         query_table=query_table,
         candidate_table=candidate_table,
         tm_ids=tm_ids,
@@ -399,7 +328,6 @@ def _evaluate_embeddings_model(
         chunk_reciprocal_rank_sums.setdefault(chunk_group, 0.0)
         candidates = _select_nearest_candidates(
             cursor,
-            model_name,
             query.embeddings,
             max(RECALL_RANKS),
             candidate_table=candidate_table,
@@ -409,7 +337,6 @@ def _evaluate_embeddings_model(
         if reciprocal_rank == 0.0:
             reciprocal_rank = _select_reciprocal_rank(
                 cursor,
-                model_name,
                 query.embeddings,
                 query.tm_id,
                 candidate_table=candidate_table,
@@ -494,29 +421,6 @@ LIMIT %s
     return tuple(str(row_value(row, "tm_id", 0)) for row in cursor.fetchall())
 
 
-def _select_embedding_model_names(
-    cursor: Any, *, tm_ids: tuple[str, ...] | None = None
-) -> tuple[str, ...]:
-    """Find models with matching transcription and translation records."""
-    scope_sql = " AND transcriptions.tm_id = ANY(%s)" if tm_ids is not None else ""
-    cursor.execute(
-        f"""
-SELECT transcriptions.model_name
-FROM {EMBEDDING_CORPORA["transcriptions"].table_name} AS transcriptions
-WHERE EXISTS (
-    SELECT 1 FROM {EMBEDDING_CORPORA["translations"].table_name} AS translations
-    WHERE translations.model_name = transcriptions.model_name
-      AND translations.tm_id = transcriptions.tm_id
-)
-{scope_sql}
-GROUP BY transcriptions.model_name
-ORDER BY transcriptions.model_name
-""",
-        (list(tm_ids),) if tm_ids is not None else None,
-    )
-    return tuple(str(row_value(row, "model_name", 0)) for row in cursor.fetchall())
-
-
 @dataclass(frozen=True)
 class _CollectionStats:
     document_count: int
@@ -528,12 +432,11 @@ class _CollectionStats:
 def _collection_stats(
     cursor: Any,
     table: str,
-    model_name: str,
     *,
     tm_ids: tuple[str, ...] | None = None,
 ) -> _CollectionStats:
     """Count documents and chunks and validate vector dimensions."""
-    scope_sql = " AND tm_id = ANY(%s)" if tm_ids is not None else ""
+    scope_sql = " WHERE tm_id = ANY(%s)" if tm_ids is not None else ""
     cursor.execute(
         f"""
 SELECT count(*) AS document_count,
@@ -547,12 +450,11 @@ FROM (
            min(vector_dims(embedding)) AS minimum_dimensions,
            max(vector_dims(embedding)) AS maximum_dimensions
     FROM {table}
-    WHERE model_name = %s
     {scope_sql}
     GROUP BY tm_id
 ) AS document
 """,
-        (model_name, list(tm_ids)) if tm_ids is not None else (model_name,),
+        (list(tm_ids),) if tm_ids is not None else None,
     )
     row = cursor.fetchone()
     minimum_dimensions = row_value(row, "minimum_dimensions", 3)
@@ -569,7 +471,6 @@ FROM (
 
 def _select_retrieval_queries(
     cursor: Any,
-    model_name: str,
     *,
     query_table: str,
     candidate_table: str,
@@ -587,17 +488,15 @@ SELECT queries.tm_id,
            ORDER BY queries.xml_id, queries.chunk_index
        ) AS embeddings
 FROM {query_table} AS queries
-WHERE queries.model_name = %s
-{scope_sql}
-  AND EXISTS (
+WHERE EXISTS (
       SELECT 1 FROM {candidate_table} AS candidates
-      WHERE candidates.model_name = queries.model_name
-        AND candidates.tm_id = queries.tm_id
+      WHERE candidates.tm_id = queries.tm_id
   )
+{scope_sql}
 GROUP BY queries.tm_id
 ORDER BY queries.tm_id
 """,
-        (model_name, list(tm_ids)) if tm_ids is not None else (model_name,),
+        (list(tm_ids),) if tm_ids is not None else None,
     )
     return tuple(
         RetrievalQuery(
@@ -618,7 +517,6 @@ class _Candidate:
 
 def _select_nearest_candidates(
     cursor: Any,
-    model_name: str,
     embeddings: tuple[str, ...],
     limit: int,
     *,
@@ -627,7 +525,7 @@ def _select_nearest_candidates(
 ) -> tuple[_Candidate, ...]:
     """Rank candidate documents by their closest chunk distance."""
     scope_sql = (
-        "      AND candidates.tm_id = ANY(%(tm_ids)s)" if tm_ids is not None else ""
+        "    WHERE candidates.tm_id = ANY(%(tm_ids)s)" if tm_ids is not None else ""
     )
     cursor.execute(
         f"""
@@ -640,7 +538,6 @@ WITH query_chunks AS (
            min(candidates.embedding <=> query_chunks.embedding) AS distance
     FROM {candidate_table} AS candidates
     CROSS JOIN query_chunks
-    WHERE candidates.model_name = %(model_name)s
 {scope_sql}
     GROUP BY candidates.tm_id
 )
@@ -650,7 +547,6 @@ ORDER BY distance, tm_id, source_path
 LIMIT %(limit)s
 """,
         {
-            "model_name": model_name,
             "embeddings": list(embeddings),
             "limit": limit,
             **({"tm_ids": list(tm_ids)} if tm_ids is not None else {}),
@@ -675,7 +571,6 @@ def _candidate_reciprocal_rank(candidates: tuple[_Candidate, ...], tm_id: str) -
 
 def _select_reciprocal_rank(
     cursor: Any,
-    model_name: str,
     embeddings: tuple[str, ...],
     tm_id: str,
     *,
@@ -684,7 +579,7 @@ def _select_reciprocal_rank(
 ) -> float:
     """Query the matching document reciprocal rank across all candidates."""
     scope_sql = (
-        "          AND candidates.tm_id = ANY(%(tm_ids)s)" if tm_ids is not None else ""
+        "        WHERE candidates.tm_id = ANY(%(tm_ids)s)" if tm_ids is not None else ""
     )
     cursor.execute(
         f"""
@@ -705,15 +600,13 @@ FROM (
             SELECT value::vector AS embedding
             FROM unnest(%(embeddings)s::text[]) AS value
         ) AS query_chunks
-        WHERE candidates.model_name = %(model_name)s
-{scope_sql}
+    {scope_sql}
         GROUP BY candidates.tm_id
     ) AS candidate_documents
 ) AS ranked
 WHERE ranked.tm_id = %(tm_id)s
 """,
         {
-            "model_name": model_name,
             "embeddings": list(embeddings),
             "tm_id": tm_id,
             **({"tm_ids": list(tm_ids)} if tm_ids is not None else {}),
