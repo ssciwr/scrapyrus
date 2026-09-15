@@ -17,6 +17,9 @@ def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
         ),
         useful_for=(f"semantic search over {document_kind} chunks",),
         columns={
+            "chunk_id": ColumnSemantics(
+                description="Deterministic unique chunk identity: corpus name, source XML row ID, and zero-based chunk index, separated by colons."
+            ),
             "xml_id": ColumnSemantics(
                 description="Source transcriptions.transcription_id, despite the xml_id name.",
                 caveats=(
@@ -105,7 +108,7 @@ KEYWORD_EMBEDDINGS_SEMANTICS = TableSemantics(
 
 EMBEDDING_TABLE_METADATA_SEMANTICS = TableSemantics(
     table_name="embedding_table_metadata",
-    description="Model configuration for each embedding corpus table.",
+    description="Complete non-secret embedding specification for each corpus table.",
     row_grain="One model configuration per embedding table, keyed by table_name.",
     useful_for=("checking model compatibility before comparing vectors",),
     columns={
@@ -114,7 +117,19 @@ EMBEDDING_TABLE_METADATA_SEMANTICS = TableSemantics(
             description="The single embedding model used by this table."
         ),
         "embedding_size": ColumnSemantics(
-            description="Configured vector dimension, or NULL until the first vectors are stored."
+            description="Positive vector dimension, determined by source embeddings or an empty-corpus readiness probe."
+        ),
+        "provider": ColumnSemantics(
+            description="Allowlisted LangChain embedding provider."
+        ),
+        "provider_options": ColumnSemantics(
+            description="All effective options affecting document/query embedding compatibility; excludes credentials and endpoint URLs."
+        ),
+        "endpoint_profile": ColumnSemantics(
+            description="Optional deployment profile resolved by consumers through EMBEDDING_ENDPOINT_<PROFILE>; required for vllm."
+        ),
+        "contract_version": ColumnSemantics(
+            description="Embedding compatibility contract version; currently 1."
         ),
     },
     caveats=("Matching vector dimensions alone do not establish model compatibility.",),

@@ -9,7 +9,8 @@ from scrapyrus.embeddings.schema import (
     PgvectorUnavailableError,
     SourceUnavailableError,
 )
-from scrapyrus.embeddings.store import EmbeddingSpecification, EmbeddingStore
+from scrapyrus.embeddings.specification import EmbeddingSpecification
+from scrapyrus.embeddings.store import EmbeddingStore
 
 __all__ = [
     "EMBEDDING_CORPORA",

@@ -1,6 +1,8 @@
 import pytest
 import psycopg
 
+from tests.embeddings.helpers import configuration
+
 from scrapyrus.embeddings.evaluation import (
     EmbeddingEvaluation,
     LanguageEmbeddingEvaluation,
@@ -12,8 +14,8 @@ class Cursor:
     def __init__(self):
         self.executions = []
         self.metadata = {
-            "transcription_embeddings": ("sample", 3),
-            "translation_embeddings": ("sample", 3),
+            "transcription_embeddings": configuration("sample", 3),
+            "translation_embeddings": configuration("sample", 3),
         }
         self.metadata_result = ...
         self.fetchone_results = [(2, 3, 1, 3, 3), (2, 4, 1, 3, 3)]
@@ -241,7 +243,7 @@ def test_evaluation_accepts_partial_embedding_collections(monkeypatch):
 
 def test_evaluation_rejects_different_table_models(monkeypatch):
     cursor = Cursor()
-    cursor.metadata["translation_embeddings"] = ("other", 3)
+    cursor.metadata["translation_embeddings"] = configuration("other", 3)
     monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
     with pytest.raises(ValueError, match="different models"):
         evaluate_embeddings(query_kind="transcriptions", progressbar=False)
@@ -250,7 +252,7 @@ def test_evaluation_rejects_different_table_models(monkeypatch):
 
 def test_evaluation_uses_shared_ingest_sample(capsys, monkeypatch):
     cursor = Cursor()
-    cursor.metadata = {table: ("sample", 2) for table in cursor.metadata}
+    cursor.metadata = {table: configuration("sample", 2) for table in cursor.metadata}
     cursor.fetchone_results = [(1, 1, 0, 2, 2), (1, 1, 0, 2, 2)]
     cursor.fetchall_results = [
         [("17",), ("42",)],
@@ -273,3 +275,22 @@ def test_evaluation_uses_shared_ingest_sample(capsys, monkeypatch):
     assert all(params == (["17", "42"],) for _, params in cursor.executions[3:6])
     assert cursor.executions[6][1]["tm_ids"] == ["17", "42"]
     assert capsys.readouterr().out.startswith("# Embedding Evaluation: `sample`")
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"provider": "openai", "endpoint_profile": None},
+        {"provider_options": {"check_embedding_ctx_length": True}},
+        {"endpoint_profile": "other_deployment"},
+    ],
+)
+def test_evaluation_rejects_equal_models_from_incompatible_vector_spaces(
+    monkeypatch, changed
+):
+    cursor = Cursor()
+    cursor.metadata["translation_embeddings"] = configuration("sample", 3, **changed)
+    monkeypatch.setattr(psycopg, "connect", lambda conninfo: Connection(cursor))
+    with pytest.raises(ValueError, match="different embedding specifications"):
+        evaluate_embeddings(query_kind="transcriptions", progressbar=False)
+    assert len(cursor.executions) == 2

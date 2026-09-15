@@ -1,472 +1,166 @@
-"""Embedding clients for hosted and OpenAI-compatible inference servers."""
+"""Allowlisted LangChain embedding clients shared by ingestion and querying."""
 
 from __future__ import annotations
 
-import math
-from typing import Any, ClassVar
-from urllib.parse import quote, urlparse
+from collections.abc import Mapping
+from typing import Any, cast
+from urllib.parse import urlparse
 
+from langchain_core.embeddings import Embeddings
 import requests
 
-EMBEDDING_REQUEST_TIMEOUT = 60
-OPENAI_EMBEDDING_CONTEXT_LENGTH = 8_192
-VOYAGEAI_EMBEDDING_CONTEXT_LENGTH = 32_000
+
+SUPPORTED_EMBEDDING_PROVIDERS = frozenset(
+    {"openai", "vllm", "voyageai", "mistralai", "huggingface"}
+)
 
 
-class EmbeddingClient:
-    """Base class for inference-server provider implementations.
+def infer_embedding_provider(inference_server_url: str) -> str:
+    """Infer a hosted provider, treating other endpoints as explicit vLLM."""
 
-    Subclasses are registered in definition order. Their ``initialize``
-    methods form a chain of responsibility for inference server URLs.
-    """
+    hostname = (urlparse(inference_server_url).hostname or "").rstrip(".").lower()
+    return {
+        "api.openai.com": "openai",
+        "api.voyageai.com": "voyageai",
+        "api.mistral.ai": "mistralai",
+    }.get(hostname, "vllm")
 
-    _providers: ClassVar[list[type[EmbeddingClient]]] = []
 
-    def __init__(
-        self, inference_server_url: str, model_name: str, api_key: str
-    ) -> None:
-        self.inference_server_url = inference_server_url
-        self.model_name = model_name
-        self.api_key = api_key
+def effective_provider_options(
+    provider: str, options: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Validate and fill compatibility-affecting provider defaults."""
 
-    def __init_subclass__(
-        cls,
-        *,
-        register: bool = True,
-        **kwargs: object,
-    ) -> None:
-        """Register subclasses unless registration is explicitly disabled."""
-        super().__init_subclass__(**kwargs)
-        if register:
-            EmbeddingClient._providers.append(cls)
-
-    @classmethod
-    def registered_providers(cls) -> tuple[type[EmbeddingClient], ...]:
-        """Return provider classes in responsibility-chain order."""
-
-        return tuple(cls._providers)
-
-    @classmethod
-    def initialize(
-        cls, inference_server_url: str, model_name: str, api_key: str
-    ) -> EmbeddingClient | None:
-        """Return a provider instance if *cls* handles the server URL."""
-
-        raise NotImplementedError
-
-    def token_count(self, text: str) -> int:
-        """Return the number of model tokens required by *text*."""
-
-        raise NotImplementedError
-
-    def context_length(self) -> int:
-        """Return the model's available context size in tokens."""
-
-        raise NotImplementedError
-
-    def embedding_length(self) -> int:
-        """Return the number of values in an embedding."""
-
-        raise NotImplementedError
-
-    def _embed_text(self, text: str) -> tuple[float, ...]:
-        """Return the embedding for *text*."""
-
-        raise NotImplementedError
-
-    def embed_documents(self, texts: list[str]) -> list[tuple[float, ...]]:
-        """Embed source texts using this client's configured model."""
-
-        return [self._embed_text(text) for text in texts]
-
-    def embed_query(self, text: str) -> tuple[float, ...]:
-        """Embed a free-text query with the same model."""
-
-        return self._embed_text(text)
-
-    def _session(self) -> requests.Session:
-        """Create an HTTP session with JSON and authentication headers."""
-        session = requests.Session()
-        session.headers.update(
-            {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
+    supplied = dict(options or {})
+    allowed = {
+        "openai": {"dimensions", "check_embedding_ctx_length"},
+        "vllm": {"dimensions", "check_embedding_ctx_length"},
+        "voyageai": {
+            "output_dimension",
+            "truncation",
+            "batch_size",
+            "document_input_type",
+            "query_input_type",
+        },
+        "mistralai": set(),
+        "huggingface": {
+            "model_revision",
+            "normalize_embeddings",
+            "truncate_dim",
+            "document_prompt_name",
+            "query_prompt_name",
+        },
+    }
+    if provider not in allowed:
+        raise ValueError(f"Unsupported embedding provider {provider!r}")
+    unknown = set(supplied) - allowed[provider]
+    if unknown:
+        raise ValueError(
+            f"Unsupported {provider!r} embedding options: {sorted(unknown)}"
         )
-        return session
-
-    def _get_json(self, path: str) -> dict[str, Any]:
-        """Fetch a JSON object from an inference server endpoint."""
-        return self._request_json("GET", path)
-
-    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Post a JSON body to an inference server endpoint."""
-        return self._request_json("POST", path, body)
-
-    def _request_json(
-        self,
-        method: str,
-        path: str,
-        body: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Send an inference request and validate the JSON object response."""
-        with self._session() as client:
-            request = client.get if method == "GET" else client.post
-            kwargs: dict[str, Any] = {"timeout": EMBEDDING_REQUEST_TIMEOUT}
-            if body is not None:
-                kwargs["json"] = body
-            response = request(f"{self.inference_server_url}{path}", **kwargs)
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("Inference server response was not a JSON object")
-        return payload
+    for key, value in supplied.items():
+        if key in {"dimensions", "output_dimension", "truncate_dim", "batch_size"}:
+            if type(value) is not int or value < 1:
+                raise ValueError(f"{key} must be a positive integer")
+        elif key in {
+            "check_embedding_ctx_length",
+            "truncation",
+            "normalize_embeddings",
+        }:
+            if type(value) is not bool:
+                raise ValueError(f"{key} must be a boolean")
+        elif not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{key} must be a nonblank string")
+    if provider in {"openai", "vllm"}:
+        supplied.setdefault("check_embedding_ctx_length", False)
+    elif provider == "voyageai":
+        supplied.setdefault("truncation", True)
+        supplied.setdefault("batch_size", 1000)
+        supplied.setdefault("document_input_type", "document")
+        supplied.setdefault("query_input_type", "query")
+        if supplied["document_input_type"] != "document":
+            raise ValueError("VoyageAI document_input_type must be 'document'")
+        if supplied["query_input_type"] != "query":
+            raise ValueError("VoyageAI query_input_type must be 'query'")
+    elif provider == "huggingface":
+        supplied.setdefault("normalize_embeddings", False)
+    return supplied
 
 
 def build_embedding_client(
-    inference_server_url: str, model_name: str, api_key: str
-) -> EmbeddingClient:
-    """Initialize the first registered provider responsible for a server."""
+    *,
+    provider: str,
+    model_name: str,
+    api_key: str,
+    inference_server_url: str | None,
+    provider_options: Mapping[str, Any],
+) -> Embeddings:
+    """Return a standard LangChain Embeddings implementation."""
 
-    for provider_type in EmbeddingClient.registered_providers():
-        provider = provider_type.initialize(inference_server_url, model_name, api_key)
-        if provider is not None:
-            return provider
-    raise ValueError(
-        f"No registered embedding provider handles inference server {inference_server_url!r}"
-    )
+    options = effective_provider_options(provider, provider_options)
+    if provider in {"openai", "vllm"}:
+        from langchain_openai import OpenAIEmbeddings
 
-
-class MistralProvider(EmbeddingClient):
-    """Provider for Mistral AI's hosted API."""
-
-    def __init__(
-        self, inference_server_url: str, model_name: str, api_key: str
-    ) -> None:
-        super().__init__(_mistral_base_url(inference_server_url), model_name, api_key)
-        self._context_length: int | None = None
-        self._embedding_length: int | None = None
-
-    @classmethod
-    def initialize(
-        cls, inference_server_url: str, model_name: str, api_key: str
-    ) -> MistralProvider | None:
-        """Detect Mistral AI from its API hostname."""
-
-        hostname = urlparse(inference_server_url).hostname
-        if hostname is None or hostname.rstrip(".").lower() != "api.mistral.ai":
-            return None
-        return cls(inference_server_url, model_name, api_key)
-
-    def token_count(self, text: str) -> int:
-        _, token_count = self._embed(text)
-        return token_count
-
-    def context_length(self) -> int:
-        if self._context_length is None:
-            model_id = quote(self.model_name, safe="")
-            payload = self._get_json(f"/models/{model_id}")
-            context_length = payload.get("max_context_length")
-            if (
-                not isinstance(context_length, int)
-                or isinstance(context_length, bool)
-                or context_length < 1
-            ):
-                raise ValueError(
-                    "Model response did not contain a valid max_context_length"
-                )
-            self._context_length = context_length
-        return self._context_length
-
-    def embedding_length(self) -> int:
-        if self._embedding_length is None:
-            self._embed_text("test")
-        assert self._embedding_length is not None
-        return self._embedding_length
-
-    def _embed_text(self, text: str) -> tuple[float, ...]:
-        """Request and validate an embedding vector for the text."""
-        vector, _ = self._embed(text)
-        return vector
-
-    def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
-        """Return a validated embedding vector and its token usage."""
-        payload = self._post_json(
-            "/embeddings", {"model": self.model_name, "input": text}
+        return OpenAIEmbeddings(
+            model=model_name,
+            api_key=cast(Any, api_key or "EMPTY"),
+            base_url=_versioned_url(inference_server_url),
+            **options,
         )
-        try:
-            embedding = payload["data"][0]["embedding"]
-            token_count = payload["usage"]["prompt_tokens"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise ValueError(
-                "Embedding response did not contain data[0].embedding and "
-                "usage.prompt_tokens"
-            ) from error
-        if not isinstance(embedding, list) or not embedding:
-            raise ValueError("Embedding response did not contain a non-empty vector")
-        if (
-            not isinstance(token_count, int)
-            or isinstance(token_count, bool)
-            or token_count < 0
-        ):
-            raise ValueError(
-                "Embedding response did not contain a valid usage.prompt_tokens"
-            )
-        vector = tuple(float(value) for value in embedding)
-        if not all(math.isfinite(value) for value in vector):
-            raise ValueError("Embedding response contained non-finite vector values")
-        if self._embedding_length is not None and self._embedding_length != len(vector):
-            raise ValueError("Embedding response changed vector length")
-        self._embedding_length = len(vector)
-        return vector, token_count
+    if provider == "voyageai":
+        from langchain_voyageai import VoyageAIEmbeddings
 
-
-class OpenAIProvider(EmbeddingClient):
-    """Provider for OpenAI's hosted API."""
-
-    def __init__(
-        self, inference_server_url: str, model_name: str, api_key: str
-    ) -> None:
-        super().__init__(_openai_base_url(inference_server_url), model_name, api_key)
-        self._embedding_length: int | None = None
-
-    @classmethod
-    def initialize(
-        cls, inference_server_url: str, model_name: str, api_key: str
-    ) -> OpenAIProvider | None:
-        """Detect OpenAI from its API hostname."""
-
-        hostname = urlparse(inference_server_url).hostname
-        if hostname is None or hostname.rstrip(".").lower() != "api.openai.com":
-            return None
-        return cls(inference_server_url, model_name, api_key)
-
-    def token_count(self, text: str) -> int:
-        _, token_count = self._embed(text)
-        return token_count
-
-    def context_length(self) -> int:
-        return OPENAI_EMBEDDING_CONTEXT_LENGTH
-
-    def embedding_length(self) -> int:
-        if self._embedding_length is None:
-            self._embed_text("test")
-        assert self._embedding_length is not None
-        return self._embedding_length
-
-    def _embed_text(self, text: str) -> tuple[float, ...]:
-        """Request and validate an embedding vector for the text."""
-        vector, _ = self._embed(text)
-        return vector
-
-    def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
-        """Return a validated embedding vector and its token usage."""
-        payload = self._post_json(
-            "/embeddings", {"model": self.model_name, "input": text}
+        options.pop("document_input_type")
+        options.pop("query_input_type")
+        return VoyageAIEmbeddings(
+            model=model_name,
+            api_key=cast(Any, api_key),
+            base_url=_versioned_url(inference_server_url),
+            **options,
         )
-        try:
-            embedding = payload["data"][0]["embedding"]
-            token_count = payload["usage"]["prompt_tokens"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise ValueError(
-                "Embedding response did not contain data[0].embedding and "
-                "usage.prompt_tokens"
-            ) from error
-        if not isinstance(embedding, list) or not embedding:
-            raise ValueError("Embedding response did not contain a non-empty vector")
-        if (
-            not isinstance(token_count, int)
-            or isinstance(token_count, bool)
-            or token_count < 0
-        ):
-            raise ValueError(
-                "Embedding response did not contain a valid usage.prompt_tokens"
-            )
-        vector = tuple(float(value) for value in embedding)
-        if not all(math.isfinite(value) for value in vector):
-            raise ValueError("Embedding response contained non-finite vector values")
-        if self._embedding_length is not None and self._embedding_length != len(vector):
-            raise ValueError("Embedding response changed vector length")
-        self._embedding_length = len(vector)
-        return vector, token_count
+    if provider == "mistralai":
+        from langchain_mistralai import MistralAIEmbeddings
 
+        kwargs: dict[str, Any] = {
+            "model": model_name,
+            "api_key": api_key,
+            **options,
+        }
+        if inference_server_url:
+            kwargs["endpoint"] = _versioned_url(inference_server_url)
+        return MistralAIEmbeddings(**kwargs)
+    if provider == "huggingface":
+        from langchain_huggingface import HuggingFaceEmbeddings
 
-class VoyageAIProvider(EmbeddingClient):
-    """Provider for VoyageAI's hosted API."""
-
-    def __init__(
-        self, inference_server_url: str, model_name: str, api_key: str
-    ) -> None:
-        super().__init__(_voyageai_base_url(inference_server_url), model_name, api_key)
-        self._embedding_length: int | None = None
-
-    @classmethod
-    def initialize(
-        cls, inference_server_url: str, model_name: str, api_key: str
-    ) -> VoyageAIProvider | None:
-        """Detect VoyageAI from its API hostname."""
-
-        hostname = urlparse(inference_server_url).hostname
-        if hostname is None or hostname.rstrip(".").lower() != "api.voyageai.com":
-            return None
-        return cls(inference_server_url, model_name, api_key)
-
-    def token_count(self, text: str) -> int:
-        _, token_count = self._embed(text)
-        return token_count
-
-    def context_length(self) -> int:
-        return VOYAGEAI_EMBEDDING_CONTEXT_LENGTH
-
-    def embedding_length(self) -> int:
-        if self._embedding_length is None:
-            self._embed_text("test")
-        assert self._embedding_length is not None
-        return self._embedding_length
-
-    def _embed_text(self, text: str) -> tuple[float, ...]:
-        """Request and validate an embedding vector for the text."""
-        vector, _ = self._embed(text)
-        return vector
-
-    def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
-        """Return a validated embedding vector and its token usage."""
-        payload = self._post_json(
-            "/embeddings", {"model": self.model_name, "input": text}
+        revision = options.pop("model_revision", None)
+        normalize = options.pop("normalize_embeddings")
+        truncate_dim = options.pop("truncate_dim", None)
+        document_prompt = options.pop("document_prompt_name", None)
+        query_prompt = options.pop("query_prompt_name", None)
+        encode_kwargs = {"normalize_embeddings": normalize}
+        query_encode_kwargs = {"normalize_embeddings": normalize}
+        if truncate_dim is not None:
+            encode_kwargs["truncate_dim"] = truncate_dim
+            query_encode_kwargs["truncate_dim"] = truncate_dim
+        if document_prompt is not None:
+            encode_kwargs["prompt_name"] = document_prompt
+        if query_prompt is not None:
+            query_encode_kwargs["prompt_name"] = query_prompt
+        return HuggingFaceEmbeddings(
+            model_name=model_name,
+            model_kwargs={} if revision is None else {"revision": revision},
+            encode_kwargs=encode_kwargs,
+            query_encode_kwargs=query_encode_kwargs,
         )
-        try:
-            embedding = payload["data"][0]["embedding"]
-            token_count = payload["usage"]["total_tokens"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise ValueError(
-                "Embedding response did not contain data[0].embedding and "
-                "usage.total_tokens"
-            ) from error
-        if not isinstance(embedding, list) or not embedding:
-            raise ValueError("Embedding response did not contain a non-empty vector")
-        if (
-            not isinstance(token_count, int)
-            or isinstance(token_count, bool)
-            or token_count < 0
-        ):
-            raise ValueError(
-                "Embedding response did not contain a valid usage.total_tokens"
-            )
-        vector = tuple(float(value) for value in embedding)
-        if not all(math.isfinite(value) for value in vector):
-            raise ValueError("Embedding response contained non-finite vector values")
-        if self._embedding_length is not None and self._embedding_length != len(vector):
-            raise ValueError("Embedding response changed vector length")
-        self._embedding_length = len(vector)
-        return vector, token_count
+    raise ValueError(f"Unsupported embedding provider {provider!r}")
 
 
-class VLLMProvider(EmbeddingClient):
-    """Provider for a vLLM OpenAI-compatible inference server."""
-
-    def __init__(
-        self, inference_server_url: str, model_name: str, api_key: str
-    ) -> None:
-        super().__init__(_vllm_base_url(inference_server_url), model_name, api_key)
-        self._context_length: int | None = None
-        self._embedding_length: int | None = None
-
-    @classmethod
-    def initialize(
-        cls, inference_server_url: str, model_name: str, api_key: str
-    ) -> VLLMProvider | None:
-        """Detect vLLM through its version endpoint."""
-
-        provider = cls(inference_server_url, model_name, api_key)
-        try:
-            payload = provider._get_json("/version")
-        except (requests.RequestException, ValueError):
-            return None
-        if not isinstance(payload, dict) or not isinstance(payload.get("version"), str):
-            return None
-        return provider
-
-    def token_count(self, text: str) -> int:
-        count, _ = self._tokenize(text)
-        return count
-
-    def context_length(self) -> int:
-        if self._context_length is None:
-            self._tokenize("")
-        assert self._context_length is not None
-        return self._context_length
-
-    def embedding_length(self) -> int:
-        if self._embedding_length is None:
-            self._embed_text("test")
-        assert self._embedding_length is not None
-        return self._embedding_length
-
-    def _embed_text(self, text: str) -> tuple[float, ...]:
-        """Request and validate an embedding vector for the text."""
-        payload = self._post_json(
-            "/v1/embeddings", {"model": self.model_name, "input": text}
-        )
-        try:
-            embedding = payload["data"][0]["embedding"]
-        except (KeyError, IndexError, TypeError) as error:
-            raise ValueError(
-                "Embedding response did not contain data[0].embedding"
-            ) from error
-        if not isinstance(embedding, list) or not embedding:
-            raise ValueError("Embedding response did not contain a non-empty vector")
-        vector = tuple(float(value) for value in embedding)
-        if not all(math.isfinite(value) for value in vector):
-            raise ValueError("Embedding response contained non-finite vector values")
-        if self._embedding_length is not None and self._embedding_length != len(vector):
-            raise ValueError("Embedding response changed vector length")
-        self._embedding_length = len(vector)
-        return vector
-
-    def _tokenize(self, text: str) -> tuple[int, int]:
-        """Return the text token count and model context length."""
-        payload = self._post_json(
-            "/tokenize", {"model": self.model_name, "prompt": text}
-        )
-        count = payload.get("count")
-        context_length = payload.get("max_model_len")
-        if (
-            not isinstance(count, int)
-            or isinstance(count, bool)
-            or count < 0
-            or not isinstance(context_length, int)
-            or isinstance(context_length, bool)
-            or context_length < 1
-        ):
-            raise ValueError(
-                "Tokenize response did not contain valid count and max_model_len"
-            )
-        self._context_length = context_length
-        return count, context_length
-
-
-def _vllm_base_url(inference_server_url: str) -> str:
-    """Normalize the vLLM server URL by removing a trailing version path."""
-    base_url = inference_server_url.rstrip("/")
-    return base_url[:-3] if base_url.endswith("/v1") else base_url
-
-
-def _mistral_base_url(inference_server_url: str) -> str:
-    """Normalize the Mistral server URL to include the version path."""
-    base_url = inference_server_url.rstrip("/")
-    return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
-
-
-def _openai_base_url(inference_server_url: str) -> str:
-    """Normalize the OpenAI server URL to include the version path."""
-    base_url = inference_server_url.rstrip("/")
-    return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
-
-
-def _voyageai_base_url(inference_server_url: str) -> str:
-    """Normalize the Voyage AI server URL to include the version path."""
-    base_url = inference_server_url.rstrip("/")
-    return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
+def _versioned_url(url: str | None) -> str | None:
+    """Normalize hosted and OpenAI-compatible API URLs to their version path."""
+    if url is None:
+        return None
+    base = url.rstrip("/")
+    return base if base.endswith("/v1") else f"{base}/v1"
 
 
 def embedding_error_message(error: BaseException) -> str:

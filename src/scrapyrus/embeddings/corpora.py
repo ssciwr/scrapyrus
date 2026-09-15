@@ -19,7 +19,6 @@ from psycopg import sql
 from scrapyrus.embeddings.schema import (
     SourceUnavailableError,
     cosine_distance,
-    parse_vector,
     row_value,
     vector_literal,
 )
@@ -161,25 +160,9 @@ class EmbeddingCorpus(ABC):
     ) -> tuple[KeywordMatch, ...] | tuple[DocumentMatch, ...]:
         """Rank vectors and shape this corpus's public query results."""
 
-    def retrieve(self, cursor: Any, key: dict[str, Any]) -> tuple[float, ...] | None:
-        """Retrieve a vector by the corpus's exact record key."""
-
-        if set(key) != set(self.key_columns):
-            raise ValueError(
-                f"Expected record key fields: {', '.join(self.key_columns)}"
-            )
-        cursor.execute(
-            sql.SQL("SELECT embedding::text FROM {} WHERE {}").format(
-                sql.Identifier(self.table_name),
-                sql.SQL(" AND ").join(
-                    sql.SQL("{} = {}").format(sql.Identifier(c), sql.Placeholder(c))
-                    for c in self.key_columns
-                ),
-            ),
-            key,
-        )
-        row = cursor.fetchone()
-        return None if row is None else parse_vector(row_value(row, "embedding", 0))
+    @abstractmethod
+    def validate_import(self, cursor: Any, temporary_table: str) -> None:
+        """Require imported identities to belong to this corpus's source data."""
 
 
 @dataclass(frozen=True)
@@ -228,6 +211,20 @@ FROM keywords WHERE keyword IS NOT NULL ORDER BY embedding_keyword
         return CorpusInputs(
             tuple(EmbeddingInput(term, {"keyword": term}) for term in terms)
         )
+
+    def validate_import(self, cursor: Any, temporary_table: str) -> None:
+        cursor.execute(
+            sql.SQL(
+                "SELECT count(*) FROM {} AS imported WHERE NOT EXISTS ("
+                "SELECT 1 FROM keywords AS source WHERE "
+                "CASE WHEN source.qualifier IS NULL THEN source.keyword ELSE "
+                "source.keyword || ', ' || source.qualifier END = imported.keyword)"
+            ).format(sql.Identifier(temporary_table))
+        )
+        if int(row_value(cursor.fetchone(), "count", 0)):
+            raise ValueError(
+                "Embedding dump contains rows without matching keyword source data"
+            )
 
     def is_current(self, cursor: Any, record: EmbeddingInput) -> bool:
         cursor.execute(
@@ -282,6 +279,7 @@ class XmlCorpus(EmbeddingCorpus):
     @property
     def record_columns(self) -> tuple[str, ...]:
         return (
+            "chunk_id",
             "xml_id",
             "chunk_index",
             "source_path",
@@ -299,8 +297,9 @@ class XmlCorpus(EmbeddingCorpus):
         cursor.execute(
             sql.SQL("""
 CREATE TABLE IF NOT EXISTS {} (
+    chunk_id text NOT NULL UNIQUE,
     xml_id bigint NOT NULL,
-    chunk_index integer NOT NULL DEFAULT 0,
+    chunk_index integer NOT NULL CHECK (chunk_index >= 0),
     source_path text NOT NULL,
     tm_id text NOT NULL,
     language text,
@@ -308,9 +307,10 @@ CREATE TABLE IF NOT EXISTS {} (
     input_hash text NOT NULL,
     embedding vector NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (xml_id, chunk_index)
+    PRIMARY KEY (xml_id, chunk_index),
+    CHECK (chunk_id = {} || ':' || xml_id::text || ':' || chunk_index::text)
 )
-""").format(sql.Identifier(self.table_name))
+""").format(sql.Identifier(self.table_name), sql.Literal(self.name))
         )
 
     def read_inputs(
@@ -339,6 +339,7 @@ CREATE TABLE IF NOT EXISTS {} (
                     EmbeddingInput(
                         chunk,
                         {
+                            "chunk_id": f"{self.name}:{int(source['transcription_id'])}:{index}",
                             "xml_id": int(source["transcription_id"]),
                             "chunk_index": index,
                             "source_path": str(source["source_path"]),
@@ -397,6 +398,23 @@ WHERE type = %s ORDER BY transcription_id
             r if isinstance(r, dict) else dict(zip(keys, r, strict=True))
             for r in cursor.fetchall()
         )
+
+    def validate_import(self, cursor: Any, temporary_table: str) -> None:
+        cursor.execute(
+            sql.SQL(
+                "SELECT count(*) FROM {} AS imported WHERE NOT EXISTS ("
+                "SELECT 1 FROM transcriptions AS source WHERE "
+                "source.transcription_id = imported.xml_id AND source.type = %s "
+                "AND source.source_path = imported.source_path "
+                "AND source.tm_id::text = imported.tm_id) "
+                "OR imported.input_hash <> encode(sha256(convert_to(imported.document_text, 'UTF8')), 'hex')"
+            ).format(sql.Identifier(temporary_table)),
+            (self.source_type,),
+        )
+        if int(row_value(cursor.fetchone(), "count", 0)):
+            raise ValueError(
+                "Embedding dump contains invalid chunks or rows without matching XML source data"
+            )
 
     def is_current(self, cursor: Any, record: EmbeddingInput) -> bool:
         cursor.execute(
