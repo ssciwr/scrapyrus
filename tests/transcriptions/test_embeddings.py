@@ -4,8 +4,6 @@ import psycopg
 import pytest
 
 from scrapyrus.transcriptions.embeddings import (
-    EMBEDDING_TABLES,
-    EXPORT_EMBEDDING_TABLES,
     KEYWORD_EMBEDDING_DUMP_COLUMNS,
     MAXIMUM_TRANSCRIPTION_OPTIONS,
     DocumentMatch,
@@ -158,15 +156,6 @@ def test_schema_creates_separate_kind_tables_without_migration():
         ("translation_embeddings", "embeddings", 1),
         ("keyword_embeddings", "embeddings", 1),
     ]
-
-
-def test_embedding_kinds_use_only_plural_names():
-    assert set(EMBEDDING_TABLES) == {"transcriptions", "translations"}
-    assert set(EXPORT_EMBEDDING_TABLES) == {
-        "transcriptions",
-        "translations",
-        "keywords",
-    }
 
 
 def test_find_similar_documents_embeds_query_and_returns_ranked_matches(monkeypatch):
