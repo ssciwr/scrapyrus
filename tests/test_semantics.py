@@ -2,6 +2,7 @@ import pytest
 from psycopg.types.json import Jsonb
 from pydantic import ValidationError
 
+from scrapyrus.embeddings import EMBEDDING_CORPORA
 from scrapyrus.metadata.base import MetadataTable
 from scrapyrus.semantic_catalog import (
     catalog,
@@ -20,10 +21,6 @@ from scrapyrus.semantics import (
     validate_semantic_columns,
 )
 from scrapyrus.transcriptions.core import TRANSCRIPTION_COLUMNS
-from scrapyrus.transcriptions.embeddings import (
-    EMBEDDING_DUMP_COLUMNS,
-    KEYWORD_EMBEDDING_DUMP_COLUMNS,
-)
 
 
 class RecordingCursor:
@@ -121,9 +118,13 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
     ):
         validate_semantic_columns(entry, tuple(table_type().model_class.model_fields))
     validate_semantic_columns(entries[6], TRANSCRIPTION_COLUMNS)
-    validate_semantic_columns(entries[7], EMBEDDING_DUMP_COLUMNS)
-    validate_semantic_columns(entries[8], EMBEDDING_DUMP_COLUMNS)
-    validate_semantic_columns(entries[9], KEYWORD_EMBEDDING_DUMP_COLUMNS)
+    validate_semantic_columns(
+        entries[7], EMBEDDING_CORPORA["transcriptions"].export_columns
+    )
+    validate_semantic_columns(
+        entries[8], EMBEDDING_CORPORA["translations"].export_columns
+    )
+    validate_semantic_columns(entries[9], EMBEDDING_CORPORA["keywords"].export_columns)
     validate_catalog_entries(entries)
 
 

@@ -1,9 +1,10 @@
-"""Lightweight aggregate access to all Scrapyrus semantic definitions."""
+"""Aggregate access to all Scrapyrus semantic definitions."""
 
 from typing import Any
 
 import psycopg
 
+from scrapyrus.embeddings.corpora import EMBEDDING_CORPORA
 from scrapyrus.metadata.ancient_edition import ANCIENT_EDITIONS_SEMANTICS
 from scrapyrus.metadata.keywords import KEYWORDS_SEMANTICS
 from scrapyrus.metadata.origdate import ORIG_DATES_SEMANTICS
@@ -17,13 +18,7 @@ from scrapyrus.semantics import (
     render_catalog_entry,
     render_table_summary,
 )
-from scrapyrus.transcriptions.semantics import (
-    KEYWORD_EMBEDDINGS_SEMANTICS,
-    TRANSCRIPTIONS_SEMANTICS,
-    TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
-    TRANSLATION_EMBEDDINGS_SEMANTICS,
-)
-
+from scrapyrus.transcriptions.semantics import TRANSCRIPTIONS_SEMANTICS
 
 _CATALOG_COMPONENTS: dict[CatalogComponent, tuple[TableSemantics, ...]] = {
     "metadata": (
@@ -35,11 +30,7 @@ _CATALOG_COMPONENTS: dict[CatalogComponent, tuple[TableSemantics, ...]] = {
         ANCIENT_EDITIONS_SEMANTICS,
     ),
     "transcriptions": (TRANSCRIPTIONS_SEMANTICS,),
-    "embeddings": (
-        TRANSCRIPTION_EMBEDDINGS_SEMANTICS,
-        TRANSLATION_EMBEDDINGS_SEMANTICS,
-        KEYWORD_EMBEDDINGS_SEMANTICS,
-    ),
+    "embeddings": tuple(corpus.semantics for corpus in EMBEDDING_CORPORA.values()),
 }
 _CATALOG_ENTRIES = tuple(
     entry

@@ -7,15 +7,9 @@ from typing import Any
 import psycopg
 from tqdm import tqdm
 
+from scrapyrus.embeddings.corpora import EMBEDDING_CORPORA, XmlCorpus
+from scrapyrus.embeddings.schema import row_value
 from scrapyrus.transcriptions.core import TRANSCRIPTIONS_TABLE
-from scrapyrus.transcriptions.embeddings import (
-    EMBEDDING_TABLES,
-    TRANSCRIPTION_EMBEDDINGS_TABLE,
-    TRANSLATION_EMBEDDINGS_TABLE,
-    _document_path,
-    _row_value,
-)
-
 
 RECALL_RANKS = (1, 2, 3, 4, 5)
 UNKNOWN_LANGUAGE = "unknown"
@@ -103,7 +97,7 @@ class ChunkEmbeddingEvaluation:
 
 @dataclass(frozen=True)
 class EmbeddingEvaluation:
-    modelname: str
+    model_name: str
     transcription_count: int
     translation_count: int
     embedding_dimensions: int
@@ -137,11 +131,11 @@ class EmbeddingEvaluation:
         heading = "#" * heading_level
         subheading = "#" * (heading_level + 1)
         lines = [
-            f"{heading} Embedding Evaluation: {_markdown_code(self.modelname)}",
+            f"{heading} Embedding Evaluation: {_markdown_code(self.model_name)}",
             "",
             f"{subheading} Scope",
             "",
-            f"- Model: {_markdown_code(self.modelname)}",
+            f"- Model: {_markdown_code(self.model_name)}",
             f"- Query collection: {self.query_kind.title()}",
             f"- Transcription documents: {self.transcription_count}",
             f"- Translation documents: {self.translation_count}",
@@ -247,7 +241,7 @@ class EmbeddingsEvaluation:
         )
         for result in self.results:
             lines.append(
-                f"| {_markdown_code(result.modelname)} | {result.transcription_count} | "
+                f"| {_markdown_code(result.model_name)} | {result.transcription_count} | "
                 f"{result.translation_count} | {result.evaluated_count} | "
                 f"{result.embedding_dimensions} | "
                 + " | ".join(f"{result.recall_at[rank]:.2%}" for rank in RECALL_RANKS)
@@ -279,20 +273,20 @@ def evaluate_embeddings(
     with psycopg.connect(conninfo) as connection:
         with connection.cursor() as cursor:
             tm_ids = _select_sample_tm_ids(cursor, sample=sample, seed=seed)
-            modelnames = _select_embedding_modelnames(cursor, tm_ids=tm_ids)
-            if not modelnames:
+            model_names = _select_embedding_model_names(cursor, tm_ids=tm_ids)
+            if not model_names:
                 raise ValueError(
                     "No models have both transcription and translation embeddings"
                 )
             results = tuple(
                 _evaluate_embeddings_model(
                     cursor,
-                    modelname,
+                    model_name,
                     query_kind=query_kind,
                     progressbar=progressbar,
                     tm_ids=tm_ids,
                 )
-                for modelname in modelnames
+                for model_name in model_names
             )
 
     evaluation = EmbeddingsEvaluation(
@@ -308,7 +302,7 @@ def evaluate_embeddings_model(
     /,
     *,
     query_kind: str,
-    modelname: str,
+    model_name: str,
     output_file: str | Path | None = None,
     progressbar: bool = True,
     sample: int | None = None,
@@ -322,7 +316,7 @@ def evaluate_embeddings_model(
             tm_ids = _select_sample_tm_ids(cursor, sample=sample, seed=seed)
             evaluation = _evaluate_embeddings_model(
                 cursor,
-                modelname,
+                model_name,
                 query_kind=query_kind,
                 progressbar=progressbar,
                 tm_ids=tm_ids,
@@ -335,7 +329,7 @@ def evaluate_embeddings_model(
 
 def _evaluate_embeddings_model(
     cursor: Any,
-    modelname: str,
+    model_name: str,
     *,
     query_kind: str,
     progressbar: bool,
@@ -343,15 +337,18 @@ def _evaluate_embeddings_model(
 ) -> EmbeddingEvaluation:
     query_table, candidate_table = _evaluation_tables(query_kind)
     transcription_stats = _collection_stats(
-        cursor, TRANSCRIPTION_EMBEDDINGS_TABLE, modelname, tm_ids=tm_ids
+        cursor,
+        EMBEDDING_CORPORA["transcriptions"].table_name,
+        model_name,
+        tm_ids=tm_ids,
     )
     translation_stats = _collection_stats(
-        cursor, TRANSLATION_EMBEDDINGS_TABLE, modelname, tm_ids=tm_ids
+        cursor, EMBEDDING_CORPORA["translations"].table_name, model_name, tm_ids=tm_ids
     )
     if not transcription_stats.document_count:
-        raise ValueError(f"No transcription embeddings found for model {modelname!r}")
+        raise ValueError(f"No transcription embeddings found for model {model_name!r}")
     if not translation_stats.document_count:
-        raise ValueError(f"No translation embeddings found for model {modelname!r}")
+        raise ValueError(f"No translation embeddings found for model {model_name!r}")
     if transcription_stats.dimensions != translation_stats.dimensions:
         raise ValueError(
             f"Transcription embeddings have {transcription_stats.dimensions} dimensions, "
@@ -359,7 +356,7 @@ def _evaluate_embeddings_model(
         )
     queries = _select_retrieval_queries(
         cursor,
-        modelname,
+        model_name,
         query_table=query_table,
         candidate_table=candidate_table,
         tm_ids=tm_ids,
@@ -381,7 +378,7 @@ def _evaluate_embeddings_model(
             queries,
             total=len(queries),
             unit="document",
-            desc=f"Evaluating {modelname}",
+            desc=f"Evaluating {model_name}",
         )
         if progressbar
         else queries
@@ -401,7 +398,7 @@ def _evaluate_embeddings_model(
         chunk_reciprocal_rank_sums.setdefault(chunk_group, 0.0)
         candidates = _select_nearest_candidates(
             cursor,
-            modelname,
+            model_name,
             query.embeddings,
             max(RECALL_RANKS),
             candidate_table=candidate_table,
@@ -411,7 +408,7 @@ def _evaluate_embeddings_model(
         if reciprocal_rank == 0.0:
             reciprocal_rank = _select_reciprocal_rank(
                 cursor,
-                modelname,
+                model_name,
                 query.embeddings,
                 query.tm_id,
                 candidate_table=candidate_table,
@@ -427,7 +424,7 @@ def _evaluate_embeddings_model(
                 query_chunk_hits[rank] += 1
 
     return EmbeddingEvaluation(
-        modelname,
+        model_name,
         transcription_stats.document_count,
         translation_stats.document_count,
         int(transcription_stats.dimensions),
@@ -462,12 +459,16 @@ def _evaluate_embeddings_model(
 
 
 def _evaluation_tables(query_kind: str) -> tuple[str, str]:
-    if query_kind not in EMBEDDING_TABLES:
+    if query_kind not in EMBEDDING_CORPORA or not isinstance(
+        EMBEDDING_CORPORA[query_kind], XmlCorpus
+    ):
         raise ValueError(f"Unknown embedding query kind {query_kind!r}")
     candidate_kind = (
         "translations" if query_kind == "transcriptions" else "transcriptions"
     )
-    return EMBEDDING_TABLES[query_kind], EMBEDDING_TABLES[candidate_kind]
+    return EMBEDDING_CORPORA[query_kind].table_name, EMBEDDING_CORPORA[
+        candidate_kind
+    ].table_name
 
 
 def _select_sample_tm_ids(
@@ -487,19 +488,19 @@ LIMIT %s
 """,
         (seed, sample),
     )
-    return tuple(str(_row_value(row, "tm_id", 0)) for row in cursor.fetchall())
+    return tuple(str(row_value(row, "tm_id", 0)) for row in cursor.fetchall())
 
 
-def _select_embedding_modelnames(
+def _select_embedding_model_names(
     cursor: Any, *, tm_ids: tuple[str, ...] | None = None
 ) -> tuple[str, ...]:
     scope_sql = " AND transcriptions.tm_id = ANY(%s)" if tm_ids is not None else ""
     cursor.execute(
         f"""
 SELECT transcriptions.model_name
-FROM {TRANSCRIPTION_EMBEDDINGS_TABLE} AS transcriptions
+FROM {EMBEDDING_CORPORA["transcriptions"].table_name} AS transcriptions
 WHERE EXISTS (
-    SELECT 1 FROM {TRANSLATION_EMBEDDINGS_TABLE} AS translations
+    SELECT 1 FROM {EMBEDDING_CORPORA["translations"].table_name} AS translations
     WHERE translations.model_name = transcriptions.model_name
       AND translations.tm_id = transcriptions.tm_id
 )
@@ -509,7 +510,7 @@ ORDER BY transcriptions.model_name
 """,
         (list(tm_ids),) if tm_ids is not None else None,
     )
-    return tuple(str(_row_value(row, "model_name", 0)) for row in cursor.fetchall())
+    return tuple(str(row_value(row, "model_name", 0)) for row in cursor.fetchall())
 
 
 @dataclass(frozen=True)
@@ -523,7 +524,7 @@ class _CollectionStats:
 def _collection_stats(
     cursor: Any,
     table: str,
-    modelname: str,
+    model_name: str,
     *,
     tm_ids: tuple[str, ...] | None = None,
 ) -> _CollectionStats:
@@ -546,24 +547,24 @@ FROM (
     GROUP BY tm_id
 ) AS document
 """,
-        (modelname, list(tm_ids)) if tm_ids is not None else (modelname,),
+        (model_name, list(tm_ids)) if tm_ids is not None else (model_name,),
     )
     row = cursor.fetchone()
-    minimum_dimensions = _row_value(row, "minimum_dimensions", 3)
-    maximum_dimensions = _row_value(row, "maximum_dimensions", 4)
+    minimum_dimensions = row_value(row, "minimum_dimensions", 3)
+    maximum_dimensions = row_value(row, "maximum_dimensions", 4)
     if minimum_dimensions != maximum_dimensions:
         raise ValueError(f"{table} contains vectors with inconsistent dimensions")
     return _CollectionStats(
-        int(_row_value(row, "document_count", 0)),
-        int(_row_value(row, "chunk_count", 1)),
-        int(_row_value(row, "chunked_document_count", 2)),
+        int(row_value(row, "document_count", 0)),
+        int(row_value(row, "chunk_count", 1)),
+        int(row_value(row, "chunked_document_count", 2)),
         minimum_dimensions,
     )
 
 
 def _select_retrieval_queries(
     cursor: Any,
-    modelname: str,
+    model_name: str,
     *,
     query_table: str,
     candidate_table: str,
@@ -590,14 +591,14 @@ WHERE queries.model_name = %s
 GROUP BY queries.tm_id
 ORDER BY queries.tm_id
 """,
-        (modelname, list(tm_ids)) if tm_ids is not None else (modelname,),
+        (model_name, list(tm_ids)) if tm_ids is not None else (model_name,),
     )
     return tuple(
         RetrievalQuery(
-            str(_row_value(row, "tm_id", 0)),
-            _document_path(_row_value(row, "source_path", 1)),
-            _row_value(row, "language", 2),
-            _embedding_values(_row_value(row, "embeddings", 3)),
+            str(row_value(row, "tm_id", 0)),
+            Path(row_value(row, "source_path", 1)).as_posix(),
+            row_value(row, "language", 2),
+            _embedding_values(row_value(row, "embeddings", 3)),
         )
         for row in cursor.fetchall()
     )
@@ -611,7 +612,7 @@ class _Candidate:
 
 def _select_nearest_candidates(
     cursor: Any,
-    modelname: str,
+    model_name: str,
     embeddings: tuple[str, ...],
     limit: int,
     *,
@@ -642,7 +643,7 @@ ORDER BY distance, tm_id, source_path
 LIMIT %(limit)s
 """,
         {
-            "model_name": modelname,
+            "model_name": model_name,
             "embeddings": list(embeddings),
             "limit": limit,
             **({"tm_ids": list(tm_ids)} if tm_ids is not None else {}),
@@ -650,8 +651,8 @@ LIMIT %(limit)s
     )
     return tuple(
         _Candidate(
-            str(_row_value(row, "tm_id", 0)),
-            _document_path(_row_value(row, "source_path", 1)),
+            str(row_value(row, "tm_id", 0)),
+            Path(row_value(row, "source_path", 1)).as_posix(),
         )
         for row in cursor.fetchall()
     )
@@ -666,7 +667,7 @@ def _candidate_reciprocal_rank(candidates: tuple[_Candidate, ...], tm_id: str) -
 
 def _select_reciprocal_rank(
     cursor: Any,
-    modelname: str,
+    model_name: str,
     embeddings: tuple[str, ...],
     tm_id: str,
     *,
@@ -703,7 +704,7 @@ FROM (
 WHERE ranked.tm_id = %(tm_id)s
 """,
         {
-            "model_name": modelname,
+            "model_name": model_name,
             "embeddings": list(embeddings),
             "tm_id": tm_id,
             **({"tm_ids": list(tm_ids)} if tm_ids is not None else {}),
@@ -712,7 +713,7 @@ WHERE ranked.tm_id = %(tm_id)s
     row = cursor.fetchone()
     if row is None:
         return 0.0
-    rank = int(_row_value(row, "rank", 0))
+    rank = int(row_value(row, "rank", 0))
     return 1.0 / rank if rank else 0.0
 
 
