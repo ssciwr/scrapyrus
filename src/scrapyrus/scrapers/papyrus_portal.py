@@ -48,10 +48,12 @@ class PapyrusPortalScraper(ImageScraperBase):
 
     @staticmethod
     def _path_starts_with(path: str, prefix: str) -> bool:
+        """Check a URL path prefix at a complete path segment boundary."""
         return path == prefix or path.startswith(prefix + "/")
 
     @classmethod
     def _is_viewer_url(cls, url: str) -> bool:
+        """Check whether a URL points to a supported PapyrusPortal viewer."""
         parsed_url = urlparse(url)
         return (
             parsed_url.scheme in {"http", "https"}
@@ -61,6 +63,7 @@ class PapyrusPortalScraper(ImageScraperBase):
 
     @classmethod
     def _canonical_url(cls, url: str) -> str:
+        """Normalize supported portal URLs to the canonical HTTPS host."""
         parsed_url = urlparse(url)
         if parsed_url.scheme not in {"http", "https"}:
             return url
@@ -84,6 +87,7 @@ class PapyrusPortalScraper(ImageScraperBase):
 
     @classmethod
     def _viewer_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract distinct supported viewer links from a page."""
         soup = BeautifulSoup(html, "html.parser")
         viewer_urls = []
         seen_urls = set()
@@ -96,6 +100,7 @@ class PapyrusPortalScraper(ImageScraperBase):
 
     @classmethod
     def _viewer_properties(cls, html: str) -> dict[str, object]:
+        """Extract MyCoRe viewer properties from embedded JSON configuration."""
         decoder = json.JSONDecoder()
         soup = BeautifulSoup(html, "html.parser")
         for script in soup.find_all("script"):
@@ -115,12 +120,14 @@ class PapyrusPortalScraper(ImageScraperBase):
 
     @classmethod
     def _mets_image_paths(cls, mets: bytes | str) -> list[str]:
+        """Parse METS XML and return the preferred image paths."""
         with PySaxonProcessor(license=False) as proc:
             root = document_element(parse_xml_text(proc, mets))
             return cls._mets_image_paths_from_root(root)
 
     @classmethod
     def _mets_image_paths_from_root(cls, root) -> list[str]:
+        """Select preferred METS images in physical page order."""
         files_by_use: dict[str, list[tuple[str | None, str]]] = {
             use: [] for use in cls.IMAGE_USES
         }
@@ -189,10 +196,12 @@ class PapyrusPortalScraper(ImageScraperBase):
 
     @staticmethod
     def _response_url(response: requests.Response, fallback: str) -> str:
+        """Return the final response URL or the supplied fallback."""
         return response.url or fallback
 
     @staticmethod
     def _start_file(properties: dict[str, object]) -> str | None:
+        """Extract the viewer start file relative to its derivate."""
         file_path = properties.get("filePath")
         if not isinstance(file_path, str) or not file_path:
             return None
@@ -208,6 +217,7 @@ class PapyrusPortalScraper(ImageScraperBase):
         image_url: str,
         target: Path,
     ) -> None:
+        """Download an image into the target directory."""
         parsed_url = urlparse(image_url)
         if parsed_url.scheme not in {"http", "https"}:
             raise ValueError(f"Unsupported image URL: {image_url}")
@@ -237,6 +247,7 @@ class PapyrusPortalScraper(ImageScraperBase):
         *,
         viewer_response: requests.Response | None = None,
     ) -> None:
+        """Download the images linked by a PapyrusPortal viewer."""
         if viewer_response is None:
             viewer_response = session.get(viewer_url, timeout=self.REQUEST_TIMEOUT)
             viewer_response.raise_for_status()

@@ -17,6 +17,7 @@ class UniHamburgScraper(IIIFImageScraper):
 
     @classmethod
     def _object_identifier(cls, url: str) -> str | None:
+        """Extract an object identifier from a supported URL."""
         parsed_url = urlparse(url)
         if parsed_url.scheme not in {"http", "https"}:
             return None

@@ -18,6 +18,7 @@ from scrapyrus.transcriptions.core import (
 
 
 def _parse_snippet(proc: PySaxonProcessor, snippet: str):
+    """Parse an XML snippet and return its document element."""
     return document_element(parse_xml_text(proc, snippet))
 
 

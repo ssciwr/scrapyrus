@@ -167,6 +167,7 @@ WHERE transcription_id = %(transcription_id)s
 
 
 def _row_language(row: dict[str, Any], xml_content: str) -> str | None:
+    """Resolve and normalize the language of a stored text row."""
     language = row["language"]
     if row["type"] == "transcription":
         language = transcription_language(xml_content)
@@ -176,6 +177,7 @@ def _row_language(row: dict[str, Any], xml_content: str) -> str | None:
 def _create_pipeline(language: str) -> _Pipeline:
     # Importing CLTK loads its NLP dependencies, so keep it out of commands that
     # do not perform lemmatization.
+    """Create a CLTK Stanza pipeline for the requested language."""
     from cltk import NLP
 
     return NLP(language, backend="stanza", suppress_banner=True)

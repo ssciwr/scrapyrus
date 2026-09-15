@@ -9,6 +9,7 @@ from scrapyrus.idpdata import iterate_idpdata_triples
 
 
 def _revision(idp_data: Path) -> str:
+    """Return the Git revision of the IDP data checkout."""
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=idp_data,

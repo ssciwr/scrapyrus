@@ -22,12 +22,14 @@ CatalogComponent = Literal["metadata", "transcriptions", "embeddings"]
 
 
 def _validate_nonblank(value: str) -> str:
+    """Reject blank strings and return the original value."""
     if not value.strip():
         raise ValueError("value must not be blank")
     return value
 
 
 def _validate_string_sequence(values: tuple[str, ...]) -> tuple[str, ...]:
+    """Reject blank or duplicate values in a string sequence."""
     if any(not value.strip() for value in values):
         raise ValueError("values must not contain blanks")
     if len(values) != len(set(values)):
