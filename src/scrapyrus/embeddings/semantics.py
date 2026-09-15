@@ -4,6 +4,7 @@ from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSem
 
 
 def _embedding_semantics(table_name: str, document_kind: str) -> TableSemantics:
+    """Build table semantics for an embedding document kind."""
     return TableSemantics(
         table_name=table_name,
         description=(

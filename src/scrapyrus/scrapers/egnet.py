@@ -25,6 +25,7 @@ class EgnetScraper(ImageScraperBase):
 
     @classmethod
     def _record_path(cls, url: str) -> str:
+        """Extract the record path from a supported URL."""
         parsed_url = urlparse(url)
         record_path = parsed_url.path.rstrip("/") + "/"
         if record_path not in cls.RECORD_PATHS:
@@ -33,6 +34,7 @@ class EgnetScraper(ImageScraperBase):
 
     @classmethod
     def _identifier(cls, url: str) -> str:
+        """Extract the record identifier from a supported URL."""
         cls._record_path(url)
         parsed_url = urlparse(url)
         identifiers = parse_qs(parsed_url.query).get("id", [])
@@ -45,6 +47,7 @@ class EgnetScraper(ImageScraperBase):
 
     @classmethod
     def _offset(cls, url: str) -> str:
+        """Extract the image offset from a record URL."""
         if cls._record_path(url) != cls.FIFAO67_RECORD_PATH:
             raise ValueError(f"Unsupported Egnet record URL: {url}")
 
@@ -75,6 +78,7 @@ class EgnetScraper(ImageScraperBase):
 
     @classmethod
     def _image_url(cls, url: str) -> str:
+        """Resolve a downloadable image URL from a record or file URL."""
         parsed_url = urlparse(url)
         record_path = cls._record_path(url)
         identifier = cls._identifier(url)
@@ -88,6 +92,7 @@ class EgnetScraper(ImageScraperBase):
 
     @classmethod
     def _offset_image_url(cls, html: str, page_url: str) -> str:
+        """Find the image URL for the page selected by the offset."""
         expected_directory = f"{cls.FIFAO67_RECORD_PATH}docs/vignettes"
         soup = BeautifulSoup(html, "html.parser")
 

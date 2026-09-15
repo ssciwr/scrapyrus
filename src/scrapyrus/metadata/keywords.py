@@ -20,6 +20,7 @@ QUALIFIER_GROUP_RE = re.compile(r"^(?P<keyword>.*?)\s*\((?P<qualifiers>[^()]*)\)
 
 
 def _keyword_value(value: str) -> tuple[Optional[str], bool]:
+    """Remove uncertainty markers and return the keyword and uncertainty flag."""
     uncertain = "?" in value
     if uncertain:
         value = " ".join(UNCERTAINTY_MARKER_RE.sub("", value).split())
@@ -183,6 +184,7 @@ class KeywordModelFactory:
         ]
 
     def _parse_term(self, tm_id, term_node):
+        """Parse a keyword term into metadata rows."""
         self.term_value_proc.set_context(xdm_item=term_node)
         keyword = optional_string(
             self.term_value_proc.evaluate_single("normalize-space(.)")

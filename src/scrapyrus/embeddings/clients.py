@@ -35,6 +35,7 @@ class EmbeddingClient:
         register: bool = True,
         **kwargs: object,
     ) -> None:
+        """Register subclasses unless registration is explicitly disabled."""
         super().__init_subclass__(**kwargs)
         if register:
             EmbeddingClient._providers.append(cls)
@@ -84,6 +85,7 @@ class EmbeddingClient:
         return self._embed_text(text)
 
     def _session(self) -> requests.Session:
+        """Create an HTTP session with JSON and authentication headers."""
         session = requests.Session()
         session.headers.update(
             {
@@ -94,9 +96,11 @@ class EmbeddingClient:
         return session
 
     def _get_json(self, path: str) -> dict[str, Any]:
+        """Fetch a JSON object from an inference server endpoint."""
         return self._request_json("GET", path)
 
     def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Post a JSON body to an inference server endpoint."""
         return self._request_json("POST", path, body)
 
     def _request_json(
@@ -105,6 +109,7 @@ class EmbeddingClient:
         path: str,
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Send an inference request and validate the JSON object response."""
         with self._session() as client:
             request = client.get if method == "GET" else client.post
             kwargs: dict[str, Any] = {"timeout": EMBEDDING_REQUEST_TIMEOUT}
@@ -180,10 +185,12 @@ class MistralProvider(EmbeddingClient):
         return self._embedding_length
 
     def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         vector, _ = self._embed(text)
         return vector
 
     def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        """Return a validated embedding vector and its token usage."""
         payload = self._post_json(
             "/embeddings", {"model": self.model_name, "input": text}
         )
@@ -248,10 +255,12 @@ class OpenAIProvider(EmbeddingClient):
         return self._embedding_length
 
     def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         vector, _ = self._embed(text)
         return vector
 
     def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        """Return a validated embedding vector and its token usage."""
         payload = self._post_json(
             "/embeddings", {"model": self.model_name, "input": text}
         )
@@ -316,10 +325,12 @@ class VoyageAIProvider(EmbeddingClient):
         return self._embedding_length
 
     def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         vector, _ = self._embed(text)
         return vector
 
     def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        """Return a validated embedding vector and its token usage."""
         payload = self._post_json(
             "/embeddings", {"model": self.model_name, "input": text}
         )
@@ -392,6 +403,7 @@ class VLLMProvider(EmbeddingClient):
         return self._embedding_length
 
     def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         payload = self._post_json(
             "/v1/embeddings", {"model": self.model_name, "input": text}
         )
@@ -412,6 +424,7 @@ class VLLMProvider(EmbeddingClient):
         return vector
 
     def _tokenize(self, text: str) -> tuple[int, int]:
+        """Return the text token count and model context length."""
         payload = self._post_json(
             "/tokenize", {"model": self.model_name, "prompt": text}
         )
@@ -433,21 +446,25 @@ class VLLMProvider(EmbeddingClient):
 
 
 def _vllm_base_url(inference_server_url: str) -> str:
+    """Normalize the vLLM server URL by removing a trailing version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url[:-3] if base_url.endswith("/v1") else base_url
 
 
 def _mistral_base_url(inference_server_url: str) -> str:
+    """Normalize the Mistral server URL to include the version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
 
 
 def _openai_base_url(inference_server_url: str) -> str:
+    """Normalize the OpenAI server URL to include the version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
 
 
 def _voyageai_base_url(inference_server_url: str) -> str:
+    """Normalize the Voyage AI server URL to include the version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
 

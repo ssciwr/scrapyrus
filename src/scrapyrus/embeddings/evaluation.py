@@ -335,6 +335,7 @@ def _evaluate_embeddings_model(
     progressbar: bool,
     tm_ids: tuple[str, ...] | None = None,
 ) -> EmbeddingEvaluation:
+    """Compute retrieval metrics for one embedding model."""
     query_table, candidate_table = _evaluation_tables(query_kind)
     transcription_stats = _collection_stats(
         cursor,
@@ -459,6 +460,7 @@ def _evaluate_embeddings_model(
 
 
 def _evaluation_tables(query_kind: str) -> tuple[str, str]:
+    """Resolve the query and candidate tables for text retrieval."""
     if query_kind not in EMBEDDING_CORPORA or not isinstance(
         EMBEDDING_CORPORA[query_kind], XmlCorpus
     ):
@@ -474,6 +476,7 @@ def _evaluation_tables(query_kind: str) -> tuple[str, str]:
 def _select_sample_tm_ids(
     cursor: Any, *, sample: int | None, seed: int
 ) -> tuple[str, ...] | None:
+    """Select a reproducible sample of records with both text types."""
     if sample is None:
         return None
     cursor.execute(
@@ -494,6 +497,7 @@ LIMIT %s
 def _select_embedding_model_names(
     cursor: Any, *, tm_ids: tuple[str, ...] | None = None
 ) -> tuple[str, ...]:
+    """Find models with matching transcription and translation records."""
     scope_sql = " AND transcriptions.tm_id = ANY(%s)" if tm_ids is not None else ""
     cursor.execute(
         f"""
@@ -528,6 +532,7 @@ def _collection_stats(
     *,
     tm_ids: tuple[str, ...] | None = None,
 ) -> _CollectionStats:
+    """Count documents and chunks and validate vector dimensions."""
     scope_sql = " AND tm_id = ANY(%s)" if tm_ids is not None else ""
     cursor.execute(
         f"""
@@ -570,6 +575,7 @@ def _select_retrieval_queries(
     candidate_table: str,
     tm_ids: tuple[str, ...] | None = None,
 ) -> tuple[RetrievalQuery, ...]:
+    """Load query chunks for documents with matching candidate records."""
     scope_sql = "  AND queries.tm_id = ANY(%s)" if tm_ids is not None else ""
     cursor.execute(
         f"""
@@ -619,6 +625,7 @@ def _select_nearest_candidates(
     candidate_table: str,
     tm_ids: tuple[str, ...] | None = None,
 ) -> tuple[_Candidate, ...]:
+    """Rank candidate documents by their closest chunk distance."""
     scope_sql = (
         "      AND candidates.tm_id = ANY(%(tm_ids)s)" if tm_ids is not None else ""
     )
@@ -659,6 +666,7 @@ LIMIT %(limit)s
 
 
 def _candidate_reciprocal_rank(candidates: tuple[_Candidate, ...], tm_id: str) -> float:
+    """Return the matching candidate reciprocal rank, or zero if absent."""
     for rank, candidate in enumerate(candidates, start=1):
         if candidate.tm_id == tm_id:
             return 1.0 / rank
@@ -674,6 +682,7 @@ def _select_reciprocal_rank(
     candidate_table: str,
     tm_ids: tuple[str, ...] | None = None,
 ) -> float:
+    """Query the matching document reciprocal rank across all candidates."""
     scope_sql = (
         "          AND candidates.tm_id = ANY(%(tm_ids)s)" if tm_ids is not None else ""
     )
@@ -718,12 +727,14 @@ WHERE ranked.tm_id = %(tm_id)s
 
 
 def _embedding_values(value: Any) -> tuple[str, ...]:
+    """Normalize stored embeddings to a tuple of strings."""
     if isinstance(value, str):
         return (value,)
     return tuple(str(embedding) for embedding in value)
 
 
 def _chunk_group(chunk_count: int) -> str:
+    """Label a document by its number of embedding chunks."""
     if chunk_count == 1:
         return "1 chunk"
     if chunk_count <= 3:
@@ -732,6 +743,7 @@ def _chunk_group(chunk_count: int) -> str:
 
 
 def _language_label(language: str | None) -> str:
+    """Normalize a language code to a readable evaluation label."""
     if language is None:
         return UNKNOWN_LANGUAGE
     normalized = "-".join(language.strip().lower().replace("_", "-").split())
@@ -743,4 +755,5 @@ def _language_label(language: str | None) -> str:
 
 
 def _markdown_code(value: str) -> str:
+    """Wrap a value in Markdown code delimiters that preserve backticks."""
     return f"`{value}`" if "`" not in value else f"`` {value} ``"

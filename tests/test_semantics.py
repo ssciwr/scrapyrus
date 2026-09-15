@@ -52,6 +52,7 @@ class RecordingConnection:
 
 
 def _entry(table_name="example", **overrides):
+    """Build example table semantics with optional field overrides."""
     values = {
         "table_name": table_name,
         "description": "Example table.",

@@ -53,6 +53,7 @@ database_url = click.option(
 
 
 def _apply_options(function, options):
+    """Apply Click option decorators in declaration order."""
     for option in reversed(options):
         function = option(function)
     return function
@@ -79,6 +80,7 @@ def embedding_client_options(function):
 
 
 def _embedding_model_options():
+    """Return the shared embedding model command options."""
     return [
         click.option(
             "--model-name",
@@ -319,10 +321,12 @@ def embeddings() -> None:
 
 
 def _tsv_field(value: object | None) -> str:
+    """Format a value as a single TSV field without whitespace breaks."""
     return "" if value is None else " ".join(str(value).split())
 
 
 def _run_embedding_operation(operation: str, corpus_name: str, **options) -> None:
+    """Run an embedding store command and report CLI errors."""
     try:
         specification = EmbeddingSpecification(options.pop("model_name"))
         conninfo = options.pop("database_url")
@@ -471,6 +475,8 @@ def evaluate_embedding_rows() -> None:
 
 
 def _text_evaluation_options(default_output: str):
+    """Build a decorator for shared text evaluation options."""
+
     def decorator(function):
         return _apply_options(
             function,
@@ -519,6 +525,7 @@ def _evaluate_text_embeddings(
     output_file: Path,
     progress: bool,
 ) -> None:
+    """Run text embedding evaluation and report CLI errors."""
     try:
         evaluate_embeddings(
             database_url,

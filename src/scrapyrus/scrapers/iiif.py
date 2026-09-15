@@ -40,6 +40,7 @@ class IIIFImageScraper(ImageScraperBase, register=False):
 
     @staticmethod
     def _body_image_url(body: object, *, presentation_version: int) -> str | None:
+        """Extract an image URL from a IIIF annotation body."""
         if not isinstance(body, dict):
             return None
 
@@ -76,6 +77,7 @@ class IIIFImageScraper(ImageScraperBase, register=False):
 
     @classmethod
     def _presentation_3_image_urls(cls, manifest: dict[str, object]) -> list[str]:
+        """Extract image URLs from IIIF Presentation 3 canvases."""
         image_urls = []
         canvases = manifest.get("items")
         if not isinstance(canvases, list):
@@ -113,6 +115,7 @@ class IIIFImageScraper(ImageScraperBase, register=False):
 
     @classmethod
     def _presentation_2_image_urls(cls, manifest: dict[str, object]) -> list[str]:
+        """Extract image URLs from IIIF Presentation 2 sequences."""
         image_urls = []
         sequences = manifest.get("sequences")
         if not isinstance(sequences, list):
@@ -143,6 +146,7 @@ class IIIFImageScraper(ImageScraperBase, register=False):
 
     @classmethod
     def _manifest_image_urls(cls, manifest: object) -> list[str]:
+        """Extract image URLs for the supported IIIF manifest version."""
         if not isinstance(manifest, dict):
             raise ValueError("IIIF manifest must be a JSON object")
 
@@ -159,6 +163,7 @@ class IIIFImageScraper(ImageScraperBase, register=False):
 
     @classmethod
     def _image_suffix(cls, image_url: str) -> str:
+        """Choose a file suffix from an image URL."""
         suffix = Path(unquote(urlparse(image_url).path)).suffix.lower()
         if suffix in cls.IMAGE_SUFFIXES:
             return suffix
@@ -166,6 +171,7 @@ class IIIFImageScraper(ImageScraperBase, register=False):
 
     @staticmethod
     def _response_json(response: requests.Response) -> object:
+        """Decode the response JSON payload."""
         try:
             return response.json()
         except (AttributeError, requests.exceptions.JSONDecodeError):

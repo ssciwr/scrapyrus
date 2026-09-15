@@ -65,6 +65,7 @@ class DumpCursor:
 
 
 def _normalize_sql(sql):
+    """Collapse SQL whitespace for test comparisons."""
     return " ".join(sql.split())
 
 
@@ -76,6 +77,7 @@ def _write_minimal_metadata(
     material="Papyrus",
     ddb_filename=None,
 ):
+    """Write a minimal papyrus metadata fixture for ingestion tests."""
     path.parent.mkdir(parents=True, exist_ok=True)
     ddb_filename_id = (
         f'<idno type="ddb-filename">{ddb_filename}</idno>' if ddb_filename else ""

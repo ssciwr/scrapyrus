@@ -46,6 +46,7 @@ class EmbeddingSpecification:
     model_name: str
 
     def __post_init__(self) -> None:
+        """Validate the configured model name."""
         if not self.model_name.strip():
             raise ValueError("model_name must not be blank")
 
@@ -75,6 +76,7 @@ class EmbeddingStore:
         self.client = client
 
     def _require_client(self) -> Embeddings:
+        """Return the configured embedding client or raise if unavailable."""
         if self.client is None:
             raise ValueError(
                 "An embedding client is required for ingestion and querying"
@@ -85,6 +87,7 @@ class EmbeddingStore:
     def _validate_vector(
         vector: Sequence[float], dimensions: int | None
     ) -> tuple[float, ...]:
+        """Convert a vector to finite floats and check its dimensions."""
         embedding = tuple(float(value) for value in vector)
         if not embedding or not all(math.isfinite(v) for v in embedding):
             raise ValueError(
