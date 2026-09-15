@@ -5,6 +5,7 @@ from typing import Any
 import psycopg
 
 from scrapyrus.embeddings.corpora import EMBEDDING_CORPORA
+from scrapyrus.embeddings.semantics import EMBEDDING_TABLE_METADATA_SEMANTICS
 from scrapyrus.metadata.ancient_edition import ANCIENT_EDITIONS_SEMANTICS
 from scrapyrus.metadata.keywords import KEYWORDS_SEMANTICS
 from scrapyrus.metadata.origdate import ORIG_DATES_SEMANTICS
@@ -30,7 +31,10 @@ _CATALOG_COMPONENTS: dict[CatalogComponent, tuple[TableSemantics, ...]] = {
         ANCIENT_EDITIONS_SEMANTICS,
     ),
     "transcriptions": (TRANSCRIPTIONS_SEMANTICS,),
-    "embeddings": tuple(corpus.semantics for corpus in EMBEDDING_CORPORA.values()),
+    "embeddings": (
+        EMBEDDING_TABLE_METADATA_SEMANTICS,
+        *(corpus.semantics for corpus in EMBEDDING_CORPORA.values()),
+    ),
 }
 _CATALOG_ENTRIES = tuple(
     entry

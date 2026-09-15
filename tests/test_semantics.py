@@ -109,6 +109,7 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
         "orig_places",
         "ancient_editions",
         "transcriptions",
+        "embedding_table_metadata",
         "transcription_embeddings",
         "translation_embeddings",
         "keyword_embeddings",
@@ -120,12 +121,15 @@ def test_catalog_has_all_tables_with_exact_static_column_coverage():
         validate_semantic_columns(entry, tuple(table_type().model_class.model_fields))
     validate_semantic_columns(entries[6], TRANSCRIPTION_COLUMNS)
     validate_semantic_columns(
-        entries[7], EMBEDDING_CORPORA["transcriptions"].export_columns
+        entries[7], ("table_name", "model_name", "embedding_size")
     )
     validate_semantic_columns(
-        entries[8], EMBEDDING_CORPORA["translations"].export_columns
+        entries[8], EMBEDDING_CORPORA["transcriptions"].export_columns
     )
-    validate_semantic_columns(entries[9], EMBEDDING_CORPORA["keywords"].export_columns)
+    validate_semantic_columns(
+        entries[9], EMBEDDING_CORPORA["translations"].export_columns
+    )
+    validate_semantic_columns(entries[10], EMBEDDING_CORPORA["keywords"].export_columns)
     validate_catalog_entries(entries)
 
 
@@ -195,6 +199,7 @@ def test_publish_catalog_publishes_all_components_in_one_connection(monkeypatch)
         (
             cursor,
             (
+                "embedding_table_metadata",
                 "transcription_embeddings",
                 "translation_embeddings",
                 "keyword_embeddings",

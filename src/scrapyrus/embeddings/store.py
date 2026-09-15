@@ -22,12 +22,14 @@ from scrapyrus.embeddings.corpora import (
     KeywordMatch,
 )
 from scrapyrus.embeddings.schema import (
+    associate_embedding_model,
     drop_embedding_index,
     embedding_stats,
     ensure_schema,
     imported_embedding_stats,
-    imported_model_names,
     recreate_embedding_index,
+    require_embedding_model,
+    set_embedding_size,
 )
 
 
@@ -104,6 +106,7 @@ class EmbeddingStore:
         conninfo: str = "",
         *,
         stale_only: bool = False,
+        force: bool = False,
         progressbar: bool = True,
         chunk_size: int = 500,
         sample: int | None = None,
@@ -124,18 +127,25 @@ class EmbeddingStore:
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 ensure_schema(cursor, EMBEDDING_CORPORA.values())
+                metadata = associate_embedding_model(
+                    cursor, self.corpus, model_name, force=force
+                )
                 inputs = self.corpus.read_inputs(
                     cursor,
                     chunk_size=chunk_size,
                     sample=sample,
                     seed=seed,
                 )
-                _, dimensions = embedding_stats(cursor, self.corpus, model_name)
+                _, dimensions = embedding_stats(cursor, self.corpus)
+                if dimensions is not None and dimensions != metadata.embedding_size:
+                    raise ValueError(
+                        "Stored vector dimensions disagree with embedding table metadata"
+                    )
+                dimensions = metadata.embedding_size
                 pending = [
                     record
                     for record in inputs.records
-                    if not stale_only
-                    or not self.corpus.is_current(cursor, model_name, record)
+                    if not stale_only or not self.corpus.is_current(cursor, record)
                 ]
                 embedded: list[tuple[EmbeddingInput, tuple[float, ...]]] = []
                 records = (
@@ -172,12 +182,11 @@ class EmbeddingStore:
                 finally:
                     if progressbar:
                         records.close()
-                self.corpus.write_embeddings(cursor, model_name, embedded)
-                self.corpus.remove_stale(cursor, model_name, inputs)
+                self.corpus.write_embeddings(cursor, embedded)
+                self.corpus.remove_stale(cursor, inputs)
+                set_embedding_size(cursor, self.corpus, dimensions)
                 if dimensions is not None:
-                    recreate_embedding_index(
-                        cursor, self.corpus.table_name, model_name, dimensions
-                    )
+                    recreate_embedding_index(cursor, self.corpus.table_name, dimensions)
         return len(embedded)
 
     def query(
@@ -197,29 +206,34 @@ class EmbeddingStore:
         model_name = self.specification.model_name
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
-                count, dimensions = embedding_stats(cursor, self.corpus, model_name)
+                metadata = require_embedding_model(cursor, self.corpus, model_name)
+                count, dimensions = embedding_stats(cursor, self.corpus)
                 if count == 0:
                     raise ValueError(
                         f"No {self.corpus.name} embeddings found for model {model_name!r}. "
                         f"Run 'scrapyrus embeddings ingest {self.corpus.name}' with the same model first."
                     )
+                if dimensions != metadata.embedding_size:
+                    raise ValueError(
+                        "Stored vector dimensions disagree with embedding table metadata"
+                    )
                 vector = self._validate_vector(client.embed_query(text), dimensions)
-                return self.corpus.query_matches(cursor, model_name, vector, top_k)
+                return self.corpus.query_matches(cursor, vector, top_k)
 
     def delete(self, conninfo: str = "") -> int:
-        """Delete this model's vectors and index from the bound corpus."""
+        """Delete the configured model's vectors and index from the bound corpus."""
 
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 ensure_schema(cursor, EMBEDDING_CORPORA.values())
-                drop_embedding_index(
-                    cursor, self.corpus.table_name, self.specification.model_name
+                require_embedding_model(
+                    cursor, self.corpus, self.specification.model_name, lock=True
                 )
+                drop_embedding_index(cursor, self.corpus.table_name)
                 cursor.execute(
-                    sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
+                    sql.SQL("DELETE FROM {}").format(
                         sql.Identifier(self.corpus.table_name)
                     ),
-                    (self.specification.model_name,),
                 )
                 return max(cursor.rowcount, 0)
 
@@ -234,18 +248,16 @@ class EmbeddingStore:
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 ensure_schema(cursor, EMBEDDING_CORPORA.values())
-                count, _ = embedding_stats(
-                    cursor, corpus, self.specification.model_name
-                )
+                require_embedding_model(cursor, corpus, self.specification.model_name)
+                count, _ = embedding_stats(cursor, corpus)
                 with target.open("wb") as output:
                     with cursor.copy(
                         sql.SQL(
-                            "COPY (SELECT {columns} FROM {table} WHERE model_name = {model} "
+                            "COPY (SELECT {columns} FROM {table} "
                             "ORDER BY {ordering}) TO STDOUT WITH (FORMAT binary)"
                         ).format(
                             columns=columns,
                             table=sql.Identifier(corpus.table_name),
-                            model=sql.Literal(self.specification.model_name),
                             ordering=ordering,
                         )
                     ) as copy:
@@ -253,7 +265,9 @@ class EmbeddingStore:
                             output.write(chunk)
         return count
 
-    def import_dump(self, source: str | Path, conninfo: str = "") -> int:
+    def import_dump(
+        self, source: str | Path, conninfo: str = "", *, force: bool = False
+    ) -> int:
         """Validate and replace this model's corpus records from a binary dump."""
 
         corpus = self.corpus
@@ -280,22 +294,21 @@ class EmbeddingStore:
                     ) as copy:
                         while chunk := input_file.read(1024 * 1024):
                             copy.write(chunk)
-                unexpected = [
-                    m
-                    for m in imported_model_names(cursor, temporary_table)
-                    if m != model_name
-                ]
-                if unexpected:
-                    raise ValueError(
-                        f"Imported embeddings contain model names other than {model_name!r}: {', '.join(unexpected)}"
-                    )
                 count, dimensions = imported_embedding_stats(cursor, temporary_table)
-                drop_embedding_index(cursor, corpus.table_name, model_name)
+                metadata = associate_embedding_model(
+                    cursor, corpus, model_name, force=force
+                )
+                if (
+                    dimensions is not None
+                    and metadata.embedding_size is not None
+                    and dimensions != metadata.embedding_size
+                ):
+                    raise ValueError(
+                        "Imported vector dimensions disagree with embedding table metadata"
+                    )
+                drop_embedding_index(cursor, corpus.table_name)
                 cursor.execute(
-                    sql.SQL("DELETE FROM {} WHERE model_name = %s").format(
-                        sql.Identifier(corpus.table_name)
-                    ),
-                    (model_name,),
+                    sql.SQL("DELETE FROM {}").format(sql.Identifier(corpus.table_name)),
                 )
                 cursor.execute(
                     sql.SQL(
@@ -308,9 +321,8 @@ class EmbeddingStore:
                     )
                 )
                 if dimensions is not None:
-                    recreate_embedding_index(
-                        cursor, corpus.table_name, model_name, dimensions
-                    )
+                    set_embedding_size(cursor, corpus, dimensions)
+                    recreate_embedding_index(cursor, corpus.table_name, dimensions)
         return count
 
     def retrieve(
@@ -320,4 +332,7 @@ class EmbeddingStore:
 
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
-                return self.corpus.retrieve(cursor, self.specification.model_name, key)
+                require_embedding_model(
+                    cursor, self.corpus, self.specification.model_name
+                )
+                return self.corpus.retrieve(cursor, key)

@@ -89,11 +89,11 @@ class EmbeddingCorpus(ABC):
     @property
     @abstractmethod
     def key_columns(self) -> tuple[str, ...]:
-        """Columns identifying a record within one model's embeddings."""
+        """Columns identifying a record within the corpus table."""
 
     @property
     def export_columns(self) -> tuple[str, ...]:
-        return (*self.record_columns, "model_name", "embedding", "updated_at")
+        return (*self.record_columns, "embedding", "updated_at")
 
     @property
     def export_order(self) -> tuple[str, ...]:
@@ -110,19 +110,18 @@ class EmbeddingCorpus(ABC):
         """Prepare source records, including any corpus-specific chunking."""
 
     @abstractmethod
-    def is_current(self, cursor: Any, model_name: str, record: EmbeddingInput) -> bool:
+    def is_current(self, cursor: Any, record: EmbeddingInput) -> bool:
         """Compare a prepared input against its stored source fields."""
 
     def write_embeddings(
         self,
         cursor: Any,
-        model_name: str,
         records: list[tuple[EmbeddingInput, tuple[float, ...]]],
     ) -> None:
         """Upsert source fields and vectors using this corpus's record keys."""
 
-        columns = (*self.record_columns, "model_name", "embedding")
-        keys = (*self.key_columns, "model_name")
+        columns = (*self.record_columns, "embedding")
+        keys = self.key_columns
         assignments = [
             sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c))
             for c in columns
@@ -148,24 +147,21 @@ class EmbeddingCorpus(ABC):
                 statement,
                 {
                     **record.values,
-                    "model_name": model_name,
                     "embedding": vector_literal(embedding),
                 },
             )
 
     @abstractmethod
-    def remove_stale(self, cursor: Any, model_name: str, inputs: CorpusInputs) -> None:
+    def remove_stale(self, cursor: Any, inputs: CorpusInputs) -> None:
         """Remove missing source records and surplus chunks."""
 
     @abstractmethod
     def query_matches(
-        self, cursor: Any, model_name: str, embedding: tuple[float, ...], top_k: int
+        self, cursor: Any, embedding: tuple[float, ...], top_k: int
     ) -> tuple[KeywordMatch, ...] | tuple[DocumentMatch, ...]:
         """Rank vectors and shape this corpus's public query results."""
 
-    def retrieve(
-        self, cursor: Any, model_name: str, key: dict[str, Any]
-    ) -> tuple[float, ...] | None:
+    def retrieve(self, cursor: Any, key: dict[str, Any]) -> tuple[float, ...] | None:
         """Retrieve a vector by the corpus's exact record key."""
 
         if set(key) != set(self.key_columns):
@@ -173,16 +169,14 @@ class EmbeddingCorpus(ABC):
                 f"Expected record key fields: {', '.join(self.key_columns)}"
             )
         cursor.execute(
-            sql.SQL(
-                "SELECT embedding::text FROM {} WHERE model_name = %(model_name)s AND {}"
-            ).format(
+            sql.SQL("SELECT embedding::text FROM {} WHERE {}").format(
                 sql.Identifier(self.table_name),
                 sql.SQL(" AND ").join(
                     sql.SQL("{} = {}").format(sql.Identifier(c), sql.Placeholder(c))
                     for c in self.key_columns
                 ),
             ),
-            {**key, "model_name": model_name},
+            key,
         )
         row = cursor.fetchone()
         return None if row is None else parse_vector(row_value(row, "embedding", 0))
@@ -190,7 +184,7 @@ class EmbeddingCorpus(ABC):
 
 @dataclass(frozen=True)
 class KeywordCorpus(EmbeddingCorpus):
-    """Embed one distinct keyword/qualifier string per model."""
+    """Embed one distinct keyword/qualifier string."""
 
     @property
     def record_columns(self) -> tuple[str, ...]:
@@ -205,10 +199,9 @@ class KeywordCorpus(EmbeddingCorpus):
             sql.SQL("""
 CREATE TABLE IF NOT EXISTS {} (
     keyword text NOT NULL,
-    model_name text NOT NULL,
     embedding vector NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (keyword, model_name)
+    PRIMARY KEY (keyword)
 )
 """).format(sql.Identifier(self.table_name))
         )
@@ -236,38 +229,36 @@ FROM keywords WHERE keyword IS NOT NULL ORDER BY embedding_keyword
             tuple(EmbeddingInput(term, {"keyword": term}) for term in terms)
         )
 
-    def is_current(self, cursor: Any, model_name: str, record: EmbeddingInput) -> bool:
+    def is_current(self, cursor: Any, record: EmbeddingInput) -> bool:
         cursor.execute(
-            sql.SQL("SELECT 1 FROM {} WHERE model_name = %s AND keyword = %s").format(
+            sql.SQL("SELECT 1 FROM {} WHERE keyword = %s").format(
                 sql.Identifier(self.table_name)
             ),
-            (model_name, record.values["keyword"]),
+            (record.values["keyword"],),
         )
         return cursor.fetchone() is not None
 
-    def remove_stale(self, cursor: Any, model_name: str, inputs: CorpusInputs) -> None:
+    def remove_stale(self, cursor: Any, inputs: CorpusInputs) -> None:
         cursor.execute(
-            sql.SQL(
-                "DELETE FROM {} WHERE model_name = %s AND NOT (keyword = ANY(%s))"
-            ).format(sql.Identifier(self.table_name)),
-            (model_name, [r.values["keyword"] for r in inputs.records]),
+            sql.SQL("DELETE FROM {} WHERE NOT (keyword = ANY(%s))").format(
+                sql.Identifier(self.table_name)
+            ),
+            ([r.values["keyword"] for r in inputs.records],),
         )
 
     def query_matches(
-        self, cursor: Any, model_name: str, embedding: tuple[float, ...], top_k: int
+        self, cursor: Any, embedding: tuple[float, ...], top_k: int
     ) -> tuple[KeywordMatch, ...]:
         cursor.execute(
             sql.SQL(
                 "SELECT keyword, 1 - ({distance}) AS similarity FROM {table} "
-                "WHERE model_name = {model} ORDER BY {distance}, keyword LIMIT {limit}"
+                "ORDER BY {distance}, keyword LIMIT {limit}"
             ).format(
                 distance=cosine_distance(len(embedding)),
                 table=sql.Identifier(self.table_name),
-                model=sql.Placeholder("model_name"),
                 limit=sql.Placeholder("top_k"),
             ),
             {
-                "model_name": model_name,
                 "embedding": vector_literal(embedding),
                 "top_k": top_k,
             },
@@ -309,7 +300,6 @@ class XmlCorpus(EmbeddingCorpus):
             sql.SQL("""
 CREATE TABLE IF NOT EXISTS {} (
     xml_id bigint NOT NULL,
-    model_name text NOT NULL,
     chunk_index integer NOT NULL DEFAULT 0,
     source_path text NOT NULL,
     tm_id text NOT NULL,
@@ -318,7 +308,7 @@ CREATE TABLE IF NOT EXISTS {} (
     input_hash text NOT NULL,
     embedding vector NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (xml_id, model_name, chunk_index)
+    PRIMARY KEY (xml_id, chunk_index)
 )
 """).format(sql.Identifier(self.table_name))
         )
@@ -408,13 +398,13 @@ WHERE type = %s ORDER BY transcription_id
             for r in cursor.fetchall()
         )
 
-    def is_current(self, cursor: Any, model_name: str, record: EmbeddingInput) -> bool:
+    def is_current(self, cursor: Any, record: EmbeddingInput) -> bool:
         cursor.execute(
             sql.SQL(
                 "SELECT input_hash, source_path, tm_id, language FROM {} "
-                "WHERE xml_id = %s AND model_name = %s AND chunk_index = %s"
+                "WHERE xml_id = %s AND chunk_index = %s"
             ).format(sql.Identifier(self.table_name)),
-            (record.values["xml_id"], model_name, record.values["chunk_index"]),
+            (record.values["xml_id"], record.values["chunk_index"]),
         )
         row = cursor.fetchone()
         columns = ("input_hash", "source_path", "tm_id", "language")
@@ -422,7 +412,7 @@ WHERE type = %s ORDER BY transcription_id
             row_value(row, c, i) for i, c in enumerate(columns)
         ) == tuple(record.values[c] for c in columns)
 
-    def remove_stale(self, cursor: Any, model_name: str, inputs: CorpusInputs) -> None:
+    def remove_stale(self, cursor: Any, inputs: CorpusInputs) -> None:
         chunk_counts: dict[int, int] = {}
         for record in inputs.records:
             xml_id = record.values["xml_id"]
@@ -435,23 +425,23 @@ WHERE type = %s ORDER BY transcription_id
             else sql.SQL("")
         )
         cursor.execute(
-            sql.SQL(
-                "DELETE FROM {} WHERE model_name = %s AND NOT (xml_id = ANY(%s)){}"
-            ).format(sql.Identifier(self.table_name), scope),
-            (model_name, sorted(chunk_counts), list(inputs.scope_ids))
+            sql.SQL("DELETE FROM {} WHERE NOT (xml_id = ANY(%s)){}").format(
+                sql.Identifier(self.table_name), scope
+            ),
+            (sorted(chunk_counts), list(inputs.scope_ids))
             if inputs.scope_ids is not None
-            else (model_name, sorted(chunk_counts)),
+            else (sorted(chunk_counts),),
         )
         for xml_id, count in chunk_counts.items():
             cursor.execute(
                 sql.SQL(
-                    "DELETE FROM {} WHERE xml_id = %s AND model_name = %s AND chunk_index >= %s"
+                    "DELETE FROM {} WHERE xml_id = %s AND chunk_index >= %s"
                 ).format(sql.Identifier(self.table_name)),
-                (xml_id, model_name, count),
+                (xml_id, count),
             )
 
     def query_matches(
-        self, cursor: Any, model_name: str, embedding: tuple[float, ...], top_k: int
+        self, cursor: Any, embedding: tuple[float, ...], top_k: int
     ) -> tuple[DocumentMatch, ...]:
         cursor.execute(
             sql.SQL(
@@ -459,18 +449,16 @@ WHERE type = %s ORDER BY transcription_id
                 "SELECT xml_id, source_path, tm_id, language, document_text, chunk_index, "
                 "1 - ({distance}) AS similarity, "
                 "row_number() OVER (PARTITION BY xml_id ORDER BY {distance}, chunk_index) "
-                "AS chunk_rank FROM {table} WHERE model_name = {model}"
+                "AS chunk_rank FROM {table}"
                 ") SELECT source_path, tm_id, language, document_text, similarity "
                 "FROM ranked_chunks WHERE chunk_rank = 1 "
                 "ORDER BY similarity DESC, source_path, tm_id, xml_id LIMIT {limit}"
             ).format(
                 distance=cosine_distance(len(embedding)),
                 table=sql.Identifier(self.table_name),
-                model=sql.Placeholder("model_name"),
                 limit=sql.Placeholder("top_k"),
             ),
             {
-                "model_name": model_name,
                 "embedding": vector_literal(embedding),
                 "top_k": top_k,
             },
