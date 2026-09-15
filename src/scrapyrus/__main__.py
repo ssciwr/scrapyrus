@@ -1,4 +1,5 @@
 import re
+import json
 from pathlib import Path
 
 import click
@@ -13,6 +14,10 @@ from scrapyrus.embeddings import (
     build_embedding_client,
 )
 from scrapyrus.embeddings.corpora import KeywordMatch, XmlCorpus
+from scrapyrus.embeddings.clients import (
+    SUPPORTED_EMBEDDING_PROVIDERS,
+    infer_embedding_provider,
+)
 from scrapyrus.embeddings.evaluation import evaluate_embeddings
 from scrapyrus.images import (
     DEFAULT_BROKEN_IMAGE_FILE,
@@ -73,7 +78,23 @@ def embedding_client_options(function):
                 "--api-key",
                 envvar="SCRAPYRUS_EMBEDDINGS_API_KEY",
                 required=True,
-                help="API key for the OpenAI-compatible inference server.",
+                help="API key for the embedding provider.",
+            ),
+            click.option(
+                "--provider",
+                type=click.Choice(sorted(SUPPORTED_EMBEDDING_PROVIDERS)),
+                envvar="SCRAPYRUS_EMBEDDING_PROVIDER",
+            ),
+            click.option(
+                "--provider-options",
+                default="{}",
+                envvar="SCRAPYRUS_EMBEDDING_PROVIDER_OPTIONS",
+                help="JSON object of non-secret compatibility options.",
+            ),
+            click.option(
+                "--endpoint-profile",
+                envvar="SCRAPYRUS_EMBEDDING_ENDPOINT_PROFILE",
+                help="Deployment profile consumers resolve through EMBEDDING_ENDPOINT_<PROFILE>.",
             ),
         ],
     )
@@ -328,18 +349,39 @@ def _tsv_field(value: object | None) -> str:
 def _run_embedding_operation(operation: str, corpus_name: str, **options) -> None:
     """Run an embedding store command and report CLI errors."""
     try:
-        specification = EmbeddingSpecification(options.pop("model_name"))
+        model_name = options.pop("model_name")
         conninfo = options.pop("database_url")
-        client = None
         if operation in {"ingest", "update", "query"}:
-            client = build_embedding_client(
-                options.pop("inference_server_url"),
-                specification.model_name,
-                options.pop("api_key"),
+            url = options.pop("inference_server_url")
+            provider = options.pop("provider") or infer_embedding_provider(url)
+            profile = options.pop("endpoint_profile")
+            provider_options = json.loads(options.pop("provider_options"))
+            if not isinstance(provider_options, dict):
+                raise ValueError("provider-options must be a JSON object")
+            specification = EmbeddingSpecification(
+                model_name=model_name,
+                provider=provider,
+                provider_options=provider_options,
+                endpoint_profile=profile or ("vllm" if provider == "vllm" else None),
             )
-        store = EmbeddingStore(
-            corpus=corpus_name, specification=specification, client=client
-        )
+            client = build_embedding_client(
+                provider=specification.provider,
+                model_name=model_name,
+                api_key=options.pop("api_key"),
+                inference_server_url=url,
+                provider_options=specification.provider_options,
+            )
+            store = EmbeddingStore(
+                corpus=corpus_name, specification=specification, client=client
+            )
+        elif operation == "import":
+            store = EmbeddingStore.from_dump(
+                corpus=corpus_name, model_name=model_name, source=options["input_file"]
+            )
+        else:
+            store = EmbeddingStore.from_database(
+                corpus=corpus_name, model_name=model_name, conninfo=conninfo
+            )
         if operation in {"ingest", "update"}:
             store.ingest(
                 conninfo,
@@ -352,9 +394,7 @@ def _run_embedding_operation(operation: str, corpus_name: str, **options) -> Non
         elif operation == "dump":
             target = options["output_file"]
             if target is None:
-                filename_model = re.sub(
-                    r"[^A-Za-z0-9_.-]+", "-", specification.model_name
-                ).strip("-")
+                filename_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model_name).strip("-")
                 target = Path(f"{corpus_name}-embeddings-{filename_model}.dump")
             store.dump(target, conninfo)
         elif operation == "import":
@@ -462,7 +502,7 @@ def _embedding_command(operation: str, corpus_name: str):
             click.option(
                 "--force",
                 is_flag=True,
-                help="Discard embeddings if the table is configured for another model.",
+                help="Discard embeddings if the table has a different embedding specification.",
             )
         )
     return click.command(corpus_name)(_apply_options(command, options))

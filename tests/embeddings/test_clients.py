@@ -1,399 +1,265 @@
+"""Provider selection and effective LangChain embedding configuration."""
+
+import sys
+from types import SimpleNamespace
+
 import pytest
-import requests
 
 from scrapyrus.embeddings.clients import (
-    EMBEDDING_REQUEST_TIMEOUT,
-    OPENAI_EMBEDDING_CONTEXT_LENGTH,
-    VOYAGEAI_EMBEDDING_CONTEXT_LENGTH,
-    EmbeddingClient,
-    MistralProvider,
-    OpenAIProvider,
-    VLLMProvider,
-    VoyageAIProvider,
     build_embedding_client,
+    effective_provider_options,
+    infer_embedding_provider,
 )
+from scrapyrus.embeddings.specification import EmbeddingSpecification
 
 
-class FakeResponse:
-    def __init__(self, payload, *, status_code=200):
-        self.payload = payload
-        self.status_code = status_code
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise requests.HTTPError(response=self)
-
-    def json(self):
-        return self.payload
-
-
-class FakeClient:
-    def __init__(self, *, gets=(), posts=()):
-        self.headers = {}
-        self.gets = list(gets)
-        self.responses = list(posts)
-        self.requests = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def get(self, url, *, timeout):
-        self.requests.append(("GET", url, None, timeout))
-        return self.gets.pop(0)
-
-    def post(self, url, *, json, timeout):
-        self.requests.append(("POST", url, json, timeout))
-        return self.responses.pop(0)
+@pytest.mark.parametrize(
+    "url,provider",
+    [
+        ("https://api.openai.com/v1", "openai"),
+        ("https://API.VOYAGEAI.COM./v1", "voyageai"),
+        ("https://api.mistral.ai", "mistralai"),
+        ("https://api.openai.com.example.org", "vllm"),
+        ("http://localhost:8000/v1", "vllm"),
+    ],
+)
+def test_provider_inference_uses_exact_hostnames(url, provider):
+    assert infer_embedding_provider(url) == provider
 
 
-def test_provider_subclasses_register_in_definition_order(monkeypatch):
-    monkeypatch.setattr(EmbeddingClient, "_providers", [])
-
-    class FirstProvider(EmbeddingClient):
-        pass
-
-    class SecondProvider(EmbeddingClient):
-        pass
-
-    class UnregisteredProvider(EmbeddingClient, register=False):
-        pass
-
-    assert EmbeddingClient.registered_providers() == (FirstProvider, SecondProvider)
-    assert UnregisteredProvider not in EmbeddingClient.registered_providers()
-
-
-def test_build_embedding_client_uses_chain_of_responsibility(monkeypatch):
+@pytest.mark.parametrize(
+    "provider,module,class_name,expected",
+    [
+        (
+            "openai",
+            "langchain_openai",
+            "OpenAIEmbeddings",
+            {
+                "model": "model",
+                "api_key": "secret",
+                "base_url": "https://server/v1",
+                "check_embedding_ctx_length": False,
+            },
+        ),
+        (
+            "vllm",
+            "langchain_openai",
+            "OpenAIEmbeddings",
+            {
+                "model": "model",
+                "api_key": "secret",
+                "base_url": "https://server/v1",
+                "check_embedding_ctx_length": False,
+            },
+        ),
+        (
+            "voyageai",
+            "langchain_voyageai",
+            "VoyageAIEmbeddings",
+            {
+                "model": "model",
+                "api_key": "secret",
+                "base_url": "https://server/v1",
+                "truncation": True,
+                "batch_size": 1000,
+            },
+        ),
+        (
+            "mistralai",
+            "langchain_mistralai",
+            "MistralAIEmbeddings",
+            {"model": "model", "api_key": "secret", "endpoint": "https://server/v1"},
+        ),
+    ],
+)
+def test_factory_configures_standard_clients_without_network_probing(
+    provider, module, class_name, expected, monkeypatch
+):
     calls = []
-    expected = object()
-
-    class FirstProvider(EmbeddingClient, register=False):
-        @classmethod
-        def initialize(cls, url, model, api_key):
-            calls.append((cls, url, model, api_key))
-            return None
-
-    class SecondProvider(EmbeddingClient, register=False):
-        @classmethod
-        def initialize(cls, url, model, api_key):
-            calls.append((cls, url, model, api_key))
-            return expected
-
-    monkeypatch.setattr(EmbeddingClient, "_providers", [FirstProvider, SecondProvider])
-
-    assert build_embedding_client("https://server", "model", "key") is expected
-    assert [call[0] for call in calls] == [FirstProvider, SecondProvider]
-
-
-def test_build_embedding_client_rejects_unknown_server(monkeypatch):
-    class Provider(EmbeddingClient, register=False):
-        @classmethod
-        def initialize(cls, url, model, api_key):
-            return None
-
-    monkeypatch.setattr(EmbeddingClient, "_providers", [Provider])
-
-    with pytest.raises(ValueError, match="No registered embedding provider"):
-        build_embedding_client("https://unknown", "model", "key")
-
-
-def test_mistral_initialize_detects_api_hostname_and_normalizes_url():
-    provider = MistralProvider.initialize(
-        "https://api.mistral.ai", "mistral-embed", "secret"
+    client = object()
+    monkeypatch.setitem(
+        sys.modules,
+        module,
+        SimpleNamespace(
+            **{class_name: lambda **options: calls.append(options) or client}
+        ),
     )
+    assert (
+        build_embedding_client(
+            provider=provider,
+            model_name="model",
+            api_key="secret",
+            inference_server_url="https://server/",
+            provider_options={},
+        )
+        is client
+    )
+    assert calls == [expected]
 
-    assert isinstance(provider, MistralProvider)
-    assert provider.inference_server_url == "https://api.mistral.ai/v1"
-    assert provider.model_name == "mistral-embed"
-    assert provider.api_key == "secret"
+
+def test_huggingface_separates_document_and_query_prompts(monkeypatch):
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_huggingface",
+        SimpleNamespace(
+            HuggingFaceEmbeddings=lambda **options: calls.append(options) or object()
+        ),
+    )
+    options = {
+        "model_revision": "revision",
+        "normalize_embeddings": True,
+        "truncate_dim": 256,
+        "document_prompt_name": "passage",
+        "query_prompt_name": "query",
+    }
+    build_embedding_client(
+        provider="huggingface",
+        model_name="model",
+        api_key="",
+        inference_server_url=None,
+        provider_options=options,
+    )
+    assert calls == [
+        {
+            "model_name": "model",
+            "model_kwargs": {"revision": "revision"},
+            "encode_kwargs": {
+                "normalize_embeddings": True,
+                "truncate_dim": 256,
+                "prompt_name": "passage",
+            },
+            "query_encode_kwargs": {
+                "normalize_embeddings": True,
+                "truncate_dim": 256,
+                "prompt_name": "query",
+            },
+        }
+    ]
+    assert options["query_prompt_name"] == "query"
 
 
 @pytest.mark.parametrize(
-    "url",
+    "provider,options",
     [
-        "https://example.com/mistral.ai",
-        "https://api.mistral.ai.example.com/v1",
-        "not-a-url",
+        ("unknown", {}),
+        ("openai", {"api_key": "secret"}),
+        ("vllm", {"base_url": "https://private"}),
+        ("voyageai", {"query_input_type": "document"}),
+        ("voyageai", {"document_input_type": "query"}),
+        ("huggingface", {"model_kwargs": {"token": "secret"}}),
     ],
 )
-def test_mistral_initialize_declines_other_hostnames(url):
-    assert MistralProvider.initialize(url, "model", "key") is None
+def test_unpublished_or_secret_provider_options_are_rejected(provider, options):
+    with pytest.raises(ValueError):
+        effective_provider_options(provider, options)
 
 
-def test_mistral_token_count_uses_embedding_usage(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse(
-                {
-                    "data": [{"embedding": [0.25, -0.5, 1]}],
-                    "usage": {"prompt_tokens": 3},
-                }
-            )
-        ]
-    )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = MistralProvider("https://api.mistral.ai/v1/", "mistral-embed", "secret")
-
-    assert provider.token_count("some text") == 3
-    assert client.headers["Authorization"] == "Bearer secret"
-    assert client.requests == [
-        (
-            "POST",
-            "https://api.mistral.ai/v1/embeddings",
-            {"model": "mistral-embed", "input": "some text"},
-            EMBEDDING_REQUEST_TIMEOUT,
-        )
-    ]
-
-
-def test_mistral_context_length_uses_model_endpoint_and_is_cached(monkeypatch):
-    client = FakeClient(gets=[FakeResponse({"max_context_length": 32768})])
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = MistralProvider(
-        "https://api.mistral.ai/v1", "mistral embed/model", "key"
-    )
-
-    assert provider.context_length() == 32768
-    assert provider.context_length() == 32768
-    assert client.requests == [
-        (
-            "GET",
-            "https://api.mistral.ai/v1/models/mistral%20embed%2Fmodel",
-            None,
-            EMBEDDING_REQUEST_TIMEOUT,
-        )
-    ]
-
-
-def test_mistral_embedding_methods_use_embedding_endpoint(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse(
-                {
-                    "data": [{"embedding": [0.25, -0.5, 1]}],
-                    "usage": {"prompt_tokens": 1},
-                }
-            )
-        ]
-    )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = MistralProvider("https://api.mistral.ai/v1", "mistral-embed", "key")
-
-    assert provider.embed_documents(["document"])[0] == (0.25, -0.5, 1.0)
-    assert provider.embedding_length() == 3
-    assert len(client.requests) == 1
-
-
-def test_openai_initialize_detects_api_hostname_and_normalizes_url():
-    provider = OpenAIProvider.initialize(
-        "https://api.openai.com", "text-embedding-3-small", "secret"
-    )
-
-    assert isinstance(provider, OpenAIProvider)
-    assert provider.inference_server_url == "https://api.openai.com/v1"
-    assert provider.model_name == "text-embedding-3-small"
-    assert provider.api_key == "secret"
+def test_voyage_specification_records_document_and_query_roles():
+    spec = EmbeddingSpecification(model_name="voyage-3", provider="voyageai")
+    assert spec.provider_options == {
+        "truncation": True,
+        "batch_size": 1000,
+        "document_input_type": "document",
+        "query_input_type": "query",
+    }
 
 
 @pytest.mark.parametrize(
-    "url",
+    "fields",
     [
-        "https://example.com/openai.com",
-        "https://api.openai.com.example.com/v1",
-        "not-a-url",
+        {"model_name": " "},
+        {"provider": "unsupported"},
+        {"embedding_size": True},
+        {"embedding_size": 0},
+        {"contract_version": 2},
+        {"contract_version": True},
+        {"provider_options": {"dimensions": 3}, "embedding_size": 2},
+        {"endpoint_profile": "bad-profile"},
+        {"api_key": "secret"},
     ],
 )
-def test_openai_initialize_declines_other_hostnames(url):
-    assert OpenAIProvider.initialize(url, "model", "key") is None
-
-
-def test_openai_token_count_uses_embedding_usage(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse(
-                {
-                    "data": [{"embedding": [0.25, -0.5, 1]}],
-                    "usage": {"prompt_tokens": 3, "total_tokens": 3},
-                }
-            )
-        ]
-    )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = OpenAIProvider(
-        "https://api.openai.com/v1/", "text-embedding-3-small", "secret"
-    )
-
-    assert provider.token_count("some text") == 3
-    assert client.headers["Authorization"] == "Bearer secret"
-    assert client.requests == [
-        (
-            "POST",
-            "https://api.openai.com/v1/embeddings",
-            {"model": "text-embedding-3-small", "input": "some text"},
-            EMBEDDING_REQUEST_TIMEOUT,
+def test_specification_rejects_invalid_contract_fields(fields):
+    with pytest.raises(ValueError):
+        EmbeddingSpecification.model_validate(
+            {"model_name": "model", "provider": "openai", **fields}
         )
+
+
+def test_vllm_requires_a_resolvable_endpoint_profile():
+    with pytest.raises(ValueError, match="endpoint_profile"):
+        EmbeddingSpecification(model_name="model", provider="vllm")
+
+
+def test_real_voyage_integration_batches_and_uses_distinct_embedding_roles():
+    calls = []
+    client = build_embedding_client(
+        provider="voyageai",
+        model_name="voyage-3",
+        api_key="test-key",
+        inference_server_url="https://api.voyageai.com",
+        provider_options={"batch_size": 2},
+    )
+
+    class SDK:
+        def tokenize(self, texts, *, model):
+            return [[1] for text in texts]
+
+        def embed(self, texts, **options):
+            calls.append((texts, options))
+            return SimpleNamespace(embeddings=[[1.0, 0.0] for text in texts])
+
+    client._client = SDK()
+    assert client.embed_documents(["first", "second", "third"]) == [[1.0, 0.0]] * 3
+    assert client.embed_query("question") == [1.0, 0.0]
+    assert [texts for texts, _ in calls] == [
+        ["first", "second"],
+        ["third"],
+        ["question"],
     ]
-
-
-def test_openai_context_length_uses_embedding_api_limit():
-    provider = OpenAIProvider(
-        "https://api.openai.com/v1", "text-embedding-3-small", "key"
-    )
-
-    assert provider.context_length() == OPENAI_EMBEDDING_CONTEXT_LENGTH
-
-
-def test_openai_embedding_methods_use_embedding_endpoint(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse(
-                {
-                    "data": [{"embedding": [0.25, -0.5, 1]}],
-                    "usage": {"prompt_tokens": 1, "total_tokens": 1},
-                }
-            )
-        ]
-    )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = OpenAIProvider(
-        "https://api.openai.com/v1", "text-embedding-3-small", "key"
-    )
-
-    assert provider.embed_documents(["document"])[0] == (0.25, -0.5, 1.0)
-    assert provider.embedding_length() == 3
-    assert len(client.requests) == 1
-
-
-def test_voyageai_initialize_detects_api_hostname_and_normalizes_url():
-    provider = VoyageAIProvider.initialize(
-        "https://api.voyageai.com", "voyage-3-large", "secret"
-    )
-
-    assert isinstance(provider, VoyageAIProvider)
-    assert provider.inference_server_url == "https://api.voyageai.com/v1"
-    assert provider.model_name == "voyage-3-large"
-    assert provider.api_key == "secret"
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://example.com/voyageai.com",
-        "https://api.voyageai.com.example.com/v1",
-        "not-a-url",
-    ],
-)
-def test_voyageai_initialize_declines_other_hostnames(url):
-    assert VoyageAIProvider.initialize(url, "model", "key") is None
-
-
-def test_voyageai_token_count_uses_embedding_usage(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse(
-                {
-                    "data": [{"embedding": [0.25, -0.5, 1]}],
-                    "usage": {"total_tokens": 3},
-                }
-            )
-        ]
-    )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = VoyageAIProvider(
-        "https://api.voyageai.com/v1/", "voyage-3-large", "secret"
-    )
-
-    assert provider.token_count("some text") == 3
-    assert client.headers["Authorization"] == "Bearer secret"
-    assert client.requests == [
-        (
-            "POST",
-            "https://api.voyageai.com/v1/embeddings",
-            {"model": "voyage-3-large", "input": "some text"},
-            EMBEDDING_REQUEST_TIMEOUT,
-        )
+    assert [options["input_type"] for _, options in calls] == [
+        "document",
+        "document",
+        "query",
     ]
+    assert all(options["truncation"] is True for _, options in calls)
 
 
-def test_voyageai_context_length_uses_embedding_api_limit():
-    provider = VoyageAIProvider("https://api.voyageai.com/v1", "voyage-3-large", "key")
+def test_real_huggingface_integration_preserves_separate_prompts(monkeypatch):
+    import numpy as np
 
-    assert provider.context_length() == VOYAGEAI_EMBEDDING_CONTEXT_LENGTH
+    calls = []
 
+    class Model:
+        def __init__(self, model_name, **options):
+            calls.append((model_name, options))
 
-def test_voyageai_embedding_methods_use_embedding_endpoint(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse(
-                {
-                    "data": [{"embedding": [0.25, -0.5, 1]}],
-                    "usage": {"total_tokens": 1},
-                }
-            )
-        ]
+        def encode(self, texts, **options):
+            calls.append((texts, options))
+            return np.array([[1.0, 0.0] for text in texts])
+
+    monkeypatch.setitem(
+        sys.modules, "sentence_transformers", SimpleNamespace(SentenceTransformer=Model)
     )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = VoyageAIProvider("https://api.voyageai.com/v1", "voyage-3-large", "key")
-
-    assert provider.embed_documents(["document"])[0] == (0.25, -0.5, 1.0)
-    assert provider.embedding_length() == 3
-    assert len(client.requests) == 1
-
-
-def test_vllm_initialize_detects_server_and_normalizes_v1_url(monkeypatch):
-    client = FakeClient(gets=[FakeResponse({"version": "0.10.0"})])
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-
-    provider = VLLMProvider.initialize("https://server/v1/", "model", "secret")
-
-    assert isinstance(provider, VLLMProvider)
-    assert provider.inference_server_url == "https://server"
-    assert client.headers["Authorization"] == "Bearer secret"
-    assert client.requests == [
-        ("GET", "https://server/version", None, EMBEDDING_REQUEST_TIMEOUT)
-    ]
-
-
-def test_vllm_initialize_declines_non_vllm_server(monkeypatch):
-    client = FakeClient(gets=[FakeResponse({"detail": "not found"}, status_code=404)])
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-
-    assert VLLMProvider.initialize("https://server", "model", "key") is None
-
-
-def test_vllm_token_and_context_lengths_use_tokenize_endpoint(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse({"count": 3, "max_model_len": 8192}),
-        ]
+    client = build_embedding_client(
+        provider="huggingface",
+        model_name="local-model",
+        api_key="",
+        inference_server_url=None,
+        provider_options={
+            "model_revision": "revision",
+            "normalize_embeddings": True,
+            "document_prompt_name": "passage",
+            "query_prompt_name": "query",
+        },
     )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = VLLMProvider("https://server", "model", "key")
-
-    assert provider.token_count("some text") == 3
-    assert provider.context_length() == 8192
-    assert [request[2] for request in client.requests] == [
-        {"model": "model", "prompt": "some text"}
-    ]
-
-
-def test_vllm_embedding_methods_use_openai_endpoint(monkeypatch):
-    client = FakeClient(
-        posts=[
-            FakeResponse({"data": [{"embedding": [0.25, -0.5, 1]}]}),
-        ]
+    assert client.embed_documents(["source"]) == [[1.0, 0.0]]
+    assert client.embed_query("question") == [1.0, 0.0]
+    assert calls[0] == ("local-model", {"cache_folder": None, "revision": "revision"})
+    assert calls[1][1]["prompt_name"] == "passage"
+    assert calls[2][1]["prompt_name"] == "query"
+    assert (
+        calls[1][1]["normalize_embeddings"]
+        is calls[2][1]["normalize_embeddings"]
+        is True
     )
-    monkeypatch.setattr("scrapyrus.embeddings.clients.requests.Session", lambda: client)
-    provider = VLLMProvider("https://server/v1", "model", "key")
-
-    assert provider.embed_documents(["document"])[0] == (0.25, -0.5, 1.0)
-    assert provider.embedding_length() == 3
-    assert client.requests[0] == (
-        "POST",
-        "https://server/v1/embeddings",
-        {"model": "model", "input": "document"},
-        EMBEDDING_REQUEST_TIMEOUT,
-    )
-    assert len(client.requests) == 1

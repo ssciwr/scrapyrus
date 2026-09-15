@@ -237,6 +237,10 @@ def evaluate_embeddings(
                 raise ValueError(
                     "Transcription and translation embedding tables use different models"
                 )
+            if not transcription.compatible_with(translation):
+                raise ValueError(
+                    "Transcription and translation embedding tables use different embedding specifications"
+                )
             if transcription.embedding_size != translation.embedding_size:
                 raise ValueError(
                     "Transcription and translation embedding tables use different dimensions"
