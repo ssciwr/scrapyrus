@@ -14,10 +14,12 @@ from psycopg import sql
 
 
 def _metadata_tables() -> tuple[MetadataTable, ...]:
+    """Instantiate all registered metadata tables."""
     return tuple(table_type() for table_type in MetadataTable.registered_tables())
 
 
 def _metadata_schema_sql(tables: tuple[MetadataTable, ...]) -> str:
+    """Combine distinct metadata table schema statements."""
     schemas = []
     for table in tables:
         if table.schema_sql not in schemas:
@@ -27,6 +29,7 @@ def _metadata_schema_sql(tables: tuple[MetadataTable, ...]) -> str:
 
 
 def _metadata_index_sql(tables: tuple[MetadataTable, ...]) -> str:
+    """Combine distinct metadata table index statements."""
     indexes = []
     for table in tables:
         index_sql = table.index_sql()
@@ -39,6 +42,7 @@ def _metadata_index_sql(tables: tuple[MetadataTable, ...]) -> str:
 def _insert_metadata_row(
     cursor: Any, table: MetadataTable, row: dict[str, Any]
 ) -> None:
+    """Insert a metadata row using the table column definitions."""
     cursor.execute(
         f"""
 INSERT INTO {table.name} ({", ".join(table.columns)})

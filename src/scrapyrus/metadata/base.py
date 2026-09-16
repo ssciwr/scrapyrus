@@ -28,6 +28,7 @@ class MetadataTable:
         register: bool = True,
         **kwargs: object,
     ) -> None:
+        """Register subclasses unless registration is explicitly disabled."""
         super().__init_subclass__(**kwargs)
         if register:
             MetadataTable._tables.append(cls)
