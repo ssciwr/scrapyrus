@@ -29,6 +29,7 @@ class WarsawScraper(ImageScraperBase):
 
     @classmethod
     def _image_url(cls, record_url: str) -> str:
+        """Resolve a downloadable image URL from a record or file URL."""
         parsed_url = urlparse(record_url)
         if (
             parsed_url.scheme not in {"http", "https"}

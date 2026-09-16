@@ -33,6 +33,7 @@ class NakalaScraper(ImageScraperBase):
 
     @staticmethod
     def _content_disposition_filename(response: requests.Response) -> str | None:
+        """Extract a filename from the Content-Disposition header."""
         header = response.headers.get("Content-Disposition")
         if not header:
             return None
@@ -46,6 +47,7 @@ class NakalaScraper(ImageScraperBase):
 
     @classmethod
     def _filename(cls, url: str, response: requests.Response) -> str:
+        """Choose a filename for a downloaded image."""
         filename = cls._content_disposition_filename(response)
         if filename is not None:
             return filename

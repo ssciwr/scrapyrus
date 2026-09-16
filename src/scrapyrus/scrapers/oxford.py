@@ -26,6 +26,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _article_identifier(cls, url: str) -> str:
+        """Extract the article identifier from a record URL."""
         parsed_url = urlparse(url)
         match = cls.ARTICLE_PATH_PATTERN.fullmatch(parsed_url.path)
         if match is None:
@@ -34,6 +35,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _file_identifier(cls, url: str) -> str | None:
+        """Extract a file identifier from a URL, or return None."""
         parsed_url = urlparse(url)
         query = parse_qs(parsed_url.query, keep_blank_values=True)
         if "file" not in query:
@@ -63,6 +65,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _image_url(cls, url: str) -> str:
+        """Resolve a downloadable image URL from a record or file URL."""
         cls._article_identifier(url)
         file_identifier = cls._file_identifier(url)
         if file_identifier is None:
@@ -71,6 +74,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _download_urls(cls, record: object) -> list[str]:
+        """Extract image download URLs from a record."""
         if not isinstance(record, dict):
             raise ValueError("Oxford repository API record must be an object")
 
@@ -95,6 +99,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
         return list(dict.fromkeys(download_urls))
 
     def _image_urls(self, url: str, session: requests.Session) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         article_identifier = self._article_identifier(url)
         file_identifier = self._file_identifier(url)
         if file_identifier is not None:
@@ -109,6 +114,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
 
     @staticmethod
     def _content_disposition_filename(response: requests.Response) -> str | None:
+        """Extract a filename from the Content-Disposition header."""
         header = response.headers.get("Content-Disposition")
         if not header:
             return None
@@ -122,6 +128,7 @@ class OxfordScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _filename(cls, response: requests.Response, image_url: str) -> str:
+        """Choose a filename for a downloaded image."""
         filename = cls._content_disposition_filename(response)
         if filename is not None:
             return filename

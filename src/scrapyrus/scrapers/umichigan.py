@@ -15,6 +15,7 @@ class UMichiganScraper(IIIFImageScraper):
 
     @classmethod
     def _record_identifier(cls, url: str) -> str | None:
+        """Extract a record identifier from a supported URL."""
         parsed_url = urlparse(url)
         if parsed_url.scheme not in {"http", "https"}:
             return None

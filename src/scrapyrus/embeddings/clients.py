@@ -1,3 +1,5 @@
+"""Embedding clients for hosted and OpenAI-compatible inference servers."""
+
 from __future__ import annotations
 
 import math
@@ -6,24 +8,25 @@ from urllib.parse import quote, urlparse
 
 import requests
 
-
-LLM_REQUEST_TIMEOUT = 60
+EMBEDDING_REQUEST_TIMEOUT = 60
 OPENAI_EMBEDDING_CONTEXT_LENGTH = 8_192
 VOYAGEAI_EMBEDDING_CONTEXT_LENGTH = 32_000
 
 
-class LLMProviderBase:
+class EmbeddingClient:
     """Base class for inference-server provider implementations.
 
     Subclasses are registered in definition order. Their ``initialize``
     methods form a chain of responsibility for inference server URLs.
     """
 
-    _providers: ClassVar[list[type[LLMProviderBase]]] = []
+    _providers: ClassVar[list[type[EmbeddingClient]]] = []
 
-    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
+    def __init__(
+        self, inference_server_url: str, model_name: str, api_key: str
+    ) -> None:
         self.inference_server_url = inference_server_url
-        self.modelname = modelname
+        self.model_name = model_name
         self.api_key = api_key
 
     def __init_subclass__(
@@ -32,20 +35,21 @@ class LLMProviderBase:
         register: bool = True,
         **kwargs: object,
     ) -> None:
+        """Register subclasses unless registration is explicitly disabled."""
         super().__init_subclass__(**kwargs)
         if register:
-            LLMProviderBase._providers.append(cls)
+            EmbeddingClient._providers.append(cls)
 
     @classmethod
-    def registered_providers(cls) -> tuple[type[LLMProviderBase], ...]:
+    def registered_providers(cls) -> tuple[type[EmbeddingClient], ...]:
         """Return provider classes in responsibility-chain order."""
 
         return tuple(cls._providers)
 
     @classmethod
     def initialize(
-        cls, inference_server_url: str, modelname: str, api_key: str
-    ) -> LLMProviderBase | None:
+        cls, inference_server_url: str, model_name: str, api_key: str
+    ) -> EmbeddingClient | None:
         """Return a provider instance if *cls* handles the server URL."""
 
         raise NotImplementedError
@@ -65,12 +69,23 @@ class LLMProviderBase:
 
         raise NotImplementedError
 
-    def embed(self, text: str) -> tuple[float, ...]:
+    def _embed_text(self, text: str) -> tuple[float, ...]:
         """Return the embedding for *text*."""
 
         raise NotImplementedError
 
+    def embed_documents(self, texts: list[str]) -> list[tuple[float, ...]]:
+        """Embed source texts using this client's configured model."""
+
+        return [self._embed_text(text) for text in texts]
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        """Embed a free-text query with the same model."""
+
+        return self._embed_text(text)
+
     def _session(self) -> requests.Session:
+        """Create an HTTP session with JSON and authentication headers."""
         session = requests.Session()
         session.headers.update(
             {
@@ -81,9 +96,11 @@ class LLMProviderBase:
         return session
 
     def _get_json(self, path: str) -> dict[str, Any]:
+        """Fetch a JSON object from an inference server endpoint."""
         return self._request_json("GET", path)
 
     def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Post a JSON body to an inference server endpoint."""
         return self._request_json("POST", path, body)
 
     def _request_json(
@@ -92,9 +109,10 @@ class LLMProviderBase:
         path: str,
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Send an inference request and validate the JSON object response."""
         with self._session() as client:
             request = client.get if method == "GET" else client.post
-            kwargs: dict[str, Any] = {"timeout": LLM_REQUEST_TIMEOUT}
+            kwargs: dict[str, Any] = {"timeout": EMBEDDING_REQUEST_TIMEOUT}
             if body is not None:
                 kwargs["json"] = body
             response = request(f"{self.inference_server_url}{path}", **kwargs)
@@ -105,38 +123,40 @@ class LLMProviderBase:
         return payload
 
 
-def initialize_llm_provider(
-    inference_server_url: str, modelname: str, api_key: str
-) -> LLMProviderBase:
+def build_embedding_client(
+    inference_server_url: str, model_name: str, api_key: str
+) -> EmbeddingClient:
     """Initialize the first registered provider responsible for a server."""
 
-    for provider_type in LLMProviderBase.registered_providers():
-        provider = provider_type.initialize(inference_server_url, modelname, api_key)
+    for provider_type in EmbeddingClient.registered_providers():
+        provider = provider_type.initialize(inference_server_url, model_name, api_key)
         if provider is not None:
             return provider
     raise ValueError(
-        f"No registered LLM provider handles inference server {inference_server_url!r}"
+        f"No registered embedding provider handles inference server {inference_server_url!r}"
     )
 
 
-class MistralProvider(LLMProviderBase):
+class MistralProvider(EmbeddingClient):
     """Provider for Mistral AI's hosted API."""
 
-    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
-        super().__init__(_mistral_base_url(inference_server_url), modelname, api_key)
+    def __init__(
+        self, inference_server_url: str, model_name: str, api_key: str
+    ) -> None:
+        super().__init__(_mistral_base_url(inference_server_url), model_name, api_key)
         self._context_length: int | None = None
         self._embedding_length: int | None = None
 
     @classmethod
     def initialize(
-        cls, inference_server_url: str, modelname: str, api_key: str
+        cls, inference_server_url: str, model_name: str, api_key: str
     ) -> MistralProvider | None:
         """Detect Mistral AI from its API hostname."""
 
         hostname = urlparse(inference_server_url).hostname
         if hostname is None or hostname.rstrip(".").lower() != "api.mistral.ai":
             return None
-        return cls(inference_server_url, modelname, api_key)
+        return cls(inference_server_url, model_name, api_key)
 
     def token_count(self, text: str) -> int:
         _, token_count = self._embed(text)
@@ -144,7 +164,7 @@ class MistralProvider(LLMProviderBase):
 
     def context_length(self) -> int:
         if self._context_length is None:
-            model_id = quote(self.modelname, safe="")
+            model_id = quote(self.model_name, safe="")
             payload = self._get_json(f"/models/{model_id}")
             context_length = payload.get("max_context_length")
             if (
@@ -160,17 +180,19 @@ class MistralProvider(LLMProviderBase):
 
     def embedding_length(self) -> int:
         if self._embedding_length is None:
-            self.embed("test")
+            self._embed_text("test")
         assert self._embedding_length is not None
         return self._embedding_length
 
-    def embed(self, text: str) -> tuple[float, ...]:
+    def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         vector, _ = self._embed(text)
         return vector
 
     def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        """Return a validated embedding vector and its token usage."""
         payload = self._post_json(
-            "/embeddings", {"model": self.modelname, "input": text}
+            "/embeddings", {"model": self.model_name, "input": text}
         )
         try:
             embedding = payload["data"][0]["embedding"]
@@ -199,23 +221,25 @@ class MistralProvider(LLMProviderBase):
         return vector, token_count
 
 
-class OpenAIProvider(LLMProviderBase):
+class OpenAIProvider(EmbeddingClient):
     """Provider for OpenAI's hosted API."""
 
-    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
-        super().__init__(_openai_base_url(inference_server_url), modelname, api_key)
+    def __init__(
+        self, inference_server_url: str, model_name: str, api_key: str
+    ) -> None:
+        super().__init__(_openai_base_url(inference_server_url), model_name, api_key)
         self._embedding_length: int | None = None
 
     @classmethod
     def initialize(
-        cls, inference_server_url: str, modelname: str, api_key: str
+        cls, inference_server_url: str, model_name: str, api_key: str
     ) -> OpenAIProvider | None:
         """Detect OpenAI from its API hostname."""
 
         hostname = urlparse(inference_server_url).hostname
         if hostname is None or hostname.rstrip(".").lower() != "api.openai.com":
             return None
-        return cls(inference_server_url, modelname, api_key)
+        return cls(inference_server_url, model_name, api_key)
 
     def token_count(self, text: str) -> int:
         _, token_count = self._embed(text)
@@ -226,17 +250,19 @@ class OpenAIProvider(LLMProviderBase):
 
     def embedding_length(self) -> int:
         if self._embedding_length is None:
-            self.embed("test")
+            self._embed_text("test")
         assert self._embedding_length is not None
         return self._embedding_length
 
-    def embed(self, text: str) -> tuple[float, ...]:
+    def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         vector, _ = self._embed(text)
         return vector
 
     def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        """Return a validated embedding vector and its token usage."""
         payload = self._post_json(
-            "/embeddings", {"model": self.modelname, "input": text}
+            "/embeddings", {"model": self.model_name, "input": text}
         )
         try:
             embedding = payload["data"][0]["embedding"]
@@ -265,23 +291,25 @@ class OpenAIProvider(LLMProviderBase):
         return vector, token_count
 
 
-class VoyageAIProvider(LLMProviderBase):
+class VoyageAIProvider(EmbeddingClient):
     """Provider for VoyageAI's hosted API."""
 
-    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
-        super().__init__(_voyageai_base_url(inference_server_url), modelname, api_key)
+    def __init__(
+        self, inference_server_url: str, model_name: str, api_key: str
+    ) -> None:
+        super().__init__(_voyageai_base_url(inference_server_url), model_name, api_key)
         self._embedding_length: int | None = None
 
     @classmethod
     def initialize(
-        cls, inference_server_url: str, modelname: str, api_key: str
+        cls, inference_server_url: str, model_name: str, api_key: str
     ) -> VoyageAIProvider | None:
         """Detect VoyageAI from its API hostname."""
 
         hostname = urlparse(inference_server_url).hostname
         if hostname is None or hostname.rstrip(".").lower() != "api.voyageai.com":
             return None
-        return cls(inference_server_url, modelname, api_key)
+        return cls(inference_server_url, model_name, api_key)
 
     def token_count(self, text: str) -> int:
         _, token_count = self._embed(text)
@@ -292,17 +320,19 @@ class VoyageAIProvider(LLMProviderBase):
 
     def embedding_length(self) -> int:
         if self._embedding_length is None:
-            self.embed("test")
+            self._embed_text("test")
         assert self._embedding_length is not None
         return self._embedding_length
 
-    def embed(self, text: str) -> tuple[float, ...]:
+    def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         vector, _ = self._embed(text)
         return vector
 
     def _embed(self, text: str) -> tuple[tuple[float, ...], int]:
+        """Return a validated embedding vector and its token usage."""
         payload = self._post_json(
-            "/embeddings", {"model": self.modelname, "input": text}
+            "/embeddings", {"model": self.model_name, "input": text}
         )
         try:
             embedding = payload["data"][0]["embedding"]
@@ -331,21 +361,23 @@ class VoyageAIProvider(LLMProviderBase):
         return vector, token_count
 
 
-class VLLMProvider(LLMProviderBase):
+class VLLMProvider(EmbeddingClient):
     """Provider for a vLLM OpenAI-compatible inference server."""
 
-    def __init__(self, inference_server_url: str, modelname: str, api_key: str) -> None:
-        super().__init__(_vllm_base_url(inference_server_url), modelname, api_key)
+    def __init__(
+        self, inference_server_url: str, model_name: str, api_key: str
+    ) -> None:
+        super().__init__(_vllm_base_url(inference_server_url), model_name, api_key)
         self._context_length: int | None = None
         self._embedding_length: int | None = None
 
     @classmethod
     def initialize(
-        cls, inference_server_url: str, modelname: str, api_key: str
+        cls, inference_server_url: str, model_name: str, api_key: str
     ) -> VLLMProvider | None:
         """Detect vLLM through its version endpoint."""
 
-        provider = cls(inference_server_url, modelname, api_key)
+        provider = cls(inference_server_url, model_name, api_key)
         try:
             payload = provider._get_json("/version")
         except (requests.RequestException, ValueError):
@@ -366,13 +398,14 @@ class VLLMProvider(LLMProviderBase):
 
     def embedding_length(self) -> int:
         if self._embedding_length is None:
-            self.embed("test")
+            self._embed_text("test")
         assert self._embedding_length is not None
         return self._embedding_length
 
-    def embed(self, text: str) -> tuple[float, ...]:
+    def _embed_text(self, text: str) -> tuple[float, ...]:
+        """Request and validate an embedding vector for the text."""
         payload = self._post_json(
-            "/v1/embeddings", {"model": self.modelname, "input": text}
+            "/v1/embeddings", {"model": self.model_name, "input": text}
         )
         try:
             embedding = payload["data"][0]["embedding"]
@@ -391,8 +424,9 @@ class VLLMProvider(LLMProviderBase):
         return vector
 
     def _tokenize(self, text: str) -> tuple[int, int]:
+        """Return the text token count and model context length."""
         payload = self._post_json(
-            "/tokenize", {"model": self.modelname, "prompt": text}
+            "/tokenize", {"model": self.model_name, "prompt": text}
         )
         count = payload.get("count")
         context_length = payload.get("max_model_len")
@@ -412,20 +446,65 @@ class VLLMProvider(LLMProviderBase):
 
 
 def _vllm_base_url(inference_server_url: str) -> str:
+    """Normalize the vLLM server URL by removing a trailing version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url[:-3] if base_url.endswith("/v1") else base_url
 
 
 def _mistral_base_url(inference_server_url: str) -> str:
+    """Normalize the Mistral server URL to include the version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
 
 
 def _openai_base_url(inference_server_url: str) -> str:
+    """Normalize the OpenAI server URL to include the version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
 
 
 def _voyageai_base_url(inference_server_url: str) -> str:
+    """Normalize the Voyage AI server URL to include the version path."""
     base_url = inference_server_url.rstrip("/")
     return base_url if base_url.endswith("/v1") else f"{base_url}/v1"
+
+
+def embedding_error_message(error: BaseException) -> str:
+    message = str(error)
+    if isinstance(error, requests.HTTPError) and error.response is not None:
+        response_message = response_error_message(error.response)
+        if response_message:
+            return (
+                f"{message}: {response_message}"
+                if message and response_message not in message
+                else response_message
+            )
+    return message
+
+
+def response_error_message(response: Any) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        error_payload = payload.get("error", payload)
+        if isinstance(error_payload, dict):
+            parts = [
+                str(error_payload[key])
+                for key in ("message", "type", "param", "code")
+                if error_payload.get(key) is not None
+            ]
+            return " ".join(parts) or None
+        return str(error_payload)
+    text = getattr(response, "text", None)
+    return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+def is_skippable_embedding_error(error: BaseException) -> bool:
+    message = embedding_error_message(error).lower()
+    return (
+        "maximum context length" in message
+        and ("input_tokens" in message or "input token" in message)
+        and ("prompt contains" in message or "requested" in message)
+    )

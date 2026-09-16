@@ -64,10 +64,12 @@ class RecordingConnection:
 
 
 def _normalize_sql(query):
+    """Collapse SQL whitespace for test comparisons."""
     return " ".join(str(query).split())
 
 
 def _transcription_rows(cursor):
+    """Collect rows inserted into the transcriptions table by the test cursor."""
     return [
         params
         for query, params in cursor.executions

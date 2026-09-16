@@ -28,6 +28,7 @@ class YaleScraper(IIIFImageScraper):
 
     @classmethod
     def _manifest_url(cls, catalog_url: str) -> str:
+        """Resolve the IIIF manifest URL for a record."""
         parsed_url = urlparse(catalog_url)
         catalog_match = cls.CATALOG_PATH_PATTERN.fullmatch(parsed_url.path)
         if parsed_url.hostname != cls.CATALOG_HOST or catalog_match is None:

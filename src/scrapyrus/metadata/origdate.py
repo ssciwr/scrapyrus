@@ -21,6 +21,7 @@ DATE_ATTRIBUTE_RE = re.compile(
 
 
 def _date_parts(value: str) -> tuple[int, int | None, int | None]:
+    """Parse a date attribute into year, month, and day components."""
     match = DATE_ATTRIBUTE_RE.match(value)
     if match is None:
         raise ValueError(f"Unsupported origDate attribute value: {value!r}")
@@ -33,6 +34,7 @@ def _date_parts(value: str) -> tuple[int, int | None, int | None]:
 
 
 def _is_alternative(xml_id: str | None) -> bool:
+    """Check whether an XML identifier marks an alternative date."""
     return xml_id is not None and xml_id.startswith("dateAlternative")
 
 
@@ -180,6 +182,7 @@ class OrigDateModelFactory:
         ]
 
     def _parse_date(self, tm_id, date_node):
+        """Parse a date node into original date metadata when bounds exist."""
         self.date_value_proc.set_context(xdm_item=date_node)
 
         when = self._date_attribute("when", "when-custom")
@@ -214,9 +217,11 @@ class OrigDateModelFactory:
         )
 
     def _node_string(self, expression):
+        """Evaluate an XPath expression and return its optional string value."""
         return optional_string(self.date_value_proc.evaluate_single(expression))
 
     def _date_attribute(self, *attribute_names):
+        """Parse the first available date attribute from the requested names."""
         for attribute_name in attribute_names:
             value = self._node_string(f"string((@{attribute_name})[1])")
             if value is not None:
