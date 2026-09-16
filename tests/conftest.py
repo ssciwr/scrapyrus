@@ -4,6 +4,7 @@ import pytest
 
 
 def _write_tei(path: Path, *, tm_id: str, body: str = "") -> None:
+    """Write a minimal TEI fixture with the requested identifier and body."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '<TEI xmlns="http://www.tei-c.org/ns/1.0">'

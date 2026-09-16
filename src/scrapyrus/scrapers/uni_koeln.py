@@ -32,6 +32,7 @@ class UniKoelnScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _image_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         soup = BeautifulSoup(html, "html.parser")
         marker = soup.find(
             string=lambda text: text is not None and text.strip() == "Abbildung:"

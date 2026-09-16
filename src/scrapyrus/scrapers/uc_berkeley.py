@@ -33,6 +33,7 @@ class UCBerkeleyScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _image_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         soup = BeautifulSoup(html, "html.parser")
         schema = soup.select_one(
             'script#detailed-schema-org[type="application/ld+json"]'

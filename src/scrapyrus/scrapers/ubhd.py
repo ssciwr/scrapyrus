@@ -27,6 +27,7 @@ class UBHDScraper(IIIFImageScraper):
 
     @classmethod
     def _manifest_url(cls, html: str, page_url: str) -> str:
+        """Resolve the IIIF manifest URL for a record."""
         soup = BeautifulSoup(html, "html.parser")
         for selector in cls.MANIFEST_SELECTORS:
             link = soup.select_one(selector)

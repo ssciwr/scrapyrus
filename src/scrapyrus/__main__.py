@@ -1,8 +1,24 @@
-from pathlib import Path
 import re
+import json
+from pathlib import Path
 
 import click
 
+from scrapyrus.embeddings import (
+    EMBEDDING_CORPORA,
+    EmbeddingSpecification,
+    EmbeddingStore,
+    EmbeddingsUnavailableError,
+    PgvectorUnavailableError,
+    SourceUnavailableError,
+    build_embedding_client,
+)
+from scrapyrus.embeddings.corpora import KeywordMatch, XmlCorpus
+from scrapyrus.embeddings.clients import (
+    SUPPORTED_EMBEDDING_PROVIDERS,
+    infer_embedding_provider,
+)
+from scrapyrus.embeddings.evaluation import evaluate_embeddings
 from scrapyrus.images import (
     DEFAULT_BROKEN_IMAGE_FILE,
     image_log_file,
@@ -15,22 +31,10 @@ from scrapyrus.transcriptions.core import (
     import_transcriptions,
     ingest_transcriptions,
 )
-from scrapyrus.transcriptions.embeddings import (
-    EMBEDDING_KIND_ALIASES,
-    EmbeddingStore,
-    PgvectorUnavailableError,
-    TranscriptionsUnavailableError,
-    delete_embeddings,
-    dump_embeddings,
-    import_embeddings,
-    update_embeddings,
-)
-from scrapyrus.transcriptions.evaluation import evaluate_embeddings
 from scrapyrus.transcriptions.lemmatization import (
     MAX_WORDS_PER_CHUNK,
     lemmatize_transcriptions,
 )
-
 
 idp_data = click.option(
     "--idp-data",
@@ -54,6 +58,7 @@ database_url = click.option(
 
 
 def _apply_options(function, options):
+    """Apply Click option decorators in declaration order."""
     for option in reversed(options):
         function = option(function)
     return function
@@ -73,17 +78,33 @@ def embedding_client_options(function):
                 "--api-key",
                 envvar="SCRAPYRUS_EMBEDDINGS_API_KEY",
                 required=True,
-                help="API key for the OpenAI-compatible inference server.",
+                help="API key for the embedding provider.",
+            ),
+            click.option(
+                "--provider",
+                type=click.Choice(sorted(SUPPORTED_EMBEDDING_PROVIDERS)),
+                envvar="SCRAPYRUS_EMBEDDING_PROVIDER",
+            ),
+            click.option(
+                "--provider-options",
+                default="{}",
+                envvar="SCRAPYRUS_EMBEDDING_PROVIDER_OPTIONS",
+                help="JSON object of non-secret compatibility options.",
+            ),
+            click.option(
+                "--endpoint-profile",
+                envvar="SCRAPYRUS_EMBEDDING_ENDPOINT_PROFILE",
+                help="Deployment profile consumers resolve through EMBEDDING_ENDPOINT_<PROFILE>.",
             ),
         ],
     )
 
 
 def _embedding_model_options():
+    """Return the shared embedding model command options."""
     return [
         click.option(
             "--model-name",
-            "--modelname",
             envvar="SCRAPYRUS_EMBEDDINGS_MODEL",
             required=True,
             help="Embedding model name.",
@@ -93,22 +114,6 @@ def _embedding_model_options():
 
 def embedding_model_options(function):
     return _apply_options(function, _embedding_model_options())
-
-
-def embedding_kind_options(function):
-    return _apply_options(
-        function,
-        [
-            click.option(
-                "--kind",
-                "document_kind",
-                type=click.Choice(tuple(EMBEDDING_KIND_ALIASES)),
-                default="transcription",
-                show_default=True,
-                help="Embedding table to use.",
-            )
-        ],
-    )
 
 
 @click.group()
@@ -333,225 +338,256 @@ def lemmatize(database_url: str, progress: bool, max_words: int) -> None:
 
 @main.group("embeddings")
 def embeddings() -> None:
-    """Work with transcription and translation embeddings."""
+    """Work with registered embedding corpora."""
 
 
-@embeddings.command("ingest")
-@database_url
-@embedding_client_options
-@embedding_model_options
-@click.option(
-    "--sample",
-    type=click.IntRange(min=1),
-    help=(
-        "Randomly select this many records that have both a transcription "
-        "and a translation."
-    ),
-)
-@click.option(
-    "--seed",
-    type=int,
-    default=0,
-    show_default=True,
-    help="Seed used to make --sample selection deterministic.",
-)
-@click.option(
-    "--chunk-size",
-    type=click.IntRange(min=1),
-    default=500,
-    show_default=True,
-    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
-)
-@click.option(
-    "--progress/--no-progress",
-    default=True,
-    show_default=True,
-    help="Show progress bars while embedding database XML rows.",
-)
-def ingest_embeddings(
+def _tsv_field(value: object | None) -> str:
+    """Format a value as a single TSV field without whitespace breaks."""
+    return "" if value is None else " ".join(str(value).split())
+
+
+def _run_embedding_operation(operation: str, corpus_name: str, **options) -> None:
+    """Run an embedding store command and report CLI errors."""
+    try:
+        model_name = options.pop("model_name")
+        conninfo = options.pop("database_url")
+        if operation in {"ingest", "update", "query"}:
+            url = options.pop("inference_server_url")
+            provider = options.pop("provider") or infer_embedding_provider(url)
+            profile = options.pop("endpoint_profile")
+            provider_options = json.loads(options.pop("provider_options"))
+            if not isinstance(provider_options, dict):
+                raise ValueError("provider-options must be a JSON object")
+            specification = EmbeddingSpecification(
+                model_name=model_name,
+                provider=provider,
+                provider_options=provider_options,
+                endpoint_profile=profile or ("vllm" if provider == "vllm" else None),
+            )
+            client = build_embedding_client(
+                provider=specification.provider,
+                model_name=model_name,
+                api_key=options.pop("api_key"),
+                inference_server_url=url,
+                provider_options=specification.provider_options,
+            )
+            store = EmbeddingStore(
+                corpus=corpus_name, specification=specification, client=client
+            )
+        elif operation == "import":
+            store = EmbeddingStore.from_dump(
+                corpus=corpus_name, model_name=model_name, source=options["input_file"]
+            )
+        else:
+            store = EmbeddingStore.from_database(
+                corpus=corpus_name, model_name=model_name, conninfo=conninfo
+            )
+        if operation in {"ingest", "update"}:
+            store.ingest(
+                conninfo,
+                stale_only=operation == "update",
+                progressbar=options.pop("progress"),
+                **options,
+            )
+        elif operation == "delete":
+            store.delete(conninfo)
+        elif operation == "dump":
+            target = options["output_file"]
+            if target is None:
+                filename_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model_name).strip("-")
+                target = Path(f"{corpus_name}-embeddings-{filename_model}.dump")
+            store.dump(target, conninfo)
+        elif operation == "import":
+            store.import_dump(options["input_file"], conninfo, force=options["force"])
+        elif operation == "query":
+            matches = store.query(options["query"], conninfo, top_k=options["top_k"])
+            keyword_results = not isinstance(EMBEDDING_CORPORA[corpus_name], XmlCorpus)
+            click.echo(
+                "rank\tsimilarity\tkeyword"
+                if keyword_results
+                else "rank\tsimilarity\ttm_id\tlanguage\tsource_path\ttext"
+            )
+            for rank, match in enumerate(matches, start=1):
+                fields = (
+                    (match.keyword,)
+                    if isinstance(match, KeywordMatch)
+                    else (
+                        match.tm_id,
+                        match.language,
+                        match.source_path,
+                        match.document_text,
+                    )
+                )
+                click.echo(
+                    "\t".join(
+                        (
+                            str(rank),
+                            f"{match.similarity:.6f}",
+                            *(_tsv_field(field) for field in fields),
+                        )
+                    )
+                )
+    except (
+        PgvectorUnavailableError,
+        SourceUnavailableError,
+        EmbeddingsUnavailableError,
+        ValueError,
+    ) as error:
+        raise click.ClickException(str(error)) from error
+
+
+def _embedding_command(operation: str, corpus_name: str):
+    """Build all operation commands from the same corpus registry."""
+
+    def command(**options) -> None:
+        _run_embedding_operation(operation, corpus_name, **options)
+
+    command.__doc__ = f"{operation.capitalize()} {corpus_name} embeddings."
+    options = [database_url, embedding_model_options]
+    if operation in {"ingest", "update", "query"}:
+        options.append(embedding_client_options)
+    if operation in {"ingest", "update"}:
+        options.append(
+            click.option("--progress/--no-progress", default=True, show_default=True)
+        )
+        if isinstance(EMBEDDING_CORPORA[corpus_name], XmlCorpus):
+            options.append(
+                click.option(
+                    "--chunk-size",
+                    type=click.IntRange(min=1),
+                    default=500,
+                    show_default=True,
+                    help="Maximum words per chunk; adjacent chunks overlap by 10%.",
+                )
+            )
+            if operation == "ingest":
+                options.extend(
+                    [
+                        click.option(
+                            "--sample",
+                            type=click.IntRange(min=1),
+                            help="Sample records having both a transcription and a translation.",
+                        ),
+                        click.option("--seed", type=int, default=0, show_default=True),
+                    ]
+                )
+    elif operation == "query":
+        options.extend(
+            [
+                click.option(
+                    "--top-k", type=click.IntRange(min=1), default=10, show_default=True
+                ),
+                click.argument("query"),
+            ]
+        )
+    elif operation == "dump":
+        options.append(
+            click.argument(
+                "output_file",
+                type=click.Path(path_type=Path, dir_okay=False),
+                required=False,
+            )
+        )
+    elif operation == "import":
+        options.append(
+            click.argument(
+                "input_file",
+                type=click.Path(
+                    path_type=Path, dir_okay=False, exists=True, readable=True
+                ),
+            )
+        )
+    if operation in {"ingest", "update", "import"}:
+        options.append(
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table has a different embedding specification.",
+            )
+        )
+    return click.command(corpus_name)(_apply_options(command, options))
+
+
+for operation_name in ("ingest", "update", "query", "delete", "dump", "import"):
+    operation_group = click.Group(
+        operation_name, help=f"{operation_name.capitalize()} embeddings."
+    )
+    embeddings.add_command(operation_group)
+    for corpus_name in EMBEDDING_CORPORA:
+        operation_group.add_command(_embedding_command(operation_name, corpus_name))
+
+
+@embeddings.group("evaluate")
+def evaluate_embedding_rows() -> None:
+    """Evaluate embedding retrieval."""
+
+
+def _text_evaluation_options(function):
+    """Build a decorator for shared text evaluation options."""
+
+    return _apply_options(
+        function,
+        [
+            database_url,
+            click.option(
+                "--sample",
+                type=click.IntRange(min=1),
+                help=(
+                    "Randomly select this many records that have both a "
+                    "transcription and a translation."
+                ),
+            ),
+            click.option(
+                "--seed",
+                type=int,
+                default=0,
+                show_default=True,
+                help="Seed used to make --sample selection deterministic.",
+            ),
+            click.option(
+                "--progress/--no-progress",
+                default=True,
+                show_default=True,
+                help="Show progress bars while evaluating embedding retrieval.",
+            ),
+        ],
+    )
+
+
+def _evaluate_text_embeddings(
+    query_kind: str,
     database_url: str,
-    inference_server_url: str,
-    model_name: str,
-    api_key: str,
     sample: int | None,
     seed: int,
-    chunk_size: int,
     progress: bool,
 ) -> None:
-    """Embed transcription and translation XML rows in PostgreSQL."""
-
-    store = EmbeddingStore(inference_server_url, model_name, api_key)
+    """Run text embedding evaluation and report CLI errors."""
     try:
-        store.setup_store(
+        evaluate_embeddings(
             database_url,
-            progress,
+            query_kind=query_kind,
+            progressbar=progress,
             sample=sample,
             seed=seed,
-            chunk_size=chunk_size,
         )
-    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
+    except (EmbeddingsUnavailableError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
-@embeddings.command("delete")
-@database_url
-@embedding_model_options
-def delete_embedding_model(
-    database_url: str,
-    model_name: str,
-) -> None:
-    """Delete one model's transcription and translation embeddings."""
+@evaluate_embedding_rows.command("transcriptions")
+@_text_evaluation_options
+def evaluate_transcription_embeddings(**options) -> None:
+    """Evaluate transcription queries against translation embeddings."""
 
-    delete_embeddings(database_url, modelname=model_name)
+    _evaluate_text_embeddings("transcriptions", **options)
 
 
-@embeddings.command("dump")
-@database_url
-@embedding_model_options
-@embedding_kind_options
-@click.argument(
-    "output_file",
-    type=click.Path(path_type=Path, dir_okay=False),
-    required=False,
-)
-def dump_embedding_rows(
-    database_url: str,
-    model_name: str,
-    document_kind: str,
-    output_file: Path | None,
-) -> None:
-    """Dump one model's embeddings in PostgreSQL binary COPY format."""
+@evaluate_embedding_rows.command("translations")
+@_text_evaluation_options
+def evaluate_translation_embeddings(**options) -> None:
+    """Evaluate translation queries against transcription embeddings."""
 
-    if output_file is None:
-        canonical_kind = EMBEDDING_KIND_ALIASES[document_kind]
-        filename_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model_name).strip("-")
-        output_file = Path(f"{canonical_kind}-embeddings-{filename_model}.dump")
-
-    try:
-        dump_embeddings(
-            output_file,
-            database_url,
-            modelname=model_name,
-            document_kind=document_kind,
-        )
-    except PgvectorUnavailableError as error:
-        raise click.ClickException(str(error)) from error
-
-
-@embeddings.command("import")
-@database_url
-@embedding_model_options
-@embedding_kind_options
-@click.argument(
-    "input_file",
-    type=click.Path(path_type=Path, dir_okay=False, exists=True, readable=True),
-)
-def import_embedding_rows(
-    database_url: str,
-    model_name: str,
-    document_kind: str,
-    input_file: Path,
-) -> None:
-    """Import one model's embeddings from PostgreSQL binary COPY format."""
-
-    try:
-        import_embeddings(
-            input_file,
-            database_url,
-            modelname=model_name,
-            document_kind=document_kind,
-        )
-    except (PgvectorUnavailableError, ValueError) as error:
-        raise click.ClickException(str(error)) from error
-
-
-@embeddings.command("update")
-@database_url
-@embedding_client_options
-@embedding_model_options
-@click.option(
-    "--chunk-size",
-    type=click.IntRange(min=1),
-    default=500,
-    show_default=True,
-    help="Maximum words per embedding chunk; adjacent chunks overlap by 10%.",
-)
-@click.option(
-    "--progress/--no-progress",
-    default=True,
-    show_default=True,
-    help="Show progress bars while embedding stale database XML rows.",
-)
-def update_embedding_rows(
-    database_url: str,
-    inference_server_url: str,
-    model_name: str,
-    api_key: str,
-    chunk_size: int,
-    progress: bool,
-) -> None:
-    """Compute missing or stale embeddings for one model."""
-
-    try:
-        update_embeddings(
-            database_url,
-            progress,
-            inference_server_url=inference_server_url,
-            modelname=model_name,
-            api_key=api_key,
-            chunk_size=chunk_size,
-        )
-    except (PgvectorUnavailableError, TranscriptionsUnavailableError) as error:
-        raise click.ClickException(str(error)) from error
-
-
-@embeddings.command("evaluate")
-@database_url
-@click.option(
-    "--sample",
-    type=click.IntRange(min=1),
-    help=(
-        "Randomly select this many records that have both a transcription "
-        "and a translation."
-    ),
-)
-@click.option(
-    "--seed",
-    type=int,
-    default=0,
-    show_default=True,
-    help="Seed used to make --sample selection deterministic.",
-)
-@click.option(
-    "--output",
-    "output_file",
-    type=click.Path(path_type=Path, dir_okay=False),
-    default=Path("embedding-evaluation.md"),
-    show_default=True,
-    help="Markdown file to write evaluation findings to.",
-)
-@click.option(
-    "--progress/--no-progress",
-    default=True,
-    show_default=True,
-    help="Show progress bars while evaluating embedding retrieval.",
-)
-def evaluate_embedding_model(
-    database_url: str,
-    sample: int | None,
-    seed: int,
-    output_file: Path,
-    progress: bool,
-) -> None:
-    """Evaluate transcription-to-translation embedding retrieval."""
-
-    evaluate_embeddings(
-        database_url,
-        output_file=output_file,
-        progressbar=progress,
-        sample=sample,
-        seed=seed,
-    )
+    _evaluate_text_embeddings("translations", **options)
 
 
 if __name__ == "__main__":

@@ -198,10 +198,12 @@ def record_image_manifest_entry(
 
 
 def _empty_manifest() -> dict[str, Any]:
+    """Return an empty manifest with the current format version."""
     return {"version": IMAGE_MANIFEST_VERSION, "entries": []}
 
 
 def _manifest_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return dictionary entries from a manifest, ignoring invalid entries."""
     entries = manifest.get("entries")
     if not isinstance(entries, list):
         return []
@@ -209,5 +211,6 @@ def _manifest_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _is_safe_relative_path(value: str) -> bool:
+    """Check that a path is nonempty, relative, and has no parent traversal."""
     path = Path(value)
     return bool(value) and not path.is_absolute() and ".." not in path.parts

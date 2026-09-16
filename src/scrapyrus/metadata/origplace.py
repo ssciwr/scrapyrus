@@ -29,6 +29,7 @@ GRANULARITIES = {"settlement", "nome", "region"}
 
 
 def _first_place_id(pattern: re.Pattern[str], value: str | None) -> int | None:
+    """Extract the first matching place identifier, or return None."""
     if value is None:
         return None
 
@@ -40,6 +41,7 @@ def _first_place_id(pattern: re.Pattern[str], value: str | None) -> int | None:
 
 
 def _place_ids(pattern: re.Pattern[str], value: str | None) -> tuple[int, ...]:
+    """Extract all matching place identifiers from a reference."""
     if value is None:
         return ()
 
@@ -171,6 +173,7 @@ class OrigPlaceModelFactory:
         return models
 
     def _parse_place(self, tm_id, full_place_name, place_node):
+        """Parse a place node into rows for its Trismegistos place references."""
         self.place_value_proc.set_context(xdm_item=place_node)
 
         place_name = self._node_string("normalize-space(.)")
@@ -204,6 +207,7 @@ class OrigPlaceModelFactory:
         ]
 
     def _node_string(self, expression):
+        """Evaluate an XPath expression and return its optional string value."""
         return optional_string(self.place_value_proc.evaluate_single(expression))
 
     def next_place_id(self):

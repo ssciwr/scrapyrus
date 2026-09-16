@@ -30,6 +30,7 @@ class UCLScraper(ImageScraperBase):
 
     @classmethod
     def _legacy_accession_number(cls, url: str) -> str:
+        """Extract an accession number from a legacy record URL."""
         searches = parse_qs(urlparse(url).query).get("search", [])
         for search in searches:
             match = cls.ACCESSION_PATTERN.search(search)
@@ -59,6 +60,7 @@ class UCLScraper(ImageScraperBase):
 
     @staticmethod
     def _search_data(accession_number: str) -> dict[str, str]:
+        """Build search form data for an accession number."""
         return {
             "SourceName": "collect",
             "Fields[0].SearchInField": "False",
@@ -77,6 +79,7 @@ class UCLScraper(ImageScraperBase):
 
     @classmethod
     def _record_url(cls, html: str, page_url: str, accession_number: str) -> str:
+        """Find the collection record URL in search results."""
         soup = BeautifulSoup(html, "html.parser")
         record_urls = []
         for link in soup.find_all("a", href=True):
@@ -99,6 +102,7 @@ class UCLScraper(ImageScraperBase):
 
     @classmethod
     def _image_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         soup = BeautifulSoup(html, "html.parser")
         image_urls = []
         for link in soup.find_all("a", href=True):
@@ -119,6 +123,7 @@ class UCLScraper(ImageScraperBase):
 
     @staticmethod
     def _filename(image_url: str) -> str:
+        """Choose a filename for a downloaded image."""
         image_paths = parse_qs(urlparse(image_url).query).get("value", [])
         if not image_paths:
             raise ValueError(f"UCL image URL has no source path: {image_url}")
