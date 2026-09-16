@@ -24,6 +24,7 @@ PERSEUS_URN_RE = re.compile(r"urn:cts:[^\s]+")
 
 
 def _first_tm_authorwork_id(ref: str | None) -> int | None:
+    """Extract the first Trismegistos authorwork identifier from references."""
     if ref is None:
         return None
 
@@ -36,6 +37,7 @@ def _first_tm_authorwork_id(ref: str | None) -> int | None:
 
 
 def _perseus_author_urn(ref: str | None) -> str | None:
+    """Extract a Perseus author URN from a reference, or return None."""
     if ref is None:
         return None
 
@@ -145,6 +147,7 @@ class AncientEditionModelFactory:
         return models
 
     def _parse_bibl(self, tm_id, bibl_node):
+        """Parse a bibliography node into ancient edition metadata."""
         self.bibl_value_proc.set_context(xdm_item=bibl_node)
 
         title = self._node_string(
@@ -176,6 +179,7 @@ class AncientEditionModelFactory:
         )
 
     def _author(self):
+        """Return the author name, combining forename and surname when available."""
         forename = self._node_string("normalize-space((tei:author/tei:forename)[1])")
         surname = self._node_string("normalize-space((tei:author/tei:surname)[1])")
         if forename is not None or surname is not None:
@@ -184,6 +188,7 @@ class AncientEditionModelFactory:
         return self._node_string("normalize-space((tei:author)[1])")
 
     def _node_string(self, expression):
+        """Evaluate an XPath expression and return its optional string value."""
         return optional_string(self.bibl_value_proc.evaluate_single(expression))
 
     def next_ancient_edition_id(self):

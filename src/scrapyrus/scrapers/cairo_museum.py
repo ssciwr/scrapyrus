@@ -24,6 +24,7 @@ class CairoMuseumScraper(ImageScraperBase):
 
     @classmethod
     def _is_image_url(cls, url: str) -> bool:
+        """Check whether a URL points to a supported image resource."""
         parsed_url = urlparse(url)
         return (
             parsed_url.scheme in {"http", "https"}
@@ -44,6 +45,7 @@ class CairoMuseumScraper(ImageScraperBase):
 
     @classmethod
     def _image_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         soup = BeautifulSoup(html, "html.parser")
         image_urls = []
         seen_urls = set()
@@ -63,6 +65,7 @@ class CairoMuseumScraper(ImageScraperBase):
 
     @staticmethod
     def _filename(image_url: str) -> str:
+        """Choose a filename for a downloaded image."""
         filename = Path(unquote(urlparse(image_url).path)).name
         if not filename:
             raise ValueError(f"Cairo Museum image URL has no filename: {image_url}")
@@ -74,6 +77,7 @@ class CairoMuseumScraper(ImageScraperBase):
         image_url: str,
         target: Path,
     ) -> None:
+        """Download an image into the target directory."""
         filename = self._filename(image_url)
         logger.debug("Downloading Cairo Museum image to %s: %s", filename, image_url)
         with session.get(

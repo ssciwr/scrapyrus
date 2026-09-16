@@ -22,6 +22,7 @@ BIBLIO_TARGET_RE = re.compile(r"https?://papyri\.info/biblio/(?P<id>\d+)\b")
 
 
 def _biblio_id(target: str | None) -> int | None:
+    """Extract the first bibliography identifier, or return None."""
     if target is None:
         return None
 
@@ -139,6 +140,7 @@ class PrincipalEditionModelFactory:
         ]
 
     def _parse_principal_edition(self, tm_id, principal_edition_node):
+        """Parse a bibliography node into principal edition metadata."""
         self.principal_edition_value_proc.set_context(xdm_item=principal_edition_node)
 
         return PrincipalEditionModel(
@@ -153,11 +155,13 @@ class PrincipalEditionModelFactory:
         )
 
     def _node_string(self, expression):
+        """Evaluate an XPath expression and return its optional string value."""
         return optional_string(
             self.principal_edition_value_proc.evaluate_single(expression)
         )
 
     def _title(self):
+        """Return the preferred title from the current bibliography node."""
         for title_type in ("main", "abbreviated"):
             title = self._node_string(
                 f"normalize-space((tei:title[@type='{title_type}'])[1])"
@@ -170,6 +174,7 @@ class PrincipalEditionModelFactory:
         )
 
     def _author(self):
+        """Return the author name, combining forename and surname when available."""
         forename = self._node_string("normalize-space((tei:author[1]/tei:forename)[1])")
         surname = self._node_string("normalize-space((tei:author[1]/tei:surname)[1])")
         if forename is not None or surname is not None:
@@ -178,6 +183,7 @@ class PrincipalEditionModelFactory:
         return self._node_string("normalize-space((tei:author)[1])")
 
     def _biblio_id(self):
+        """Extract the first bibliography identifier, or return None."""
         targets = self.principal_edition_value_proc.evaluate("tei:ptr/@target")
         if targets is None:
             return None
@@ -190,6 +196,7 @@ class PrincipalEditionModelFactory:
         return None
 
     def _scope(self, *scope_names):
+        """Return the first bibliography scope matching the requested names."""
         predicates = " or ".join(
             f"@unit='{scope_name}' or @type='{scope_name}'"
             for scope_name in scope_names

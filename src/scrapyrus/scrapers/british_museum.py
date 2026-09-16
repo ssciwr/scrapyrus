@@ -32,6 +32,7 @@ class BritishMuseumScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _image_page_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract image detail page links from a museum record."""
         soup = BeautifulSoup(html, "html.parser")
         image_page_urls = []
         seen_urls = set()
@@ -54,6 +55,7 @@ class BritishMuseumScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _download_url(cls, html: str, page_url: str) -> str:
+        """Find the image download link on an image detail page."""
         soup = BeautifulSoup(html, "html.parser")
         for link in soup.find_all("a", href=True):
             if link.get_text(" ", strip=True) != cls.DOWNLOAD_LABEL:
@@ -66,6 +68,7 @@ class BritishMuseumScraper(RateLimitedMixin, ImageScraperBase):
 
     @staticmethod
     def _content_disposition_filename(response: requests.Response) -> str | None:
+        """Extract a filename from the Content-Disposition header."""
         header = response.headers.get("Content-Disposition")
         if not header:
             return None
@@ -79,6 +82,7 @@ class BritishMuseumScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _filename(cls, response: requests.Response, download_url: str) -> str:
+        """Choose a filename for a downloaded image."""
         filename = cls._content_disposition_filename(response)
         if filename is not None:
             return filename

@@ -42,6 +42,7 @@ class MetMuseumScraper(RateLimitedMixin, ImageScraperBase):
 
     @classmethod
     def _image_urls(cls, html: str) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         soup = BeautifulSoup(html, "html.parser")
         image_urls = []
         for script in soup.find_all("script", string=cls.ORIGINAL_IMAGE_URL_PATTERN):
@@ -59,6 +60,7 @@ class MetMuseumScraper(RateLimitedMixin, ImageScraperBase):
 
     @staticmethod
     def _filename(image_url: str) -> str:
+        """Choose a filename for a downloaded image."""
         filename = Path(unquote(urlparse(image_url).path)).name
         if not filename:
             raise ValueError(f"Met Museum image URL has no filename: {image_url}")

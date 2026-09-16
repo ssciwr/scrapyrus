@@ -336,6 +336,7 @@ def _transcription_row(
     document_type: str,
     language: str | None = None,
 ) -> dict[str, Any]:
+    """Build a database row with source metadata, XML, and extracted text."""
     return {
         "source_path": source.relative_to(idp_data).as_posix(),
         "tm_id": int(tm_id),
@@ -347,6 +348,7 @@ def _transcription_row(
 
 
 def _report_xml_failure(source: Path) -> None:
+    """Report the failing XML source path to standard error."""
     print(f"Failed while processing XML file: {source}", file=sys.stderr)
 
 
@@ -428,38 +430,14 @@ def translation_epidoc_xml_to_text(
 
 
 def _xml_to_stored_text(xml_content: str, document_type: str) -> str:
+    """Extract storage text using the options for the document type."""
     if document_type == "translation":
         return translation_epidoc_xml_to_text(xml_content)
     return epidoc_xml_to_text(xml_content, **MAXIMUM_TRANSCRIPTION_OPTIONS)
 
 
-def available_translation_languages(epidoc_xml: str | bytes | Path) -> list[str]:
-    """Return unique translation ``xml:lang`` values in document order."""
-
-    with PySaxonProcessor(license=False) as proc:
-        document = _parse_epidoc_xml(proc, epidoc_xml)
-        language_values = [
-            node.string_value
-            for node in select_nodes(
-                proc,
-                document,
-                ".//*[local-name() = 'div'][@type = 'translation']"
-                "[not(ancestor::*[local-name() = 'div'][@type = 'translation'])]"
-                " /@*[local-name() = 'lang' and "
-                "namespace-uri() = 'http://www.w3.org/XML/1998/namespace']",
-            )
-        ]
-
-    seen = set()
-    unique_languages = []
-    for language in language_values:
-        if language and language not in seen:
-            seen.add(language)
-            unique_languages.append(language)
-    return unique_languages
-
-
 def _parse_epidoc_xml(proc: PySaxonProcessor, epidoc_xml: str | bytes | Path):
+    """Parse EpiDoc XML supplied as text, bytes, or a file path."""
     if isinstance(epidoc_xml, Path):
         return parse_xml_document(proc, epidoc_xml)
     if isinstance(epidoc_xml, bytes):

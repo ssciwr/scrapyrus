@@ -31,6 +31,7 @@ class PSIOnlineScraper(ImageScraperBase):
 
     @classmethod
     def _download_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract image download URLs from a record."""
         soup = BeautifulSoup(html, "html.parser")
         download_urls = []
         seen_urls = set()
@@ -54,6 +55,7 @@ class PSIOnlineScraper(ImageScraperBase):
 
     @staticmethod
     def _filename(download_url: str) -> str:
+        """Choose a filename for a downloaded image."""
         filenames = parse_qs(urlparse(download_url).query).get("filen", [])
         if not filenames:
             raise ValueError(f"PSI Online download URL has no filename: {download_url}")

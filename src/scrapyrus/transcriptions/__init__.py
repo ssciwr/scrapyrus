@@ -1,1 +1,1 @@
-"""Transcription ingestion, search, embedding, and evaluation modules."""
+"""Transcription ingestion and XML conversion modules."""
