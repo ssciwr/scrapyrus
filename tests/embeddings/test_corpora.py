@@ -86,9 +86,9 @@ def test_xml_cleanup_removes_missing_rows_and_surplus_chunks(corpus_name, databa
             EmbeddingInput("second", {"xml_id": 7, "chunk_index": 1}),
         )
     )
-    EMBEDDING_CORPORA[corpus_name].remove_stale(cursor, "model", inputs)
-    assert cursor.executions[0][1] == ("model", [7])
-    assert cursor.executions[1][1] == (7, "model", 2)
+    EMBEDDING_CORPORA[corpus_name].remove_stale(cursor, inputs)
+    assert cursor.executions[0][1] == ([7],)
+    assert cursor.executions[1][1] == (7, 2)
     assert "chunk_index >= %s" in cursor.executions[1][0]
 
 
@@ -97,10 +97,10 @@ def test_sampled_cleanup_does_not_delete_xml_rows_outside_the_sample(database):
     inputs = CorpusInputs(
         (EmbeddingInput("text", {"xml_id": 7, "chunk_index": 0}),), scope_ids=(7, 8)
     )
-    EMBEDDING_CORPORA["transcriptions"].remove_stale(cursor, "model", inputs)
+    EMBEDDING_CORPORA["transcriptions"].remove_stale(cursor, inputs)
     query, params = cursor.executions[0]
     assert "AND xml_id = ANY(%s)" in query
-    assert params == ("model", [7], [7, 8])
+    assert params == ([7], [7, 8])
 
 
 def test_xml_sampling_is_deterministic_and_selects_the_configured_source(database):
@@ -139,13 +139,6 @@ def test_word_chunking_preserves_short_text_and_overlaps_long_text():
         chunk_text("text", 0)
 
 
-def test_retrieval_rejects_keys_missing_corpus_identity_fields(database):
-    cursor, _ = database
-    with pytest.raises(ValueError, match="xml_id, chunk_index"):
-        EMBEDDING_CORPORA["transcriptions"].retrieve(cursor, "model", {"xml_id": 7})
-    assert cursor.executions == []
-
-
 def test_blank_xml_is_omitted_from_embedding_inputs(database):
     cursor, _ = database
     cursor.all_results = [
@@ -164,3 +157,35 @@ def test_blank_xml_is_omitted_from_embedding_inputs(database):
         cursor, chunk_size=500, sample=None, seed=0
     )
     assert inputs.records == ()
+
+
+@pytest.mark.parametrize("corpus_name", tuple(EMBEDDING_CORPORA))
+def test_corpus_schema_and_exports_use_source_identity(corpus_name, database):
+    cursor, _ = database
+    corpus = EMBEDDING_CORPORA[corpus_name]
+    corpus.create_schema(cursor)
+    query = cursor.executions[0][0]
+    assert f"PRIMARY KEY ({', '.join(corpus.key_columns)})" in query
+    assert tuple(corpus.semantics.columns) == corpus.export_columns
+
+
+@pytest.mark.parametrize("corpus_name", ["transcriptions", "translations"])
+def test_xml_chunks_publish_deterministic_unique_identities(corpus_name, database):
+    from tests.embeddings.test_store import source_rows
+
+    cursor, _ = database
+    corpus = EMBEDDING_CORPORA[corpus_name]
+    cursor.all_results = [source_rows(corpus_name, "one two three", xml_id=7)]
+    inputs = corpus.read_inputs(cursor, chunk_size=2, sample=None, seed=0)
+    assert [record.values["chunk_id"] for record in inputs.records] == [
+        f"{corpus_name}:7:0",
+        f"{corpus_name}:7:1",
+    ]
+    corpus.create_schema(cursor)
+    schema = cursor.executions[-1][0]
+    assert "chunk_id text NOT NULL UNIQUE" in schema
+    assert "chunk_index >= 0" in schema
+    assert (
+        f"chunk_id = '{corpus_name}' || ':' || xml_id::text || ':' || chunk_index::text"
+        in schema
+    )

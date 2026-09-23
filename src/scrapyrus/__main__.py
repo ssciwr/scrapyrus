@@ -1,8 +1,11 @@
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import click
 
+from scrapyrus.database_archive import dump_database, import_database
 from scrapyrus.embeddings import (
     EMBEDDING_CORPORA,
     EmbeddingSpecification,
@@ -13,6 +16,10 @@ from scrapyrus.embeddings import (
     build_embedding_client,
 )
 from scrapyrus.embeddings.corpora import KeywordMatch, XmlCorpus
+from scrapyrus.embeddings.clients import (
+    SUPPORTED_EMBEDDING_PROVIDERS,
+    infer_embedding_provider,
+)
 from scrapyrus.embeddings.evaluation import evaluate_embeddings
 from scrapyrus.images import (
     DEFAULT_BROKEN_IMAGE_FILE,
@@ -73,7 +80,23 @@ def embedding_client_options(function):
                 "--api-key",
                 envvar="SCRAPYRUS_EMBEDDINGS_API_KEY",
                 required=True,
-                help="API key for the OpenAI-compatible inference server.",
+                help="API key for the embedding provider.",
+            ),
+            click.option(
+                "--provider",
+                type=click.Choice(sorted(SUPPORTED_EMBEDDING_PROVIDERS)),
+                envvar="SCRAPYRUS_EMBEDDING_PROVIDER",
+            ),
+            click.option(
+                "--provider-options",
+                default="{}",
+                envvar="SCRAPYRUS_EMBEDDING_PROVIDER_OPTIONS",
+                help="JSON object of non-secret compatibility options.",
+            ),
+            click.option(
+                "--endpoint-profile",
+                envvar="SCRAPYRUS_EMBEDDING_ENDPOINT_PROFILE",
+                help="Deployment profile consumers resolve through EMBEDDING_ENDPOINT_<PROFILE>.",
             ),
         ],
     )
@@ -103,6 +126,62 @@ def main(context: click.Context, idp_data: Path) -> None:
 
     context.ensure_object(dict)
     context.obj["idp_data"] = idp_data
+
+
+def _database_archive_error(error: OSError | subprocess.CalledProcessError) -> str:
+    if isinstance(error, subprocess.CalledProcessError):
+        return f"{error.cmd[0]} failed with exit code {error.returncode}"
+    if isinstance(error, FileNotFoundError) and error.filename:
+        return f"{error.filename} is not installed or not on PATH"
+    return str(error)
+
+
+@main.command("dump")
+@database_url
+@click.argument(
+    "output_file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("scrapyrus.dump"),
+)
+def dump_postgresql_database(database_url: str, output_file: Path) -> None:
+    """Dump the complete PostgreSQL database to a custom-format archive."""
+
+    try:
+        dump_database(output_file, database_url)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(_database_archive_error(error)) from error
+    click.echo(f"Database dump written to {output_file}")
+
+
+@main.command("import")
+@database_url
+@click.option(
+    "--no-owner",
+    is_flag=True,
+    help="Use the target database user as owner and omit source privileges.",
+)
+@click.argument(
+    "input_file",
+    type=click.Path(
+        path_type=Path,
+        dir_okay=False,
+        exists=True,
+        readable=True,
+    ),
+    default=Path("scrapyrus.dump"),
+)
+def import_postgresql_database(
+    database_url: str,
+    no_owner: bool,
+    input_file: Path,
+) -> None:
+    """Restore a complete archive into an existing PostgreSQL database."""
+
+    try:
+        import_database(input_file, database_url, no_owner=no_owner)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise click.ClickException(_database_archive_error(error)) from error
+    click.echo(f"Database restored from {input_file}")
 
 
 @main.command("catalog")
@@ -328,18 +407,39 @@ def _tsv_field(value: object | None) -> str:
 def _run_embedding_operation(operation: str, corpus_name: str, **options) -> None:
     """Run an embedding store command and report CLI errors."""
     try:
-        specification = EmbeddingSpecification(options.pop("model_name"))
+        model_name = options.pop("model_name")
         conninfo = options.pop("database_url")
-        client = None
         if operation in {"ingest", "update", "query"}:
-            client = build_embedding_client(
-                options.pop("inference_server_url"),
-                specification.model_name,
-                options.pop("api_key"),
+            url = options.pop("inference_server_url")
+            provider = options.pop("provider") or infer_embedding_provider(url)
+            profile = options.pop("endpoint_profile")
+            provider_options = json.loads(options.pop("provider_options"))
+            if not isinstance(provider_options, dict):
+                raise ValueError("provider-options must be a JSON object")
+            specification = EmbeddingSpecification(
+                model_name=model_name,
+                provider=provider,
+                provider_options=provider_options,
+                endpoint_profile=profile or ("vllm" if provider == "vllm" else None),
             )
-        store = EmbeddingStore(
-            corpus=corpus_name, specification=specification, client=client
-        )
+            client = build_embedding_client(
+                provider=specification.provider,
+                model_name=model_name,
+                api_key=options.pop("api_key"),
+                inference_server_url=url,
+                provider_options=specification.provider_options,
+            )
+            store = EmbeddingStore(
+                corpus=corpus_name, specification=specification, client=client
+            )
+        elif operation == "import":
+            store = EmbeddingStore.from_dump(
+                corpus=corpus_name, model_name=model_name, source=options["input_file"]
+            )
+        else:
+            store = EmbeddingStore.from_database(
+                corpus=corpus_name, model_name=model_name, conninfo=conninfo
+            )
         if operation in {"ingest", "update"}:
             store.ingest(
                 conninfo,
@@ -352,13 +452,11 @@ def _run_embedding_operation(operation: str, corpus_name: str, **options) -> Non
         elif operation == "dump":
             target = options["output_file"]
             if target is None:
-                filename_model = re.sub(
-                    r"[^A-Za-z0-9_.-]+", "-", specification.model_name
-                ).strip("-")
+                filename_model = re.sub(r"[^A-Za-z0-9_.-]+", "-", model_name).strip("-")
                 target = Path(f"{corpus_name}-embeddings-{filename_model}.dump")
             store.dump(target, conninfo)
         elif operation == "import":
-            store.import_dump(options["input_file"], conninfo)
+            store.import_dump(options["input_file"], conninfo, force=options["force"])
         elif operation == "query":
             matches = store.query(options["query"], conninfo, top_k=options["top_k"])
             keyword_results = not isinstance(EMBEDDING_CORPORA[corpus_name], XmlCorpus)
@@ -457,6 +555,14 @@ def _embedding_command(operation: str, corpus_name: str):
                 ),
             )
         )
+    if operation in {"ingest", "update", "import"}:
+        options.append(
+            click.option(
+                "--force",
+                is_flag=True,
+                help="Discard embeddings if the table has a different embedding specification.",
+            )
+        )
     return click.command(corpus_name)(_apply_options(command, options))
 
 
@@ -474,47 +580,36 @@ def evaluate_embedding_rows() -> None:
     """Evaluate embedding retrieval."""
 
 
-def _text_evaluation_options(default_output: str):
+def _text_evaluation_options(function):
     """Build a decorator for shared text evaluation options."""
 
-    def decorator(function):
-        return _apply_options(
-            function,
-            [
-                database_url,
-                click.option(
-                    "--sample",
-                    type=click.IntRange(min=1),
-                    help=(
-                        "Randomly select this many records that have both a "
-                        "transcription and a translation."
-                    ),
+    return _apply_options(
+        function,
+        [
+            database_url,
+            click.option(
+                "--sample",
+                type=click.IntRange(min=1),
+                help=(
+                    "Randomly select this many records that have both a "
+                    "transcription and a translation."
                 ),
-                click.option(
-                    "--seed",
-                    type=int,
-                    default=0,
-                    show_default=True,
-                    help="Seed used to make --sample selection deterministic.",
-                ),
-                click.option(
-                    "--output",
-                    "output_file",
-                    type=click.Path(path_type=Path, dir_okay=False),
-                    default=Path(default_output),
-                    show_default=True,
-                    help="Markdown file to write evaluation findings to.",
-                ),
-                click.option(
-                    "--progress/--no-progress",
-                    default=True,
-                    show_default=True,
-                    help="Show progress bars while evaluating embedding retrieval.",
-                ),
-            ],
-        )
-
-    return decorator
+            ),
+            click.option(
+                "--seed",
+                type=int,
+                default=0,
+                show_default=True,
+                help="Seed used to make --sample selection deterministic.",
+            ),
+            click.option(
+                "--progress/--no-progress",
+                default=True,
+                show_default=True,
+                help="Show progress bars while evaluating embedding retrieval.",
+            ),
+        ],
+    )
 
 
 def _evaluate_text_embeddings(
@@ -522,7 +617,6 @@ def _evaluate_text_embeddings(
     database_url: str,
     sample: int | None,
     seed: int,
-    output_file: Path,
     progress: bool,
 ) -> None:
     """Run text embedding evaluation and report CLI errors."""
@@ -530,17 +624,16 @@ def _evaluate_text_embeddings(
         evaluate_embeddings(
             database_url,
             query_kind=query_kind,
-            output_file=output_file,
             progressbar=progress,
             sample=sample,
             seed=seed,
         )
-    except ValueError as error:
+    except (EmbeddingsUnavailableError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
 @evaluate_embedding_rows.command("transcriptions")
-@_text_evaluation_options("transcription-embedding-evaluation.md")
+@_text_evaluation_options
 def evaluate_transcription_embeddings(**options) -> None:
     """Evaluate transcription queries against translation embeddings."""
 
@@ -548,7 +641,7 @@ def evaluate_transcription_embeddings(**options) -> None:
 
 
 @evaluate_embedding_rows.command("translations")
-@_text_evaluation_options("translation-embedding-evaluation.md")
+@_text_evaluation_options
 def evaluate_translation_embeddings(**options) -> None:
     """Evaluate translation queries against transcription embeddings."""
 

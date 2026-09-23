@@ -4,6 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 from scrapyrus.__main__ import main
+from tests.embeddings.helpers import specification
 from scrapyrus.embeddings import (
     EMBEDDING_CORPORA,
     DocumentMatch,
@@ -18,13 +19,25 @@ def cli_store(monkeypatch):
     client = object()
     monkeypatch.setattr(
         "scrapyrus.__main__.build_embedding_client",
-        lambda *args: calls.append(("client", args)) or client,
+        lambda **kwargs: calls.append(("client", kwargs)) or client,
     )
 
     class Store:
         def __init__(self, *, corpus, specification, client):
             self.corpus = corpus
             calls.append(("store", corpus, specification.model_name, client))
+
+        @classmethod
+        def from_database(cls, *, corpus, model_name, conninfo):
+            return cls(
+                corpus=corpus, specification=specification(model_name, 2), client=None
+            )
+
+        @classmethod
+        def from_dump(cls, *, corpus, model_name, source):
+            return cls(
+                corpus=corpus, specification=specification(model_name, 2), client=None
+            )
 
         def ingest(self, conninfo, **options):
             calls.append(("ingest", conninfo, options))
@@ -43,8 +56,8 @@ def cli_store(monkeypatch):
         def dump(self, target, conninfo):
             calls.append(("dump", target, conninfo))
 
-        def import_dump(self, source, conninfo):
-            calls.append(("import", source, conninfo))
+        def import_dump(self, source, conninfo, *, force):
+            calls.append(("import", source, conninfo, {"force": force}))
 
     monkeypatch.setattr("scrapyrus.__main__.EmbeddingStore", Store)
     return calls, client
@@ -70,10 +83,23 @@ def test_ingestion_commands_use_the_shared_store(operation, corpus_name, cli_sto
     result = invoke(operation, corpus_name, "--no-progress")
     assert result.exit_code == 0, result.output
     assert calls[:2] == [
-        ("client", ("https://server/v1", "model", "secret")),
+        (
+            "client",
+            {
+                "provider": "vllm",
+                "model_name": "model",
+                "api_key": "secret",
+                "inference_server_url": "https://server/v1",
+                "provider_options": {"check_embedding_ctx_length": False},
+            },
+        ),
         ("store", corpus_name, "model", client),
     ]
-    expected = {"stale_only": operation == "update", "progressbar": False}
+    expected = {
+        "stale_only": operation == "update",
+        "progressbar": False,
+        "force": False,
+    }
     if corpus_name != "keywords":
         expected["chunk_size"] = 500
         if operation == "ingest":
@@ -124,6 +150,8 @@ def test_file_and_delete_commands_use_the_shared_store_without_a_client(
             "postgresql://db",
         )
     )
+    if operation == "import":
+        expected = (*expected, {"force": False})
     assert calls[-1] == expected
 
 
@@ -146,6 +174,7 @@ def test_xml_ingestion_passes_chunking_and_sampling_options(cli_store):
         "postgresql://db",
         {
             "stale_only": False,
+            "force": False,
             "progressbar": False,
             "sample": 3,
             "seed": 17,
@@ -169,10 +198,24 @@ def test_cli_reports_shared_store_source_errors(cli_store, monkeypatch):
 
 
 def test_cli_reports_invalid_client_configuration(monkeypatch, cli_store):
-    def fail(*args):
+    def fail(**kwargs):
         raise ValueError("Unsupported inference server")
 
     monkeypatch.setattr("scrapyrus.__main__.build_embedding_client", fail)
     result = invoke("query", "keywords", "lease")
     assert result.exit_code == 1
     assert result.output == "Error: Unsupported inference server\n"
+
+
+@pytest.mark.parametrize("corpus_name", tuple(EMBEDDING_CORPORA))
+@pytest.mark.parametrize("operation", ["ingest", "update", "import"])
+def test_force_is_forwarded_for_all_model_writing_commands(
+    operation, corpus_name, cli_store, tmp_path
+):
+    calls, _ = cli_store
+    source = tmp_path / "corpus.dump"
+    source.write_bytes(b"binary")
+    args = (str(source),) if operation == "import" else ("--no-progress",)
+    result = invoke(operation, corpus_name, *args, "--force")
+    assert result.exit_code == 0, result.output
+    assert calls[-1][-1]["force"] is True
