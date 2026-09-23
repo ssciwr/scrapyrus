@@ -1,5 +1,7 @@
 """Database and client doubles for the shared embedding lifecycle tests."""
 
+from copy import deepcopy
+
 import pytest
 
 
@@ -31,6 +33,8 @@ class Cursor:
         self.copies = []
         self.rowcount = 0
         self.fail_on = None
+        self.metadata = {}
+        self.metadata_result = ...
 
     def __enter__(self):
         return self
@@ -41,10 +45,36 @@ class Cursor:
     def execute(self, query, params=None):
         text = query if isinstance(query, str) else query.as_string()
         self.executions.append((text, params))
+        self.metadata_result = ...
+        if text.startswith("INSERT INTO embedding_table_metadata"):
+            self.metadata.setdefault(
+                params[0],
+                (params[1], params[2], params[3], params[4].obj, params[5], params[6]),
+            )
+        elif text.startswith("SELECT table_name, model_name, embedding_size"):
+            configured = self.metadata.get(params[0])
+            self.metadata_result = (
+                None if configured is None else (params[0], *configured)
+            )
+        elif text.startswith("UPDATE embedding_table_metadata"):
+            if "model_name =" in text:
+                self.metadata[params[6]] = (
+                    params[0],
+                    params[1],
+                    params[2],
+                    params[3].obj,
+                    params[4],
+                    params[5],
+                )
+            else:
+                model, _, *contract = self.metadata[params[1]]
+                self.metadata[params[1]] = (model, params[0], *contract)
         if self.fail_on:
             self.fail_on(text)
 
     def fetchone(self):
+        if self.metadata_result is not ...:
+            return self.metadata_result
         return self.one_results.pop(0)
 
     def fetchall(self):
@@ -61,9 +91,12 @@ class Connection:
         self.outcomes = []
 
     def __enter__(self):
+        self.saved_metadata = deepcopy(self.db_cursor.metadata)
         return self
 
     def __exit__(self, error_type, *args):
+        if error_type:
+            self.db_cursor.metadata = self.saved_metadata
         self.outcomes.append("rollback" if error_type else "commit")
         return False
 

@@ -7,7 +7,6 @@ import pytest
 from scrapyrus.embeddings import (
     EMBEDDING_CORPORA,
     DocumentMatch,
-    EmbeddingSpecification,
     EmbeddingStore,
     EmbeddingsUnavailableError,
     KeywordMatch,
@@ -15,6 +14,9 @@ from scrapyrus.embeddings import (
     SourceUnavailableError,
 )
 from scrapyrus.embeddings.schema import cosine_distance, recreate_embedding_index
+from scrapyrus.embeddings.manifest import write_manifest
+from scrapyrus.embeddings.specification import EmbeddingTableMetadata
+from tests.embeddings.helpers import configuration, specification
 
 CORPORA = tuple(EMBEDDING_CORPORA)
 
@@ -37,7 +39,7 @@ def source_rows(corpus_name, text="land lease", *, xml_id=7):
 
 def make_store(corpus_name, client=None):
     return EmbeddingStore(
-        corpus=corpus_name, client=client, specification=EmbeddingSpecification("model")
+        corpus=corpus_name, client=client, specification=specification()
     )
 
 
@@ -61,7 +63,9 @@ def test_ingestion_and_repeated_queries_share_the_bound_client(
         and "embedding" in p
     ]
     assert len(inserts) == 1
-    assert inserts[0][1]["model_name"] == "model"
+    assert cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] == configuration(
+        "model", 2
+    )
     assert EMBEDDING_CORPORA[corpus_name].table_name in inserts[0][0]
 
     rows = (
@@ -83,7 +87,7 @@ def test_ingestion_and_repeated_queries_share_the_bound_client(
     assert client.queries == ["lease", "contract"]
     assert connection.outcomes == ["commit", "commit", "commit"]
     query, params = cursor.executions[-1]
-    assert params == {"model_name": "model", "embedding": "[1,0]", "top_k": 1}
+    assert params == {"embedding": "[1,0]", "top_k": 1}
     if corpus_name != "keywords":
         assert "PARTITION BY xml_id" in query
         assert "WHERE chunk_rank = 1" in query
@@ -108,6 +112,9 @@ def test_incremental_ingestion_skips_current_records_and_embeds_changed_records(
             "en",
         )
     )
+    cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] = configuration(
+        "model", 2
+    )
     cursor.one_results = [(1, 2, 2), current, None]
 
     assert (
@@ -122,6 +129,9 @@ def test_incremental_ingestion_rejects_dimensions_different_from_existing_vector
 ):
     cursor, connection = database
     cursor.all_results = [source_rows(corpus_name)]
+    cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] = configuration(
+        "model", 3
+    )
     cursor.one_results = [(1, 3, 3), None]
     with pytest.raises(ValueError, match="expected 3"):
         make_store(corpus_name, client).ingest(stale_only=True, progressbar=False)
@@ -151,7 +161,7 @@ def test_ingestion_rejects_inconsistent_new_vectors_before_writing(
 
 
 @pytest.mark.parametrize("corpus_name", CORPORA)
-def test_empty_sources_remove_stale_records_without_calling_the_client(
+def test_empty_sources_remove_stale_records_and_probe_readiness(
     corpus_name, database, client
 ):
     cursor, _ = database
@@ -159,9 +169,14 @@ def test_empty_sources_remove_stale_records_without_calling_the_client(
     cursor.one_results = [(0, None, None)]
     assert make_store(corpus_name, client).ingest(progressbar=False) == 0
     assert client.documents == []
-    query, params = cursor.executions[-1]
-    assert query.startswith("DELETE FROM")
-    assert params == ("model", [])
+    assert client.queries == ["Scrapyrus empty-corpus dimension readiness probe"]
+    assert cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] == configuration()
+    query, params = next(
+        (q, p)
+        for q, p in cursor.executions
+        if q.startswith("DELETE FROM") and "scrapyrus_semantic_catalog" not in q
+    )
+    assert params == ([],)
 
 
 @pytest.mark.parametrize("corpus_name", CORPORA)
@@ -200,6 +215,9 @@ def test_query_rejects_empty_or_inconsistent_stores_before_embedding(
     corpus_name, stats, database, client
 ):
     cursor, connection = database
+    cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] = configuration(
+        "model", 2
+    )
     cursor.one_results = [stats]
     with pytest.raises(ValueError):
         make_store(corpus_name, client).query("lease")
@@ -212,11 +230,12 @@ def test_query_rejects_empty_or_inconsistent_stores_before_embedding(
 )
 def test_query_validates_client_vectors(vector, database, client):
     cursor, _ = database
+    cursor.metadata["keyword_embeddings"] = configuration("model", 2)
     cursor.one_results = [(1, 2, 2)]
     client.vectors = [vector]
     with pytest.raises(ValueError):
         make_store("keywords", client).query("lease")
-    assert len(cursor.executions) == 1
+    assert len(cursor.executions) == 2
 
 
 @pytest.mark.parametrize("text,top_k", [(" ", 1), ("lease", 0)])
@@ -233,7 +252,7 @@ def test_store_requires_a_known_corpus_and_nonblank_model():
     with pytest.raises(ValueError, match="Unknown embedding corpus"):
         make_store("unknown")
     with pytest.raises(ValueError, match="model_name must not be blank"):
-        EmbeddingSpecification(" ")
+        specification(" ")
     with pytest.raises(ValueError, match="client is required"):
         make_store("keywords").query("lease")
 
@@ -241,11 +260,21 @@ def test_store_requires_a_known_corpus_and_nonblank_model():
 @pytest.mark.parametrize("corpus_name", CORPORA)
 def test_delete_uses_the_bound_corpus_and_model_without_a_client(corpus_name, database):
     cursor, _ = database
+    cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] = configuration(
+        "model", 2
+    )
     cursor.rowcount = 5
     assert make_store(corpus_name).delete() == 5
-    query, params = cursor.executions[-1]
+    query, params = next(
+        (q, p)
+        for q, p in cursor.executions
+        if q.startswith("DELETE FROM") and "scrapyrus_semantic_catalog" not in q
+    )
     assert EMBEDDING_CORPORA[corpus_name].table_name in query
-    assert params == ("model",)
+    assert params is None
+    assert cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] == configuration(
+        "model", 2
+    )
 
 
 @pytest.mark.parametrize("corpus_name", CORPORA)
@@ -253,6 +282,9 @@ def test_dump_and_import_use_the_same_corpus_column_order(
     corpus_name, database, tmp_path
 ):
     cursor, connection = database
+    cursor.metadata[EMBEDDING_CORPORA[corpus_name].table_name] = configuration(
+        "model", 2
+    )
     cursor.one_results = [(2, 2, 2)]
     cursor.copy_chunks = [b"binary", b" corpus"]
     target = tmp_path / "nested" / "corpus.dump"
@@ -264,50 +296,34 @@ def test_dump_and_import_use_the_same_corpus_column_order(
     columns = ", ".join(f'"{c}"' for c in corpus.export_columns)
     assert columns in export_sql
     assert corpus.table_name in export_sql
-    assert "WHERE model_name = 'model'" in export_sql
-    cursor.all_results = [[("model",)]]
-    cursor.one_results = [(2, 2, 2)]
+    assert "WHERE" not in export_sql
+    cursor.one_results = [(2, 2, 2), (0,)]
     assert store.import_dump(target) == 2
     assert cursor.copy_writes == [b"binary corpus"]
     assert columns in cursor.copies[-1]
     assert connection.outcomes == ["commit", "commit"]
 
 
-@pytest.mark.parametrize(
-    "models,stats", [([("other",)], (2, 2, 2)), ([("model",)], (2, 2, 3))]
-)
-def test_invalid_imports_do_not_delete_existing_vectors(
-    models, stats, database, tmp_path
-):
+def test_inconsistent_import_does_not_delete_existing_vectors(database, tmp_path):
     cursor, connection = database
-    cursor.all_results = [models]
-    cursor.one_results = [stats]
+    cursor.one_results = [(2, 2, 3)]
     source = tmp_path / "corpus.dump"
     source.write_bytes(b"binary")
-    with pytest.raises(ValueError):
+    write_manifest(
+        source,
+        EMBEDDING_CORPORA["keywords"],
+        2,
+        EmbeddingTableMetadata(
+            table_name="keyword_embeddings", **specification(size=2).model_dump()
+        ),
+    )
+    with pytest.raises(ValueError, match="inconsistent dimensions"):
         make_store("keywords").import_dump(source)
     assert not any(
-        q.startswith("DELETE FROM") and "keyword_embeddings" in q
+        q.startswith("DELETE FROM") and "scrapyrus_semantic_catalog" not in q
         for q, _ in cursor.executions
     )
     assert connection.outcomes == ["rollback"]
-
-
-@pytest.mark.parametrize(
-    "corpus_name,key",
-    [
-        ("keywords", {"keyword": "lease, land"}),
-        ("transcriptions", {"xml_id": 7, "chunk_index": 1}),
-        ("translations", {"xml_id": 9, "chunk_index": 2}),
-    ],
-)
-def test_retrieve_uses_exact_corpus_record_keys(corpus_name, key, database):
-    cursor, _ = database
-    cursor.one_results = [("[1,0]",)]
-    assert make_store(corpus_name).retrieve(key) == (1.0, 0.0)
-    query, params = cursor.executions[-1]
-    assert params == {**key, "model_name": "model"}
-    assert all(f'"{column}" = %({column})s' in query for column in key)
 
 
 @pytest.mark.parametrize("corpus_name", CORPORA)
@@ -334,7 +350,7 @@ def test_missing_source_tables_report_the_source_ingestion_command(
     cursor, _ = database
 
     def fail(text):
-        if text.lstrip().startswith("SELECT"):
+        if "FROM keywords" in text or "FROM transcriptions" in text:
             raise psycopg.errors.UndefinedTable()
 
     cursor.fail_on = fail
@@ -357,9 +373,9 @@ def test_missing_pgvector_is_reported_before_source_reads(database, client):
     "dimensions,operator",
     [(2, "vector_cosine_ops"), (3000, "halfvec_cosine_ops"), (5000, None)],
 )
-def test_search_casts_match_index_casts(dimensions, operator, database):
+def test_search_columns_match_direct_indexes(dimensions, operator, database):
     cursor, _ = database
-    recreate_embedding_index(cursor, "keyword_embeddings", "model", dimensions)
+    recreate_embedding_index(cursor, "keyword_embeddings", dimensions)
     distance = cosine_distance(dimensions).as_string()
     query = cursor.executions[-1][0]
     if operator is None:
@@ -368,7 +384,10 @@ def test_search_casts_match_index_casts(dimensions, operator, database):
     else:
         assert operator in query
         cast = f"{'halfvec' if dimensions == 3000 else 'vector'}({dimensions})"
-        assert cast in query and cast in distance
+        column = "search_embedding" if dimensions == 3000 else "embedding"
+        assert f'("{column}" {operator})' in query
+        assert f'"{column}" <=>' in distance
+        assert cast in distance
 
 
 def test_registry_extension_drives_schema_creation_and_store_operations(
@@ -386,6 +405,7 @@ def test_registry_extension_drives_schema_creation_and_store_operations(
     monkeypatch.setattr(
         "scrapyrus.embeddings.store.EMBEDDING_CORPORA", {"terms": extra}
     )
+    cursor.metadata["term_embeddings"] = configuration("model", 2)
     cursor.rowcount = 1
     assert make_store("terms").delete() == 1
     assert any(
@@ -418,6 +438,33 @@ def test_malformed_client_batch_is_rejected_before_writing(database, client):
     assert connection.outcomes == ["rollback"]
 
 
+def test_voyageai_ingestion_sends_up_to_64_inputs_per_request(database):
+    cursor, _ = database
+    cursor.all_results = [[(f"term-{index}",) for index in range(129)]]
+    cursor.one_results = [(0, None, None)]
+
+    class BatchClient:
+        def __init__(self):
+            self.batches = []
+
+        def embed_documents(self, texts):
+            self.batches.append(list(texts))
+            return [[float(text.removeprefix("term-")), 0.0] for text in texts]
+
+        def embed_query(self, text):
+            return [0.0, 0.0]
+
+    client = BatchClient()
+    store = EmbeddingStore(
+        corpus="keywords",
+        client=client,
+        specification=specification(provider="voyageai", endpoint_profile=None),
+    )
+
+    assert store.ingest(progressbar=False) == 129
+    assert [len(batch) for batch in client.batches] == [64, 64, 1]
+
+
 def test_ingestion_closes_the_progress_bar_when_the_client_fails(
     database, client, monkeypatch
 ):
@@ -442,3 +489,208 @@ def test_ingestion_closes_the_progress_bar_when_the_client_fails(
         make_store("keywords", client).ingest(progressbar=True)
     assert closed == [True]
     assert connection.outcomes == ["rollback"]
+
+
+@pytest.mark.parametrize("corpus_name", CORPORA)
+@pytest.mark.parametrize("stale_only", [False, True])
+def test_model_replacement_requires_force_and_reembeds_all_inputs(
+    corpus_name, stale_only, database, client
+):
+    cursor, connection = database
+    table = EMBEDDING_CORPORA[corpus_name].table_name
+    cursor.metadata[table] = configuration("old-model", 3)
+    store = make_store(corpus_name, client)
+    with pytest.raises(ValueError, match="Pass --force"):
+        store.ingest(stale_only=stale_only, progressbar=False)
+    assert client.documents == []
+    assert not any(q.startswith("TRUNCATE") for q, _ in cursor.executions)
+
+    cursor.all_results = [source_rows(corpus_name)]
+    cursor.one_results = [(0, None, None)] + ([None] if stale_only else [])
+    assert store.ingest(stale_only=stale_only, force=True, progressbar=False) == 1
+    assert client.documents == ["land lease"]
+    assert cursor.metadata[table] == configuration("model", 2)
+    assert (f'TRUNCATE "{table}"', None) in cursor.executions
+    assert connection.outcomes == ["rollback", "commit"]
+
+
+@pytest.mark.parametrize("corpus_name", CORPORA)
+@pytest.mark.parametrize("operation", ["query", "dump", "delete"])
+def test_read_and_delete_operations_reject_a_different_model(
+    corpus_name, operation, database, client, tmp_path
+):
+    cursor, _ = database
+    corpus = EMBEDDING_CORPORA[corpus_name]
+    cursor.metadata[corpus.table_name] = configuration("other", 2)
+    store = make_store(corpus_name, client)
+    args = {
+        "query": ("lease",),
+        "dump": (tmp_path / "corpus.dump",),
+        "delete": (),
+    }
+    with pytest.raises(ValueError, match="uses embedding model 'other'"):
+        getattr(store, operation)(*args[operation])
+    assert client.queries == []
+    assert cursor.copies == []
+    assert not any(
+        q.startswith("DELETE FROM") and corpus.table_name in q
+        for q, _ in cursor.executions
+    )
+
+
+@pytest.mark.parametrize("corpus_name", CORPORA)
+def test_import_requires_force_to_replace_another_model(
+    corpus_name, database, tmp_path
+):
+    cursor, connection = database
+    table = EMBEDDING_CORPORA[corpus_name].table_name
+    cursor.metadata[table] = configuration("other", 3)
+    cursor.one_results = [(2, 2, 2), (0,), (2, 2, 2), (0,)]
+    source = tmp_path / "corpus.dump"
+    source.write_bytes(b"binary")
+    write_manifest(
+        source,
+        EMBEDDING_CORPORA[corpus_name],
+        2,
+        EmbeddingTableMetadata(table_name=table, **specification(size=2).model_dump()),
+    )
+    store = make_store(corpus_name)
+    with pytest.raises(ValueError, match="Pass --force"):
+        store.import_dump(source)
+    assert not any(q.startswith("TRUNCATE") for q, _ in cursor.executions)
+    assert store.import_dump(source, force=True) == 2
+    assert cursor.metadata[table] == configuration("model", 2)
+    assert connection.outcomes == ["rollback", "commit"]
+
+
+@pytest.mark.parametrize("corpus_name", CORPORA)
+def test_force_with_same_specification_preserves_vectors_and_dimension(
+    corpus_name, database, client
+):
+    cursor, _ = database
+    table = EMBEDDING_CORPORA[corpus_name].table_name
+    cursor.metadata[table] = configuration("model", 3)
+    cursor.all_results = [source_rows(corpus_name)]
+    cursor.one_results = [(1, 3, 3)]
+    with pytest.raises(ValueError, match="expected 3"):
+        make_store(corpus_name, client).ingest(force=True, progressbar=False)
+    assert not any(q.startswith("TRUNCATE") for q, _ in cursor.executions)
+    assert cursor.metadata[table] == configuration("model", 3)
+
+
+def test_deleting_vectors_preserves_dimension_for_subsequent_ingestion(
+    database, client
+):
+    cursor, _ = database
+    cursor.metadata["keyword_embeddings"] = configuration("model", 3)
+    make_store("keywords").delete()
+    cursor.all_results = [source_rows("keywords")]
+    cursor.one_results = [(0, None, None)]
+    with pytest.raises(ValueError, match="expected 3"):
+        make_store("keywords", client).ingest(progressbar=False)
+
+
+@pytest.mark.parametrize("corpus_name", CORPORA)
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"provider": "openai", "endpoint_profile": None},
+        {"provider_options": {"check_embedding_ctx_length": True}},
+        {"endpoint_profile": "other_deployment"},
+    ],
+)
+def test_equal_model_names_and_dimensions_do_not_allow_a_specification_change(
+    corpus_name, changed, database, client
+):
+    cursor, connection = database
+    table = EMBEDDING_CORPORA[corpus_name].table_name
+    cursor.metadata[table] = configuration(**changed)
+    store = make_store(corpus_name, client)
+    with pytest.raises(ValueError, match="different embedding specification"):
+        store.query("query")
+    with pytest.raises(ValueError, match="Pass --force"):
+        store.ingest(progressbar=False)
+    assert client.documents == client.queries == []
+    assert connection.outcomes == ["rollback", "rollback"]
+
+
+@pytest.mark.parametrize("corpus_name", CORPORA)
+def test_force_replaces_compatibility_options_and_keeps_one_transaction(
+    corpus_name, database, client
+):
+    cursor, connection = database
+    table = EMBEDDING_CORPORA[corpus_name].table_name
+    cursor.metadata[table] = configuration(
+        provider_options={"check_embedding_ctx_length": True}
+    )
+    cursor.one_results = [(0, None, None)]
+    cursor.all_results = [source_rows(corpus_name)]
+    assert make_store(corpus_name, client).ingest(force=True, progressbar=False) == 1
+    assert cursor.metadata[table] == configuration()
+    assert (f'TRUNCATE "{table}"', None) in cursor.executions
+    assert connection.outcomes == ["commit"]
+
+
+@pytest.mark.parametrize("vector", [(), (float("nan"),), (float("inf"),)])
+def test_invalid_readiness_probes_roll_back_empty_corpus_publication(
+    vector, database, client
+):
+    cursor, connection = database
+    cursor.all_results = [[]]
+    cursor.one_results = [(0, None, None)]
+    client.vectors = [vector]
+    with pytest.raises(ValueError, match="finite values"):
+        make_store("keywords", client).ingest(progressbar=False)
+    assert cursor.metadata == {}
+    assert connection.outcomes == ["rollback"]
+
+
+@pytest.mark.parametrize(
+    "dimensions,column,operator",
+    [
+        (2000, "embedding", "vector_cosine_ops"),
+        (2001, "search_embedding", "halfvec_cosine_ops"),
+        (4000, "search_embedding", "halfvec_cosine_ops"),
+        (4001, "embedding", None),
+    ],
+)
+def test_dimensioned_storage_and_direct_indexes_cover_pgvector_boundaries(
+    dimensions, column, operator, database, client
+):
+    cursor, _ = database
+    cursor.all_results = [[]]
+    cursor.one_results = [(0, None, None)]
+    client.vectors = [(0.0,) * dimensions]
+    make_store("keywords", client).ingest(progressbar=False)
+    queries = [query for query, _ in cursor.executions]
+    assert any(
+        f"ALTER COLUMN embedding TYPE vector({dimensions})" in query
+        for query in queries
+    )
+    generated = [query for query in queries if "GENERATED ALWAYS" in query]
+    assert bool(generated) == (column == "search_embedding")
+    indexes = [query for query in queries if query.startswith("CREATE INDEX")]
+    if operator:
+        assert len(indexes) == 1
+        assert f'("{column}" {operator})' in indexes[0]
+    else:
+        assert indexes == []
+    assert f'"{column}" <=>' in cosine_distance(dimensions).as_string()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_provider_dimension_options_constrain_source_vectors_and_readiness_probes(
+    empty, database, client
+):
+    cursor, connection = database
+    cursor.all_results = [[] if empty else source_rows("keywords")]
+    cursor.one_results = [(0, None, None)]
+    store = EmbeddingStore(
+        corpus="keywords",
+        client=client,
+        specification=specification(provider_options={"dimensions": 3}),
+    )
+    with pytest.raises(ValueError, match="expected 3"):
+        store.ingest(progressbar=False)
+    assert connection.outcomes == ["rollback"]
+    assert cursor.metadata == {}
