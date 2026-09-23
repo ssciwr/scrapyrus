@@ -26,6 +26,7 @@ class BerlPapScraper(ImageScraperBase):
 
     @staticmethod
     def _section_table(soup: BeautifulSoup, label: str):
+        """Find the record table associated with a section label."""
         heading = soup.find(
             "b",
             string=lambda text: (
@@ -37,6 +38,7 @@ class BerlPapScraper(ImageScraperBase):
         return heading.find_parent("table")
 
     def _image_urls(self, html: str, page_url: str) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         soup = BeautifulSoup(html, "html.parser")
         table = self._section_table(soup, "Digitalisate")
         if table is None:
@@ -59,6 +61,7 @@ class BerlPapScraper(ImageScraperBase):
         return image_urls
 
     def _published_image_url(self, html: str, page_url: str) -> str | None:
+        """Find the published image link on a BerlPap record page."""
         soup = BeautifulSoup(html, "html.parser")
         table = self._section_table(soup, "Publizierte Abbildungen")
         if table is None:
@@ -72,6 +75,7 @@ class BerlPapScraper(ImageScraperBase):
         return None
 
     def _page_html(self, url: str) -> str:
+        """Fetch record page HTML using the scraper session."""
         if self._cached_page is not None and self._cached_page[0] == url:
             return self._cached_page[1]
 

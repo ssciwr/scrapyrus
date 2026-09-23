@@ -28,6 +28,7 @@ class LouvreScraper(ImageScraperBase):
 
     @staticmethod
     def _json_url(url: str) -> str:
+        """Convert a Louvre record URL to its JSON endpoint."""
         parsed_url = urlparse(url)
         return urlunparse(
             parsed_url._replace(
@@ -39,6 +40,7 @@ class LouvreScraper(ImageScraperBase):
 
     @staticmethod
     def _image_urls(record: object) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         if not isinstance(record, dict):
             raise ValueError("Louvre JSON record must be an object")
 

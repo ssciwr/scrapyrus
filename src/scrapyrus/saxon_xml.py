@@ -101,6 +101,7 @@ def _matches_name(
     name: str | None,
     local_name: str | None,
 ) -> bool:
+    """Check whether an element matches the requested XML name."""
     if node.node_kind_str != "element":
         return False
     if local_name is not None and node.local_name != local_name:

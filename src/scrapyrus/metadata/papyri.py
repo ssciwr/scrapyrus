@@ -237,6 +237,7 @@ class PapyrusModelFactory:
 
 
 def _metadata_source_path(idp_data: Path, metadata: Path) -> str:
+    """Return the metadata path relative to the IDP data root."""
     return metadata.relative_to(idp_data).as_posix()
 
 

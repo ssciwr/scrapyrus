@@ -16,16 +16,54 @@ from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSem
 
 KEYWORD_TERMS_XPATH = ".//tei:profileDesc/tei:textClass/tei:keywords/tei:term"
 UNCERTAINTY_MARKER_RE = re.compile(r"\(\s*\?\s*\)|\?")
+QUALIFIER_GROUP_RE = re.compile(r"^(?P<keyword>.*?)\s*\((?P<qualifiers>[^()]*)\)\s*$")
 
 
 def _keyword_value(value: str) -> tuple[Optional[str], bool]:
+    """Remove uncertainty markers and return the keyword and uncertainty flag."""
     uncertain = "?" in value
     if uncertain:
         value = " ".join(UNCERTAINTY_MARKER_RE.sub("", value).split())
-        if value == "":
-            return None, uncertain
+
+    value = value.strip()
+    if value == "":
+        return None, uncertain
 
     return value, uncertain
+
+
+def _keyword_values(
+    value: str,
+) -> tuple[tuple[str, bool, Optional[str], bool], ...]:
+    """Split a keyword and its final parenthesized qualifier list into rows."""
+
+    value = " ".join(value.split())
+    qualifier_group = QUALIFIER_GROUP_RE.fullmatch(value)
+    if qualifier_group is None:
+        keyword, uncertain = _keyword_value(value)
+        if keyword is None:
+            return ()
+        return ((keyword, uncertain, None, False),)
+
+    keyword, uncertain = _keyword_value(qualifier_group.group("keyword"))
+    if keyword is None:
+        return ()
+
+    qualifiers: list[tuple[str, bool]] = []
+    for value in qualifier_group.group("qualifiers").split(","):
+        qualifier, qualifier_uncertain = _keyword_value(value.strip())
+        if qualifier is None:
+            uncertain = uncertain or qualifier_uncertain
+        else:
+            qualifiers.append((qualifier, qualifier_uncertain))
+
+    if not qualifiers:
+        return ((keyword, uncertain, None, False),)
+
+    return tuple(
+        (keyword, uncertain, qualifier, qualifier_uncertain)
+        for qualifier, qualifier_uncertain in qualifiers
+    )
 
 
 class KeywordModel(BaseModel):
@@ -35,6 +73,8 @@ class KeywordModel(BaseModel):
     keyword_type: Optional[str] = None
     keyword: Optional[str] = None
     uncertain: bool
+    qualifier: Optional[str] = None
+    qualifier_uncertain: bool = False
 
 
 KEYWORDS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS keywords (
@@ -43,7 +83,9 @@ KEYWORDS_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS keywords (
     scheme text,
     keyword_type text,
     keyword text,
-    uncertain boolean NOT NULL
+    uncertain boolean NOT NULL,
+    qualifier text,
+    qualifier_uncertain boolean NOT NULL
 );"""
 
 KEYWORDS_INDEX_SQL = (
@@ -53,10 +95,13 @@ KEYWORDS_INDEX_SQL = (
 KEYWORDS_SEMANTICS = TableSemantics(
     table_name="keywords",
     description=(
-        "The keywords table contains normalized keyword assignments and their "
-        "source classification and uncertainty metadata."
+        "The keywords table contains normalized keyword and qualifier assignments "
+        "with their source classification and uncertainty metadata."
     ),
-    row_grain="One normalized keyword assignment.",
+    row_grain=(
+        "One normalized keyword-qualifier assignment, or one keyword assignment "
+        "when the source provides no qualifier."
+    ),
     useful_for=("topics, genres, subjects, languages, and classifications",),
     columns={
         "keyword_id": ColumnSemantics(
@@ -75,10 +120,24 @@ KEYWORDS_SEMANTICS = TableSemantics(
             description="Cleaned keyword text after uncertainty markers are removed."
         ),
         "uncertain": ColumnSemantics(
-            description="Whether the source marked the assignment with a question mark.",
+            description="Whether the source marked the keyword with a question mark.",
             value_meanings={
-                "true": "the keyword assignment is uncertain",
-                "false": "the source did not mark the assignment uncertain",
+                "true": "the keyword is uncertain",
+                "false": "the source did not mark the keyword uncertain",
+            },
+        ),
+        "qualifier": ColumnSemantics(
+            description=(
+                "One qualifier extracted from the keyword's final parenthesized "
+                "comma-separated qualifier list."
+            ),
+            null_means="The keyword has no qualifier.",
+        ),
+        "qualifier_uncertain": ColumnSemantics(
+            description="Whether the source marked this qualifier with a question mark.",
+            value_meanings={
+                "true": "the qualifier is uncertain",
+                "false": "the source did not mark the qualifier uncertain",
             },
         ),
     },
@@ -121,32 +180,39 @@ class KeywordModelFactory:
         return [
             model
             for term_node in term_nodes
-            if (model := self._parse_term(tm_id, term_node)) is not None
+            for model in self._parse_term(tm_id, term_node)
         ]
 
     def _parse_term(self, tm_id, term_node):
+        """Parse a keyword term into metadata rows."""
         self.term_value_proc.set_context(xdm_item=term_node)
         keyword = optional_string(
             self.term_value_proc.evaluate_single("normalize-space(.)")
         )
         if keyword is None:
-            return None
-        keyword, uncertain = _keyword_value(keyword)
-        if keyword is None:
-            return None
-
-        return KeywordModel(
-            keyword_id=self.next_keyword_id(),
-            tm_id=tm_id,
-            scheme=optional_string(
-                self.term_value_proc.evaluate_single("string((../@scheme)[1])")
-            ),
-            keyword_type=optional_string(
-                self.term_value_proc.evaluate_single("string((@type)[1])")
-            ),
-            keyword=keyword,
-            uncertain=uncertain,
+            return []
+        scheme = optional_string(
+            self.term_value_proc.evaluate_single("string((../@scheme)[1])")
         )
+        keyword_type = optional_string(
+            self.term_value_proc.evaluate_single("string((@type)[1])")
+        )
+
+        return [
+            KeywordModel(
+                keyword_id=self.next_keyword_id(),
+                tm_id=tm_id,
+                scheme=scheme,
+                keyword_type=keyword_type,
+                keyword=keyword,
+                uncertain=uncertain,
+                qualifier=qualifier,
+                qualifier_uncertain=qualifier_uncertain,
+            )
+            for keyword, uncertain, qualifier, qualifier_uncertain in _keyword_values(
+                keyword
+            )
+        ]
 
     def next_keyword_id(self):
         keyword_id = self._next_keyword_id

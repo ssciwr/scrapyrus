@@ -30,6 +30,7 @@ class AphroditoScraper(ImageScraperBase):
 
     @classmethod
     def _image_urls(cls, html: str, page_url: str) -> list[str]:
+        """Extract downloadable image URLs from the record."""
         soup = BeautifulSoup(html, "html.parser")
         image_urls = []
         seen_urls = set()

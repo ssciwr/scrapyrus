@@ -42,6 +42,7 @@ class MetadataFilter:
     tm_place_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
+        """Normalize metadata filter sequences and validate filter bounds."""
         object.__setattr__(self, "keywords", tuple(self.keywords))
         object.__setattr__(self, "tm_place_ids", tuple(self.tm_place_ids))
         if (
@@ -102,6 +103,7 @@ def bm25_search(
 def _metadata_predicates(
     metadata_filter: MetadataFilter,
 ) -> tuple[sql.Composed, dict[str, Any]]:
+    """Build SQL predicates and parameters for metadata filters."""
     predicates: list[sql.SQL | sql.Composed] = []
     parameters: dict[str, Any] = {}
 
@@ -182,6 +184,7 @@ AND EXISTS (
 
 
 def _bm25_query(vector_column: str, metadata_predicates: sql.Composed) -> sql.Composed:
+    """Build a BM25 ranking query for the selected vector and filters."""
     return sql.SQL(
         """
 WITH query_terms AS MATERIALIZED (
@@ -274,6 +277,7 @@ LIMIT %(limit)s
 
 
 def _search_hit(row: Any) -> BM25SearchHit:
+    """Convert a database row to a BM25 search hit."""
     if isinstance(row, dict):
         return BM25SearchHit(
             transcription_id=int(row["transcription_id"]),

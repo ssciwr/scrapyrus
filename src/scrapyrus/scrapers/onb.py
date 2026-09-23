@@ -34,6 +34,7 @@ class ONBScraper(
 
     @staticmethod
     def _path_starts_with(path: str, prefix: str) -> bool:
+        """Check a URL path prefix at a complete path segment boundary."""
         return path == prefix or path.startswith(prefix + "/")
 
     def responsible(self, url: str) -> bool:
@@ -93,10 +94,12 @@ class ONBScraper(
 
     @staticmethod
     def _response_url(response: requests.Response, fallback: str) -> str:
+        """Return the final response URL or the supplied fallback."""
         return response.url or fallback
 
     @staticmethod
     def _link_url_by_text(html: str, page_url: str, label: str) -> str | None:
+        """Find the first link with the requested visible text."""
         soup = BeautifulSoup(html, "html.parser")
         for link in soup.find_all("a", href=True):
             if link.get_text(" ", strip=True) == label:
@@ -105,6 +108,7 @@ class ONBScraper(
 
     @classmethod
     def _digitalisat_url(cls, html: str, page_url: str) -> str:
+        """Find the digitization link on an ONB record page."""
         soup = BeautifulSoup(html, "html.parser")
         link = soup.select_one("a#Digitalisat[href]")
         if link is not None:
@@ -117,6 +121,7 @@ class ONBScraper(
 
     @classmethod
     def _manifest_url_from_direct_url(cls, url: str) -> str | None:
+        """Resolve a manifest from a direct ONB digitization URL."""
         parsed_url = urlparse(url)
         if parsed_url.hostname == "api.onb.ac.at" and cls._path_starts_with(
             parsed_url.path,
@@ -143,6 +148,7 @@ class ONBScraper(
         session: requests.Session,
         page_url: str,
     ) -> str:
+        """Resolve the full digitization URL through the Primo API."""
         parsed_url = urlparse(page_url)
         query = parse_qs(parsed_url.query)
 
@@ -217,6 +223,7 @@ class ONBScraper(
         page_response: requests.Response,
         requested_url: str,
     ) -> str:
+        """Resolve the full digitization URL for an ONB record."""
         page_url = cls._response_url(page_response, requested_url)
         for label in cls.FULL_DIGITIZATION_LABELS:
             link_url = cls._link_url_by_text(
