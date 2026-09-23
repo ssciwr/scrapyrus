@@ -154,6 +154,18 @@ scrapyrus embeddings ingest translations \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
+Each embedding table publishes one complete, non-secret specification in
+`embedding_table_metadata`: provider, model, dimensions, effective provider
+options, optional endpoint profile, and contract version. Credentials and
+endpoint URLs are never stored. All three corpora use the unified store and
+LangChain factory, with distinct document and query embedding methods.
+Ingest, update, query, and import reject incompatible specifications even when
+model names or dimensions match. Pass `--force` to ingest, update, or import
+to discard existing vectors when changing the specification. Deletion retains
+the specification and dimension. Source reconciliation, metadata, dimension
+constraints, and indexes commit together. Stop consumers while rebuilding
+source tables and their dependent embeddings.
+
 Create a keyword embedding store from the distinct strings in the `keywords`
 table with the same inference settings:
 
@@ -162,8 +174,8 @@ scrapyrus embeddings ingest keywords \
     --inference-server-url <url> --model-name <model> --api-key <key>
 ```
 
-The command keeps separate rows and cosine-search indexes for each model. On a
-fresh ingestion it embeds every source row or keyword. The corresponding
+On a fresh ingestion the command embeds every source row or keyword. An empty
+corpus uses a query embedding readiness probe to publish its dimensions. The corresponding
 `embeddings update transcriptions`, `embeddings update translations`, and
 `embeddings update keywords` commands embed only missing or stale entries and
 remove entries whose source no longer exists.
@@ -178,6 +190,12 @@ scrapyrus embeddings dump keywords \
 scrapyrus embeddings import keywords \
     --model-name <model> keyword-embeddings.dump
 ```
+
+Every binary embedding dump requires an adjacent `<dump>.manifest.json` file.
+It records the corpus, ordered columns, row count, and complete embedding
+specification. Import uses the manifest's specification and validates dimensions,
+unique record identities, and matching source rows before replacing vectors.
+Export, import, and deletion do not require a provider client.
 
 Embed free text and print its top candidates with the query commands:
 
@@ -201,14 +219,35 @@ is included in the output together with its source path, TM ID, and language.
 
 `scrapyrus embeddings evaluate transcriptions` evaluates transcription queries
 against translation candidates. `scrapyrus embeddings evaluate translations`
-evaluates translation queries against transcription candidates. The `dump`,
+evaluates translation queries against transcription candidates. Both tables
+must use compatible complete specifications and the same dimension. Evaluation prints a single Markdown
+report to stdout; redirect it to a file to save the findings. The `dump`,
 `import`, and `delete` operation groups likewise provide `transcriptions`,
 `translations`, and `keywords` subcommands.
 
 The embedding ingestion and query commands accept `SCRAPYRUS_DATABASE_URL`,
 `SCRAPYRUS_EMBEDDINGS_URL`, `SCRAPYRUS_EMBEDDINGS_MODEL`, and
 `SCRAPYRUS_EMBEDDINGS_API_KEY` instead of the corresponding options. The query
-must use the same model as the stored embeddings.
+must use a compatible complete specification.
+
+Hosted providers are inferred from their exact standard API hostnames; other
+URLs use the OpenAI-compatible `vllm` integration. Override inference with
+`--provider` or `SCRAPYRUS_EMBEDDING_PROVIDER`. Set options with a JSON object
+through `--provider-options` or `SCRAPYRUS_EMBEDDING_PROVIDER_OPTIONS`.
+For vLLM, set `--endpoint-profile` or `SCRAPYRUS_EMBEDDING_ENDPOINT_PROFILE`
+(default `vllm`) to the profile consumers resolve through
+`EMBEDDING_ENDPOINT_<PROFILE>`. The package factory also supports Hugging Face
+clients with separate document/query prompts and a model revision; install
+the local backend with `uv sync --extra huggingface` when using that provider.
+Provider integrations are pinned in `uv.lock`.
+
+XML chunks have deterministic unique IDs such as `transcriptions:42:0`, while
+keeping `(xml_id, chunk_index)` as their source key. Vectors use `vector(n)`;
+up to 2,000 dimensions, HNSW indexes the embedding column directly. Dimensions
+2,001–4,000 retain the full-precision vector and additionally use a generated
+`search_embedding halfvec(n)` column with a direct HNSW index. Larger vectors
+use exact cosine search. Generated search columns are derived locally and
+excluded from binary transfers.
 
 The database must already exist and be reachable. Embedding ingestion reads the
 XML rows created by `transcriptions ingest`, so those commands must run in that
