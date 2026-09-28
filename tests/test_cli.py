@@ -426,7 +426,6 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
         "scrapyrus.__main__.evaluate_embeddings",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
-    output = tmp_path / "evaluation.md"
     result = CliRunner().invoke(
         main,
         (
@@ -435,8 +434,6 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
             "transcriptions",
             "--database-url",
             "postgresql://db",
-            "--output",
-            str(output),
         ),
     )
     assert result.exit_code == 0
@@ -444,7 +441,6 @@ def test_embeddings_evaluate_has_no_idpdata_or_variant_arguments(tmp_path, monke
         (
             ("postgresql://db",),
             {
-                "output_file": output,
                 "query_kind": "transcriptions",
                 "progressbar": True,
                 "sample": None,
@@ -460,7 +456,6 @@ def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
         "scrapyrus.__main__.evaluate_embeddings",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
-    output = tmp_path / "evaluation.md"
 
     result = CliRunner().invoke(
         main,
@@ -474,8 +469,6 @@ def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
             "12",
             "--seed",
             "8675309",
-            "--output",
-            str(output),
             "--no-progress",
         ),
     )
@@ -485,7 +478,6 @@ def test_embeddings_evaluate_passes_sample_size_and_seed(tmp_path, monkeypatch):
         (
             ("postgresql://db",),
             {
-                "output_file": output,
                 "query_kind": "translations",
                 "progressbar": False,
                 "sample": 12,

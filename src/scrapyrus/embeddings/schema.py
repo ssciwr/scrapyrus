@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import psycopg
 from psycopg import sql
 
+from scrapyrus.embeddings.semantics import EMBEDDING_TABLE_METADATA_SEMANTICS
 from scrapyrus.semantics import publish_semantics
 
 if TYPE_CHECKING:
@@ -43,25 +44,31 @@ def ensure_schema(cursor: Any, corpora: Iterable[EmbeddingCorpus]) -> None:
             ) from error
         raise
     corpora = tuple(corpora)
+    cursor.execute("""
+CREATE TABLE IF NOT EXISTS embedding_table_metadata (
+    table_name text PRIMARY KEY,
+    model_name text NOT NULL,
+    embedding_size integer CHECK (embedding_size > 0)
+)
+""")
     for corpus in corpora:
         corpus.create_schema(cursor)
     publish_semantics(
-        cursor, tuple(c.semantics for c in corpora), component="embeddings"
+        cursor,
+        (EMBEDDING_TABLE_METADATA_SEMANTICS, *(c.semantics for c in corpora)),
+        component="embeddings",
     )
 
 
-def embedding_stats(
-    cursor: Any, corpus: EmbeddingCorpus, model_name: str
-) -> tuple[int, int | None]:
+def embedding_stats(cursor: Any, corpus: EmbeddingCorpus) -> tuple[int, int | None]:
     """Return row count and validate the stored vectors' common dimension."""
 
     try:
         cursor.execute(
             sql.SQL(
                 "SELECT count(*), min(vector_dims(embedding)), "
-                "max(vector_dims(embedding)) FROM {} WHERE model_name = %s"
+                "max(vector_dims(embedding)) FROM {}"
             ).format(sql.Identifier(corpus.table_name)),
-            (model_name,),
         )
     except psycopg.errors.UndefinedTable as error:
         raise EmbeddingsUnavailableError(
@@ -120,15 +127,6 @@ def row_value(row: Any, key: str, index: int) -> Any:
     return row[key] if isinstance(row, dict) else row[index]
 
 
-def imported_model_names(cursor: Any, temporary_table: str) -> list[str]:
-    cursor.execute(
-        sql.SQL(
-            "SELECT model_name FROM {} GROUP BY model_name ORDER BY model_name"
-        ).format(sql.Identifier(temporary_table))
-    )
-    return [str(row_value(row, "model_name", 0)) for row in cursor.fetchall()]
-
-
 def imported_embedding_stats(
     cursor: Any, temporary_table: str
 ) -> tuple[int, int | None]:
@@ -151,23 +149,20 @@ def imported_embedding_stats(
     return row_count, int(minimum_dimensions)
 
 
-def embedding_index_name(table: str, model_name: str) -> str:
-    digest = hashlib.sha256(model_name.encode("utf-8")).hexdigest()[:12]
-    return f"{table}_{digest}_hnsw_idx"
+def embedding_index_name(table: str) -> str:
+    return f"{table}_hnsw_idx"
 
 
-def drop_embedding_index(cursor: Any, table: str, model_name: str) -> None:
+def drop_embedding_index(cursor: Any, table: str) -> None:
     cursor.execute(
         sql.SQL("DROP INDEX IF EXISTS {}").format(
-            sql.Identifier(embedding_index_name(table, model_name))
+            sql.Identifier(embedding_index_name(table))
         )
     )
 
 
-def recreate_embedding_index(
-    cursor: Any, table: str, model_name: str, dimensions: int
-) -> None:
-    drop_embedding_index(cursor, table, model_name)
+def recreate_embedding_index(cursor: Any, table: str, dimensions: int) -> None:
+    drop_embedding_index(cursor, table)
     if dimensions <= HNSW_VECTOR_MAX_DIMENSIONS:
         index_type = "vector"
         operator_class = "vector_cosine_ops"
@@ -177,16 +172,12 @@ def recreate_embedding_index(
     else:
         return
     cursor.execute(
-        sql.SQL(
-            "CREATE INDEX {} ON {} USING hnsw "
-            "((embedding::{}({})) {}) WHERE model_name = {}"
-        ).format(
-            sql.Identifier(embedding_index_name(table, model_name)),
+        sql.SQL("CREATE INDEX {} ON {} USING hnsw ((embedding::{}({})) {})").format(
+            sql.Identifier(embedding_index_name(table)),
             sql.Identifier(table),
             sql.SQL(index_type),
             sql.Literal(dimensions),
             sql.SQL(operator_class),
-            sql.Literal(model_name),
         )
     )
 
@@ -195,4 +186,96 @@ def is_missing_vector_extension_error(error: psycopg.Error) -> bool:
     message = str(error)
     return (
         'extension "vector" is not available' in message or "vector.control" in message
+    )
+
+
+@dataclass(frozen=True)
+class EmbeddingTableMetadata:
+    """The model and vector dimension associated with one corpus table."""
+
+    table_name: str
+    model_name: str
+    embedding_size: int | None
+
+
+class EmbeddingModelMismatchError(ValueError):
+    """Raised when an operation requests a model different from the table's."""
+
+
+def embedding_table_metadata(
+    cursor: Any, corpus: EmbeddingCorpus, *, lock: bool = False
+) -> EmbeddingTableMetadata | None:
+    """Read corpus configuration, optionally locking it for a write operation."""
+    try:
+        cursor.execute(
+            "SELECT table_name, model_name, embedding_size FROM embedding_table_metadata "
+            "WHERE table_name = %s" + (" FOR UPDATE" if lock else " FOR SHARE"),
+            (corpus.table_name,),
+        )
+    except psycopg.errors.UndefinedTable as error:
+        raise EmbeddingsUnavailableError(
+            f"No embedding metadata exists. Run 'scrapyrus embeddings ingest {corpus.name}' first."
+        ) from error
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    size = row_value(row, "embedding_size", 2)
+    return EmbeddingTableMetadata(
+        str(row_value(row, "table_name", 0)),
+        str(row_value(row, "model_name", 1)),
+        None if size is None else int(size),
+    )
+
+
+def require_embedding_model(
+    cursor: Any, corpus: EmbeddingCorpus, model_name: str, *, lock: bool = False
+) -> EmbeddingTableMetadata:
+    """Require the requested model to match the corpus configuration."""
+    metadata = embedding_table_metadata(cursor, corpus, lock=lock)
+    if metadata is None:
+        raise ValueError(f"No embedding model is configured for {corpus.table_name!r}")
+    if metadata.model_name != model_name:
+        raise EmbeddingModelMismatchError(
+            f"{corpus.table_name!r} uses embedding model {metadata.model_name!r}, "
+            f"not {model_name!r}"
+        )
+    return metadata
+
+
+def associate_embedding_model(
+    cursor: Any, corpus: EmbeddingCorpus, model_name: str, *, force: bool
+) -> EmbeddingTableMetadata:
+    """Configure a corpus, discarding its vectors only for a forced model change."""
+    cursor.execute(
+        "INSERT INTO embedding_table_metadata (table_name, model_name) VALUES (%s, %s) "
+        "ON CONFLICT (table_name) DO NOTHING",
+        (corpus.table_name, model_name),
+    )
+    metadata = embedding_table_metadata(cursor, corpus, lock=True)
+    if metadata is None:
+        raise RuntimeError(f"Could not configure {corpus.table_name!r}")
+    if metadata.model_name == model_name:
+        return metadata
+    if not force:
+        raise EmbeddingModelMismatchError(
+            f"{corpus.table_name!r} uses embedding model {metadata.model_name!r}, not {model_name!r}. "
+            "Pass --force to discard its embeddings and use the new model."
+        )
+    drop_embedding_index(cursor, corpus.table_name)
+    cursor.execute(sql.SQL("TRUNCATE {}").format(sql.Identifier(corpus.table_name)))
+    cursor.execute(
+        "UPDATE embedding_table_metadata SET model_name = %s, "
+        "embedding_size = NULL WHERE table_name = %s",
+        (model_name, corpus.table_name),
+    )
+    return EmbeddingTableMetadata(corpus.table_name, model_name, None)
+
+
+def set_embedding_size(
+    cursor: Any, corpus: EmbeddingCorpus, dimensions: int | None
+) -> None:
+    """Persist the dimension after a validated corpus write."""
+    cursor.execute(
+        "UPDATE embedding_table_metadata SET embedding_size = %s WHERE table_name = %s",
+        (dimensions, corpus.table_name),
     )
