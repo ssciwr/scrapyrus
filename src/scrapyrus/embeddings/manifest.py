@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from scrapyrus.embeddings.corpora import EmbeddingCorpus
 from scrapyrus.embeddings.specification import EmbeddingTableMetadata
-
-if TYPE_CHECKING:
-    from scrapyrus.embeddings.corpora import EmbeddingCorpus
 
 DUMP_FORMAT = "scrapyrus-embedding-dump-v1"
 
