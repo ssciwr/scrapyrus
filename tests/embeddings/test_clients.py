@@ -155,6 +155,21 @@ def test_unpublished_or_secret_provider_options_are_rejected(provider, options):
         effective_provider_options(provider, options)
 
 
+@pytest.mark.parametrize("provider", ["vllm", "voyageai", "mistralai", "huggingface"])
+def test_context_length_check_is_rejected_for_non_openai_providers(provider):
+    with pytest.raises(
+        ValueError,
+        match=r"check_embedding_ctx_length=True.*'openai' embedding provider",
+    ):
+        effective_provider_options(provider, {"check_embedding_ctx_length": True})
+
+
+def test_context_length_check_is_available_for_openai():
+    assert effective_provider_options(
+        "openai", {"check_embedding_ctx_length": True}
+    ) == {"check_embedding_ctx_length": True}
+
+
 def test_voyage_specification_records_document_and_query_roles():
     spec = EmbeddingSpecification(model_name="voyage-3", provider="voyageai")
     assert spec.provider_options == {

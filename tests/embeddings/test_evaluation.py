@@ -281,7 +281,7 @@ def test_evaluation_uses_shared_ingest_sample(capsys, monkeypatch):
     "changed",
     [
         {"provider": "openai", "endpoint_profile": None},
-        {"provider_options": {"check_embedding_ctx_length": True}},
+        {"provider_options": {"dimensions": 3}},
         {"endpoint_profile": "other_deployment"},
     ],
 )

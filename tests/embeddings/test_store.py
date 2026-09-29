@@ -568,7 +568,7 @@ def test_deleting_vectors_preserves_dimension_for_subsequent_ingestion(
     "changed",
     [
         {"provider": "openai", "endpoint_profile": None},
-        {"provider_options": {"check_embedding_ctx_length": True}},
+        {"provider_options": {"dimensions": 2}},
         {"endpoint_profile": "other_deployment"},
     ],
 )
@@ -593,9 +593,7 @@ def test_force_replaces_compatibility_options_and_keeps_one_transaction(
 ):
     cursor, connection = database
     table = EMBEDDING_CORPORA[corpus_name].table_name
-    cursor.metadata[table] = configuration(
-        provider_options={"check_embedding_ctx_length": True}
-    )
+    cursor.metadata[table] = configuration(provider_options={"dimensions": 2})
     cursor.one_results = [(0, None, None)]
     cursor.all_results = [source_rows(corpus_name)]
     assert make_store(corpus_name, client).ingest(force=True, progressbar=False) == 1

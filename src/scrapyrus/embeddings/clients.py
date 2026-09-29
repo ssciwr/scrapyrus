@@ -53,6 +53,11 @@ def effective_provider_options(
     }
     if provider not in allowed:
         raise ValueError(f"Unsupported embedding provider {provider!r}")
+    if provider != "openai" and supplied.get("check_embedding_ctx_length") is True:
+        raise ValueError(
+            "check_embedding_ctx_length=True is only supported by the "
+            "'openai' embedding provider"
+        )
     unknown = set(supplied) - allowed[provider]
     if unknown:
         raise ValueError(
