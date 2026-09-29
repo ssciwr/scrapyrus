@@ -9,7 +9,7 @@ from typing import Any
 from scrapyrus.embeddings.corpora import EmbeddingCorpus
 from scrapyrus.embeddings.specification import EmbeddingTableMetadata
 
-DUMP_FORMAT = "scrapyrus-embedding-dump-v1"
+EMBEDDING_DUMP_FORMAT = "scrapyrus-embedding-dump-v1"
 
 
 def manifest_path(path: Path) -> Path:
@@ -24,7 +24,7 @@ def write_manifest(
     manifest_path(path).write_text(
         json.dumps(
             {
-                "format": DUMP_FORMAT,
+                "format": EMBEDDING_DUMP_FORMAT,
                 "document_kind": corpus.name,
                 "columns": list(corpus.export_columns),
                 "row_count": count,
@@ -56,7 +56,7 @@ def load_manifest(
         "embedding_specification",
     }:
         raise ValueError("Invalid embedding dump manifest fields")
-    if value["format"] != DUMP_FORMAT:
+    if value["format"] != EMBEDDING_DUMP_FORMAT:
         raise ValueError("Unsupported embedding dump manifest format")
     if value["document_kind"] != corpus.name:
         raise ValueError("Embedding dump names the wrong corpus")
