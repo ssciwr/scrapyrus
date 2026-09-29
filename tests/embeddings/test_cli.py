@@ -4,6 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 from scrapyrus.__main__ import main
+from tests.embeddings.helpers import specification
 from scrapyrus.embeddings import (
     EMBEDDING_CORPORA,
     DocumentMatch,
@@ -18,13 +19,25 @@ def cli_store(monkeypatch):
     client = object()
     monkeypatch.setattr(
         "scrapyrus.__main__.build_embedding_client",
-        lambda *args: calls.append(("client", args)) or client,
+        lambda **kwargs: calls.append(("client", kwargs)) or client,
     )
 
     class Store:
         def __init__(self, *, corpus, specification, client):
             self.corpus = corpus
             calls.append(("store", corpus, specification.model_name, client))
+
+        @classmethod
+        def from_database(cls, *, corpus, model_name, conninfo):
+            return cls(
+                corpus=corpus, specification=specification(model_name, 2), client=None
+            )
+
+        @classmethod
+        def from_dump(cls, *, corpus, model_name, source):
+            return cls(
+                corpus=corpus, specification=specification(model_name, 2), client=None
+            )
 
         def ingest(self, conninfo, **options):
             calls.append(("ingest", conninfo, options))
@@ -70,7 +83,16 @@ def test_ingestion_commands_use_the_shared_store(operation, corpus_name, cli_sto
     result = invoke(operation, corpus_name, "--no-progress")
     assert result.exit_code == 0, result.output
     assert calls[:2] == [
-        ("client", ("https://server/v1", "model", "secret")),
+        (
+            "client",
+            {
+                "provider": "vllm",
+                "model_name": "model",
+                "api_key": "secret",
+                "inference_server_url": "https://server/v1",
+                "provider_options": {"check_embedding_ctx_length": False},
+            },
+        ),
         ("store", corpus_name, "model", client),
     ]
     expected = {
@@ -176,7 +198,7 @@ def test_cli_reports_shared_store_source_errors(cli_store, monkeypatch):
 
 
 def test_cli_reports_invalid_client_configuration(monkeypatch, cli_store):
-    def fail(*args):
+    def fail(**kwargs):
         raise ValueError("Unsupported inference server")
 
     monkeypatch.setattr("scrapyrus.__main__.build_embedding_client", fail)
