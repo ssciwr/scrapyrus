@@ -13,8 +13,6 @@ from psycopg import sql
 from tqdm import tqdm
 
 from scrapyrus.embeddings.clients import (
-    embed_documents_with_backoff,
-    embed_query_with_backoff,
     embedding_error_message,
     embedding_request_batches,
     is_skippable_embedding_error,
@@ -194,10 +192,8 @@ class EmbeddingStore:
                 if dimensions is None:
                     dimensions = len(
                         self._validate_vector(
-                            embed_query_with_backoff(
-                                client,
-                                "Scrapyrus empty-corpus dimension readiness probe",
-                                self.specification.provider,
+                            client.embed_query(
+                                "Scrapyrus empty-corpus dimension readiness probe"
                             ),
                             self.specification.requested_dimensions,
                         )
@@ -216,11 +212,7 @@ class EmbeddingStore:
         """Embed one request, isolating skippable failures to individual inputs."""
 
         try:
-            vectors = embed_documents_with_backoff(
-                client,
-                [record.text for record in records],
-                self.specification.provider,
-            )
+            vectors = client.embed_documents([record.text for record in records])
         except Exception as error:
             if len(records) > 1 and is_skippable_embedding_error(error):
                 for record in records:
@@ -282,7 +274,7 @@ class EmbeddingStore:
                         "Stored vector dimensions disagree with embedding table metadata"
                     )
                 vector = self._validate_vector(
-                    embed_query_with_backoff(client, text, self.specification.provider),
+                    client.embed_query(text),
                     dimensions,
                 )
                 return self.corpus.query_matches(cursor, vector, top_k)
