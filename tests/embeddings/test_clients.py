@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from scrapyrus.embeddings.clients import (
-    VOYAGEAI_MAX_ATTEMPTS,
+    VoyageAIInferenceOptions,
     build_embedding_client,
     effective_provider_options,
     infer_embedding_provider,
@@ -101,8 +101,8 @@ def test_factory_configures_standard_clients_without_network_probing(
     )
     assert calls == [expected]
     if provider == "voyageai":
-        assert client._client.max_retries == VOYAGEAI_MAX_ATTEMPTS
-        assert client._aclient.max_retries == VOYAGEAI_MAX_ATTEMPTS
+        assert client._client.max_retries == VoyageAIInferenceOptions.max_attempts
+        assert client._aclient.max_retries == VoyageAIInferenceOptions.max_attempts
 
 
 def test_huggingface_separates_document_and_query_prompts(monkeypatch):

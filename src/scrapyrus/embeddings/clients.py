@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from itertools import batched
 from typing import Any, TypeVar, cast
 from urllib.parse import urlparse
@@ -14,8 +15,14 @@ import requests
 SUPPORTED_EMBEDDING_PROVIDERS = frozenset(
     {"openai", "vllm", "voyageai", "mistralai", "huggingface"}
 )
-VOYAGEAI_EMBEDDING_BATCH_SIZE = 64
-VOYAGEAI_MAX_ATTEMPTS = 8
+
+
+@dataclass(frozen=True)
+class VoyageAIInferenceOptions:
+    """Runtime options shared by VoyageAI embedding requests."""
+
+    embedding_batch_size: int = 64
+    max_attempts: int = 8
 
 
 _BatchItem = TypeVar("_BatchItem")
@@ -26,7 +33,9 @@ def embedding_request_batches(
 ) -> Iterator[tuple[_BatchItem, ...]]:
     """Group VoyageAI inputs into regular requests, preserving other behavior."""
 
-    batch_size = VOYAGEAI_EMBEDDING_BATCH_SIZE if provider == "voyageai" else 1
+    batch_size = (
+        VoyageAIInferenceOptions.embedding_batch_size if provider == "voyageai" else 1
+    )
     return batched(items, batch_size)
 
 
@@ -95,7 +104,7 @@ def effective_provider_options(
         supplied.setdefault("check_embedding_ctx_length", False)
     elif provider == "voyageai":
         supplied.setdefault("truncation", True)
-        supplied.setdefault("batch_size", VOYAGEAI_EMBEDDING_BATCH_SIZE)
+        supplied.setdefault("batch_size", VoyageAIInferenceOptions.embedding_batch_size)
         supplied.setdefault("document_input_type", "document")
         supplied.setdefault("query_input_type", "query")
         if supplied["document_input_type"] != "document":
@@ -139,8 +148,8 @@ def build_embedding_client(
             **options,
         )
         # VoyageAI currently interprets max_retries as the total attempt count.
-        client._client.max_retries = VOYAGEAI_MAX_ATTEMPTS
-        client._aclient.max_retries = VOYAGEAI_MAX_ATTEMPTS
+        client._client.max_retries = VoyageAIInferenceOptions.max_attempts
+        client._aclient.max_retries = VoyageAIInferenceOptions.max_attempts
         return client
     if provider == "mistralai":
         from langchain_mistralai import MistralAIEmbeddings
