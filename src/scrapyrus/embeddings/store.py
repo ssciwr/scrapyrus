@@ -178,12 +178,12 @@ class EmbeddingStore:
                     for batch in embedding_request_batches(
                         records, self.specification.provider
                     ):
-                        dimensions = self._embed_batch(
+                        batch_embeddings, dimensions = self._embed_batch(
                             client,
                             batch,
-                            embedded,
                             dimensions,
                         )
+                        embedded.extend(batch_embeddings)
                 finally:
                     if progressbar:
                         records.close()
@@ -206,33 +206,56 @@ class EmbeddingStore:
         self,
         client: Embeddings,
         records: Sequence[EmbeddingInput],
-        embedded: list[tuple[EmbeddingInput, tuple[float, ...]]],
         dimensions: int | None,
-    ) -> int | None:
+    ) -> tuple[list[tuple[EmbeddingInput, tuple[float, ...]]], int | None]:
         """Embed one request, isolating skippable failures to individual inputs."""
 
         try:
             vectors = client.embed_documents([record.text for record in records])
         except Exception as error:
-            if len(records) > 1 and is_skippable_embedding_error(error):
-                for record in records:
-                    dimensions = self._embed_batch(
-                        client, (record,), embedded, dimensions
-                    )
-                return dimensions
             if not is_skippable_embedding_error(error):
                 raise
-            record = records[0]
-            key = {name: record.values[name] for name in self.corpus.key_columns}
-            print(
-                f"Skipping {self.corpus.name} embedding {key!r} for model "
-                f"{self.specification.model_name!r} after context-length validation error: "
-                f"{embedding_error_message(error)}",
-                flush=True,
-            )
-            return dimensions
+            return self._recover_failed_batch(client, records, dimensions, error)
+        return self._validate_batch(records, vectors, dimensions)
+
+    def _recover_failed_batch(
+        self,
+        client: Embeddings,
+        records: Sequence[EmbeddingInput],
+        dimensions: int | None,
+        error: Exception,
+    ) -> tuple[list[tuple[EmbeddingInput, tuple[float, ...]]], int | None]:
+        """Retry a skippable failed batch and report individual failures."""
+
+        if len(records) > 1:
+            embedded: list[tuple[EmbeddingInput, tuple[float, ...]]] = []
+            for record in records:
+                record_embeddings, dimensions = self._embed_batch(
+                    client, (record,), dimensions
+                )
+                embedded.extend(record_embeddings)
+            return embedded, dimensions
+        record = records[0]
+        key = {name: record.values[name] for name in self.corpus.key_columns}
+        print(
+            f"Skipping {self.corpus.name} embedding {key!r} for model "
+            f"{self.specification.model_name!r} after context-length validation error: "
+            f"{embedding_error_message(error)}",
+            flush=True,
+        )
+        return [], dimensions
+
+    def _validate_batch(
+        self,
+        records: Sequence[EmbeddingInput],
+        vectors: Sequence[Sequence[float]],
+        dimensions: int | None,
+    ) -> tuple[list[tuple[EmbeddingInput, tuple[float, ...]]], int | None]:
+        """Validate one successful response and pair vectors with their inputs."""
+
         if len(vectors) != len(records):
             raise ValueError("Embedding client must return one vector per input")
+        embedded: list[tuple[EmbeddingInput, tuple[float, ...]]] = []
         for record, raw_vector in zip(records, vectors, strict=True):
             vector = self._validate_vector(
                 raw_vector,
@@ -241,7 +264,7 @@ class EmbeddingStore:
             if dimensions is None:
                 dimensions = len(vector)
             embedded.append((record, vector))
-        return dimensions
+        return embedded, dimensions
 
     def query(
         self,
