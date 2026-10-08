@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from scrapyrus.embeddings.clients import (
     embedding_error_message,
+    embedding_request_batches,
     is_skippable_embedding_error,
 )
 from scrapyrus.embeddings.corpora import (
@@ -142,7 +143,6 @@ class EmbeddingStore:
             raise ValueError("chunk_size must be at least 1")
         if sample is not None and sample < 1:
             raise ValueError("sample must be at least 1")
-        model_name = self.specification.model_name
         with psycopg.connect(conninfo) as connection:
             with connection.cursor() as cursor:
                 ensure_schema(cursor, EMBEDDING_CORPORA.values())
@@ -175,34 +175,15 @@ class EmbeddingStore:
                     else pending
                 )
                 try:
-                    for record in records:
-                        try:
-                            vectors = client.embed_documents([record.text])
-                        except Exception as error:
-                            if not is_skippable_embedding_error(error):
-                                raise
-                            key = {
-                                name: record.values[name]
-                                for name in self.corpus.key_columns
-                            }
-                            print(
-                                f"Skipping {self.corpus.name} embedding {key!r} for model "
-                                f"{model_name!r} after context-length validation error: "
-                                f"{embedding_error_message(error)}",
-                                flush=True,
-                            )
-                            continue
-                        if len(vectors) != 1:
-                            raise ValueError(
-                                "Embedding client must return one vector per input"
-                            )
-                        vector = self._validate_vector(
-                            vectors[0],
-                            dimensions or self.specification.requested_dimensions,
+                    for batch in embedding_request_batches(
+                        records, self.specification.provider
+                    ):
+                        batch_embeddings, dimensions = self._embed_batch(
+                            client,
+                            batch,
+                            dimensions,
                         )
-                        if dimensions is None:
-                            dimensions = len(vector)
-                        embedded.append((record, vector))
+                        embedded.extend(batch_embeddings)
                 finally:
                     if progressbar:
                         records.close()
@@ -220,6 +201,70 @@ class EmbeddingStore:
                 set_embedding_size(cursor, self.corpus, dimensions)
                 recreate_embedding_index(cursor, self.corpus.table_name, dimensions)
         return len(embedded)
+
+    def _embed_batch(
+        self,
+        client: Embeddings,
+        records: Sequence[EmbeddingInput],
+        dimensions: int | None,
+    ) -> tuple[list[tuple[EmbeddingInput, tuple[float, ...]]], int | None]:
+        """Embed one request, isolating skippable failures to individual inputs."""
+
+        try:
+            vectors = client.embed_documents([record.text for record in records])
+        except Exception as error:
+            if not is_skippable_embedding_error(error):
+                raise
+            return self._recover_failed_batch(client, records, dimensions, error)
+        return self._validate_batch(records, vectors, dimensions)
+
+    def _recover_failed_batch(
+        self,
+        client: Embeddings,
+        records: Sequence[EmbeddingInput],
+        dimensions: int | None,
+        error: Exception,
+    ) -> tuple[list[tuple[EmbeddingInput, tuple[float, ...]]], int | None]:
+        """Retry a skippable failed batch and report individual failures."""
+
+        if len(records) > 1:
+            embedded: list[tuple[EmbeddingInput, tuple[float, ...]]] = []
+            for record in records:
+                record_embeddings, dimensions = self._embed_batch(
+                    client, (record,), dimensions
+                )
+                embedded.extend(record_embeddings)
+            return embedded, dimensions
+        record = records[0]
+        key = {name: record.values[name] for name in self.corpus.key_columns}
+        print(
+            f"Skipping {self.corpus.name} embedding {key!r} for model "
+            f"{self.specification.model_name!r} after context-length validation error: "
+            f"{embedding_error_message(error)}",
+            flush=True,
+        )
+        return [], dimensions
+
+    def _validate_batch(
+        self,
+        records: Sequence[EmbeddingInput],
+        vectors: Sequence[Sequence[float]],
+        dimensions: int | None,
+    ) -> tuple[list[tuple[EmbeddingInput, tuple[float, ...]]], int | None]:
+        """Validate one successful response and pair vectors with their inputs."""
+
+        if len(vectors) != len(records):
+            raise ValueError("Embedding client must return one vector per input")
+        embedded: list[tuple[EmbeddingInput, tuple[float, ...]]] = []
+        for record, raw_vector in zip(records, vectors, strict=True):
+            vector = self._validate_vector(
+                raw_vector,
+                dimensions or self.specification.requested_dimensions,
+            )
+            if dimensions is None:
+                dimensions = len(vector)
+            embedded.append((record, vector))
+        return embedded, dimensions
 
     def query(
         self,
@@ -251,7 +296,10 @@ class EmbeddingStore:
                     raise ValueError(
                         "Stored vector dimensions disagree with embedding table metadata"
                     )
-                vector = self._validate_vector(client.embed_query(text), dimensions)
+                vector = self._validate_vector(
+                    client.embed_query(text),
+                    dimensions,
+                )
                 return self.corpus.query_matches(cursor, vector, top_k)
 
     def delete(self, conninfo: str = "") -> int:

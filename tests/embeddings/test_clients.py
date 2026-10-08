@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from scrapyrus.embeddings.clients import (
+    VoyageAIInferenceOptions,
     build_embedding_client,
     effective_provider_options,
     infer_embedding_provider,
@@ -61,7 +62,7 @@ def test_provider_inference_uses_exact_hostnames(url, provider):
                 "api_key": "secret",
                 "base_url": "https://server/v1",
                 "truncation": True,
-                "batch_size": 1000,
+                "batch_size": 64,
             },
         ),
         (
@@ -76,7 +77,11 @@ def test_factory_configures_standard_clients_without_network_probing(
     provider, module, class_name, expected, monkeypatch
 ):
     calls = []
-    client = object()
+    client = (
+        SimpleNamespace(_client=SimpleNamespace(), _aclient=SimpleNamespace())
+        if provider == "voyageai"
+        else object()
+    )
     monkeypatch.setitem(
         sys.modules,
         module,
@@ -95,6 +100,9 @@ def test_factory_configures_standard_clients_without_network_probing(
         is client
     )
     assert calls == [expected]
+    if provider == "voyageai":
+        assert client._client.max_retries == VoyageAIInferenceOptions.max_attempts
+        assert client._aclient.max_retries == VoyageAIInferenceOptions.max_attempts
 
 
 def test_huggingface_separates_document_and_query_prompts(monkeypatch):
@@ -174,7 +182,7 @@ def test_voyage_specification_records_document_and_query_roles():
     spec = EmbeddingSpecification(model_name="voyage-3", provider="voyageai")
     assert spec.provider_options == {
         "truncation": True,
-        "batch_size": 1000,
+        "batch_size": 64,
         "document_input_type": "document",
         "query_input_type": "query",
     }
