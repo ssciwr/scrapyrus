@@ -1,10 +1,12 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from scrapyrus.metadata.base import MetadataTable
+from scrapyrus.metadata.uncertainty import normalize_uncertain_text
 from scrapyrus.metadata.xmlutils import (
     create_xpath_expr,
     drop_known_id_placeholders,
@@ -26,6 +28,7 @@ PLEIADES_PLACE_RE = re.compile(
 )
 PLACE_TYPES = {"located", "found", "composed", "sent", "acquired", "received"}
 GRANULARITIES = {"settlement", "nome", "region"}
+GRANULARITY_SPECIFICITY = {"settlement": 0, "nome": 1, "region": 2}
 
 
 def _first_place_id(pattern: re.Pattern[str], value: str | None) -> int | None:
@@ -48,11 +51,25 @@ def _place_ids(pattern: re.Pattern[str], value: str | None) -> tuple[int, ...]:
     return tuple(int(match.group("id")) for match in pattern.finditer(value))
 
 
+@dataclass(frozen=True)
+class _PlaceCandidate:
+    """Hold a parsed place until uncertainty is resolved and rows are expanded."""
+
+    place_name: str
+    marker_uncertain: bool
+    cert_low: bool
+    tm_place_ids: tuple[int | None, ...]
+    pleiades_place_id: int | None
+    place_type: str | None
+    granularity: str
+
+
 class OrigPlaceModel(BaseModel):
     place_id: int = Field(gt=0)
     tm_id: int = Field(gt=0)
     full_place_name: str
     place_name: str
+    uncertain: bool
     tm_place_id: Optional[int] = Field(gt=0, default=None)
     pleiades_place_id: Optional[int] = Field(gt=0, default=None)
     place_type: Optional[
@@ -66,6 +83,7 @@ ORIG_PLACES_SCHEMA_SQL = """CREATE TABLE IF NOT EXISTS orig_places (
     tm_id integer NOT NULL,
     full_place_name text NOT NULL,
     place_name text NOT NULL,
+    uncertain boolean NOT NULL,
     tm_place_id integer,
     pleiades_place_id integer,
     place_type text,
@@ -96,6 +114,15 @@ ORIG_PLACES_SEMANTICS = TableSemantics(
         ),
         "place_name": ColumnSemantics(
             description="Normalized individual ancient place name extracted from the provenance text."
+        ),
+        "uncertain": ColumnSemantics(
+            description=(
+                "Whether the place information is considered to be uncertain."
+            ),
+            value_meanings={
+                "true": "The place is uncertain.",
+                "false": "The place is believed to be certain.",
+            },
         ),
         "tm_place_id": ColumnSemantics(
             description="Trismegistos Place identifier for the ancient place."
@@ -166,45 +193,85 @@ class OrigPlaceModelFactory:
         if place_nodes is None:
             return []
 
-        models = []
-        for place_node in place_nodes:
-            models.extend(self._parse_place(tm_id, full_place_name, place_node))
-
-        return models
-
-    def _parse_place(self, tm_id, full_place_name, place_node):
-        """Parse a place node into rows for its Trismegistos place references."""
-        self.place_value_proc.set_context(xdm_item=place_node)
-
-        place_name = self._node_string("normalize-space(.)")
-        if place_name is None:
+        candidates = tuple(
+            candidate
+            for place_node in place_nodes
+            if (candidate := self._parse_place(place_node)) is not None
+        )
+        if not candidates:
             return []
 
-        place_type = self._node_string("string((ancestor::tei:provenance[1]/@type)[1])")
-        if place_type is not None and place_type not in PLACE_TYPES:
-            return []
-
-        granularity = self._node_string("string((@subtype)[1])") or "settlement"
-        if granularity not in GRANULARITIES:
-            return []
-
-        ref = self._node_string("string((@ref)[1])")
-        tm_place_ids = _place_ids(TRISMEGISTOS_PLACE_RE, ref) or (None,)
-        pleiades_place_id = _first_place_id(PLEIADES_PLACE_RE, ref)
-
+        uncertainty = self._candidate_uncertainty(candidates, full_place_name)
         return [
             OrigPlaceModel(
                 place_id=self.next_place_id(),
                 tm_id=tm_id,
                 full_place_name=full_place_name,
-                place_name=place_name,
+                place_name=candidate.place_name,
+                uncertain=uncertain,
                 tm_place_id=tm_place_id,
-                pleiades_place_id=pleiades_place_id,
-                place_type=place_type,
-                granularity=granularity,
+                pleiades_place_id=candidate.pleiades_place_id,
+                place_type=candidate.place_type,
+                granularity=candidate.granularity,
             )
-            for tm_place_id in tm_place_ids
+            for candidate, uncertain in zip(candidates, uncertainty, strict=True)
+            for tm_place_id in candidate.tm_place_ids
         ]
+
+    def _parse_place(self, place_node):
+        """Parse a place node into an intermediate uncertainty candidate."""
+        self.place_value_proc.set_context(xdm_item=place_node)
+
+        place_name = self._node_string("normalize-space(.)")
+        if place_name is None:
+            return None
+        place_name, marker_uncertain = normalize_uncertain_text(place_name)
+        if place_name is None:
+            return None
+
+        place_type = self._node_string("string((ancestor::tei:provenance[1]/@type)[1])")
+        if place_type is not None and place_type not in PLACE_TYPES:
+            return None
+
+        granularity = self._node_string("string((@subtype)[1])") or "settlement"
+        if granularity not in GRANULARITIES:
+            return None
+
+        ref = self._node_string("string((@ref)[1])")
+        tm_place_ids = _place_ids(TRISMEGISTOS_PLACE_RE, ref) or (None,)
+        pleiades_place_id = _first_place_id(PLEIADES_PLACE_RE, ref)
+        cert_low = self._node_string("string((@cert)[1])") == "low"
+
+        return _PlaceCandidate(
+            place_name=place_name,
+            marker_uncertain=marker_uncertain,
+            cert_low=cert_low,
+            tm_place_ids=tm_place_ids,
+            pleiades_place_id=pleiades_place_id,
+            place_type=place_type,
+            granularity=granularity,
+        )
+
+    @staticmethod
+    def _candidate_uncertainty(candidates, full_place_name):
+        """Apply local-marker precedence and the origin-level fallback."""
+        if any(candidate.cert_low for candidate in candidates):
+            return tuple(candidate.cert_low for candidate in candidates)
+
+        if any(candidate.marker_uncertain for candidate in candidates):
+            return tuple(candidate.marker_uncertain for candidate in candidates)
+
+        _, full_place_uncertain = normalize_uncertain_text(full_place_name)
+        if not full_place_uncertain:
+            return (False,) * len(candidates)
+
+        most_specific = min(
+            GRANULARITY_SPECIFICITY[candidate.granularity] for candidate in candidates
+        )
+        return tuple(
+            GRANULARITY_SPECIFICITY[candidate.granularity] == most_specific
+            for candidate in candidates
+        )
 
     def _node_string(self, expression):
         """Evaluate an XPath expression and return its optional string value."""

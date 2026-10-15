@@ -280,6 +280,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
     assert "alternative boolean NOT NULL" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS orig_places" in schema_sql
     assert "place_id integer NOT NULL PRIMARY KEY" in schema_sql
+    assert "place_name text NOT NULL, uncertain boolean NOT NULL" in schema_sql
     assert "granularity text NOT NULL" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS ancient_editions" in schema_sql
     assert "ancient_edition_id integer NOT NULL PRIMARY KEY" in schema_sql
@@ -418,6 +419,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "tm_id": 46,
             "full_place_name": "Philadelphia? (Arsinoites)",
             "place_name": "Philadelphia",
+            "uncertain": True,
             "tm_place_id": 1760,
             "pleiades_place_id": 737008,
             "place_type": "located",
@@ -428,6 +430,7 @@ def test_ingest_metadata_creates_schema_and_inserts_rows(tmp_path, monkeypatch):
             "tm_id": 46,
             "full_place_name": "Philadelphia? (Arsinoites)",
             "place_name": "Ägypten",
+            "uncertain": False,
             "tm_place_id": None,
             "pleiades_place_id": None,
             "place_type": "located",
@@ -555,6 +558,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             13,
             "Found: Pathyris (Pathyrites, Egypt)",
             "Pathyris",
+            False,
             1628,
             756888,
             "found",
@@ -565,6 +569,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             13,
             "Found: Pathyris (Pathyrites, Egypt)",
             "Egypt",
+            False,
             None,
             None,
             "found",
@@ -707,6 +712,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "13",
             "Found: Pathyris (Pathyrites, Egypt)",
             "Pathyris",
+            "False",
             "1628",
             "756888",
             "found",
@@ -717,6 +723,7 @@ def test_dump_metadata_tables_writes_csv_files(tmp_path, monkeypatch):
             "13",
             "Found: Pathyris (Pathyrites, Egypt)",
             "Egypt",
+            "False",
             "",
             "",
             "found",
