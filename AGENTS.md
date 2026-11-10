@@ -44,21 +44,20 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync --extra tests
 -do not commit anything to git unless told so explicitly
 
 - never commit secrets into git, e.g., API keys
-- never edit code without asking first and giving a clear step-by-step plan first
-- never modify the data in the ./datasets directory unless explicitly told to do so. It contains the data of the project in various stages or. processing and must hence be held sacred! If told to modify it, raise the concern that this is normally forbidden first, plan out a step-by-step workflow and ask for explicit permission to execute it first.
-- config files are treated as ephemeral and do not need tests
+- never edit code without asking and giving a clear step-by-step plan first
+- never modify the data in idp.data or the created database unless explicitly told to do so.
 
 ## Workflow
 
-- when asked to make a change, always follow this workflow:
-  - follow a test-driven development approach. tests come first (will fail, red phase), then code that fulfills them, then refactor as desired while preserving functionality and correctness.
+- when asked to make a change larger that introduces new or changes existing functionality (not just a one-line typo correction or a tiny bugfix), always follow this workflow:
+  - follow a test-driven development approach.Ttests come first (will fail, red phase), then code that fulfills them, then refactor as desired while preserving functionality and correctness.
   - propose an implementation plan for tests and implementation, surface any open elements that could change behavior or outcome.
-  - present plan to the user for confirmation, and ask them for specification of open questions.
-  - rework plan if asked for, answer all question they have
-  - plan is only ready to go when all open elements have been specified and the user confirms
-  - write test first and have user review them (red phase)
-  - then write code to fulfill them (green phase). Present for review.
-  - refactor as review and user indication indicates until complete as reviewer judges it.
+  - present plan to the user for confirmation, and ask them to answer any open questions.
+  - rework plan if asked for, answer all question the user might have
+  - plan is only ready to go when all open elements have been specified and the user confirms readiness.
+  - write tests first and have user review them (red phase). Only proceed when they give the ok.
+  - then write code to fulfill the tests (green phase). Present for review.
+  - refactor as indicated until code is complete as reviewer judges it.
 
 ## Coding guidelines
 
@@ -96,6 +95,7 @@ except Exception as e:  # unknown exception branch for unexpected stuff
 -property-based testing is a first-class test system
 -all public methods and classes should have google style docstrings
 -all private methods or classes should have at least freeform docstrings
+-documentation is considered part of the code base and must be maintained alongside it.
 -code should have explanatory comments that explains decisions taken where multiple alternatives would be possible or where a certain algorithm to solve a problem is first introduced
 -all function arguments have type hints.
 -adhere to clean code principles with practical application of the principles of "Clean Code" by Robert C. Martin, and "Refactoring" by Martin Fowler, but with relaxed rules on naming conventions and function length. The code should be readable and understandable, but not necessarily follow strict naming conventions or have very short functions. The focus is on clarity and maintainability rather than strict adherence to style guides.
