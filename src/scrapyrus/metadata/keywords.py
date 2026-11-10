@@ -5,6 +5,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from scrapyrus.metadata.base import MetadataTable
+from scrapyrus.metadata.uncertainty import normalize_uncertain_text
 from scrapyrus.metadata.xmlutils import (
     create_xpath_expr,
     drop_known_id_placeholders,
@@ -15,21 +16,7 @@ from scrapyrus.semantics import ColumnSemantics, RelationshipSemantics, TableSem
 
 
 KEYWORD_TERMS_XPATH = ".//tei:profileDesc/tei:textClass/tei:keywords/tei:term"
-UNCERTAINTY_MARKER_RE = re.compile(r"\(\s*\?\s*\)|\?")
 QUALIFIER_GROUP_RE = re.compile(r"^(?P<keyword>.*?)\s*\((?P<qualifiers>[^()]*)\)\s*$")
-
-
-def _keyword_value(value: str) -> tuple[Optional[str], bool]:
-    """Remove uncertainty markers and return the keyword and uncertainty flag."""
-    uncertain = "?" in value
-    if uncertain:
-        value = " ".join(UNCERTAINTY_MARKER_RE.sub("", value).split())
-
-    value = value.strip()
-    if value == "":
-        return None, uncertain
-
-    return value, uncertain
 
 
 def _keyword_values(
@@ -40,18 +27,18 @@ def _keyword_values(
     value = " ".join(value.split())
     qualifier_group = QUALIFIER_GROUP_RE.fullmatch(value)
     if qualifier_group is None:
-        keyword, uncertain = _keyword_value(value)
+        keyword, uncertain = normalize_uncertain_text(value)
         if keyword is None:
             return ()
         return ((keyword, uncertain, None, False),)
 
-    keyword, uncertain = _keyword_value(qualifier_group.group("keyword"))
+    keyword, uncertain = normalize_uncertain_text(qualifier_group.group("keyword"))
     if keyword is None:
         return ()
 
     qualifiers: list[tuple[str, bool]] = []
     for value in qualifier_group.group("qualifiers").split(","):
-        qualifier, qualifier_uncertain = _keyword_value(value.strip())
+        qualifier, qualifier_uncertain = normalize_uncertain_text(value.strip())
         if qualifier is None:
             uncertain = uncertain or qualifier_uncertain
         else:
