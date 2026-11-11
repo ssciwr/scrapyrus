@@ -112,7 +112,7 @@ def main() -> int:
         return 1
 ```
 
-- no changes to the code are made without a corresponding test of the new or changed functionality
+- no changes to the code are made without a corresponding test of the new or changed functionality, but removal of legacy functionality does not need explicit tests.
 - all public methods and classes should have google style docstrings
 - all private methods or classes should have at least freeform docstrings
 - documentation is considered part of the code base and must be maintained alongside it.
